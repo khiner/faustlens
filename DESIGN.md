@@ -18,8 +18,9 @@ compiler instinct and editing experience conflict, editing wins.
 
 Three properties define the product:
 
-1. **Bidirectional.** Selecting a box highlights its source range. Editing a box rewrites that
-   source range, leaving every other byte — including comments and formatting — untouched.
+1. **Bidirectional.** Selecting a box highlights its source range. Editing a box rewrites exactly
+   the part of the source that changed, leaving every other byte — including the comments and
+   formatting *inside* the edited region — untouched. §4.4 makes that precise and gives it a name.
 2. **Live.** Every keystroke produces a new running DSP, fast enough to feel immediate, without
    dropping the reverb tail or clicking.
 3. **Simple.** Small enough that one person holds the whole thing in their head. A hard constraint,
@@ -52,7 +53,8 @@ not.
   widgets.
 - Numerical fidelity to reference Faust (§11).
 - Two execution tiers: an interpreter for the edit loop, LLVM for release.
-- Lossless bidirectional editing between the box graph and the text.
+- Lossless bidirectional editing between the box graph and the text — *retentive* in the sense §4.4
+  makes precise: an edit retains the bytes of every part of the program it did not change.
 - State-preserving hot reload while audio runs.
 - A complete runtime contract (§7): controllable UI, soundfile loading, foreign symbol resolution,
   a defined init/block/channel contract — enough that a compiled program is *playable*, not merely
@@ -89,17 +91,14 @@ Each non-goal buys simplicity deliberately rather than by oversight. §10 prices
 ## 3. The representation stack
 
 ```
-   Text                    source of truth, user-owned
-    | ^
-    | |  exact, byte-preserving splices                        §4
-    v |
-   CST                     tree-sitter. Trivia, error recovery, byte ranges.
-    | ^
-    | |  exact                                                 §4
+   Text                    source of truth, host-owned. Beside it, a token
+    | ^                    vector that tiles every byte.                  §5.1
+    | |  get:  own lexer + recursive descent, error-recovering    §5.1
+    | |  put:  a retentive edit script over byte spans            §4.4
     v |
    Term                    definition language AST, in two layers:             §4.6
     |                      interned Merkle-hashed *values*, and per-file
-    |                      *refs* carrying CST ids.
+    |                      *refs* carrying byte spans.
     |                      *** the editable semantic surface ***
     |  evaluate  (memoized on value id x environment id)       §5
     v
@@ -120,13 +119,15 @@ Each non-goal buys simplicity deliberately rather than by oversight. §10 prices
    Instance                state block + lifecycle. Hot-swapped, state-preserving.  §7.1, §8
 ```
 
-Six representations sounds like a lot: three are front-end views of the same text, two are the
-compiler proper. Three structural claims carry the design.
+Five representations sounds like a lot: two are front-end views of the same text, two are the
+compiler proper, and Box is the evaluated view that joins them. Three structural claims carry the
+design.
 
 **Term is the editable surface, Box is a read-only view.** The single decision that makes
 bidirectional editing tractable, developed in §4. Term is two layers: an interned, provenance-free
-*value* graph that everything downstream consumes, and a per-file *ref* tree holding the byte
-ranges (§4.6).
+*value* graph everything downstream consumes, and a per-file *ref* tree holding the byte spans
+(§4.6). There is no concrete syntax tree — the parser builds both layers in one pass (§5.1) — and
+trivia stays in the buffer, addressed by the gaps between sibling spans.
 
 **Signal is a flat, hash-consed DAG, not a pointer graph.** `std::vector<Node>` where `Node` is a
 POD of `{opcode, operand indices, payload}`, uniqued through a hash map at construction. It replaces
@@ -160,18 +161,25 @@ the source says. Editing it rewrites the term, and the mapping back to text is e
 was evaluated in between. The hardest problem in the system becomes a non-problem: no
 provenance-inversion machinery, no "is this edit legal" predicate, no partial round-tripping.
 
-**Term is pre-desugaring; Box is post-desugaring**, which is the opposite of the reference and what
-§4.4 rests on. Faust's *grammar* rewrites `a + b` into `boxSeq(boxPar(a, b), boxAdd())`
+**Term is pre-desugaring; Box is post-desugaring** — the opposite of the reference, and what §4.4
+rests on. Faust's *grammar* rewrites `a + b` into `boxSeq(boxPar(a, b), boxAdd())`
 and `x'` into `boxSeq(x, boxDelay1())` (`parser/faustparser.y:489`, `:496`), along with `@`, the
 comparisons and the bitwise operators. After that there is no way back — `(a, b) : +` cannot be
-reprinted as `a + b` in general — so §4.4's printer soundness and splice locality are lost on the
+reprinted as `a + b` in general — so §4.4's printer soundness and retentiveness are lost on the
 first arithmetic expression in the file.
 
 Term therefore keeps the surface forms, and desugaring happens during evaluation on the way to Box.
 The payoff is not merely mechanical: the structural view shows `a + b` as an infix expression node
-rather than a parallel-then-sequential composition, which is what a reader of the source expects.
+rather than a parallel-then-sequential composition — the shape a reader of the source expects.
 The box UI consequently renders two shapes of node, diagram-shaped (`:`, `,`, `<:`, `:>`, `~`) and
 expression-shaped (`+`, `*`, `@`, `'`) — a feature of the view, not an inconsistency in it.
+
+**This is the resugaring problem, declined rather than solved.** Desugar at parse time and the
+surface forms have to be *recovered* afterwards to show the user anything in their own syntax —
+which is a research problem with a literature behind it [R1, R2], not a detail. Keeping the surface
+forms in Term means there is nothing to recover: the editable layer never left the user's syntax.
+The cost is paid once, in §4.5's inventory, and §4.2's evaluated view is the only place the problem
+would reappear — it displays post-desugaring shapes, and does so read-only and by request.
 
 Surface form means *spelling*, not just shape. `:>` and `+>`, `x^y` and `pow(x, y)`, `mem` and `'`,
 `-x` (rewritten to `0 - x`, `parser/faustparser.y:600`), and the exact text of a numeric literal are
@@ -187,80 +195,131 @@ so two nodes; §4.5 inventories the nodes and the three cases that do need an ex
 
 To edit inside an expanded view, the user invokes **materialize**: the Term subtree is replaced by a
 printed form of its evaluated Box graph, the source is rewritten to match, and the result is
-editable structurally. Lossy — names and the iteration are gone — but explicit and user-initiated,
-which is the difference between a tool with a sharp edge and one that corrupts your file.
+editable structurally. Lossy — names and the iteration are gone — but explicit and user-initiated:
+the difference between a tool with a sharp edge and one that corrupts your file.
+
+**A third tier sits between the two, and it is optional.** Materializing to change one number is a
+large hammer, and changing a number is what a user reaches for first after expanding a node. Where
+the changed element traces back through the `signal id -> value id` side table (§4.6) to *exactly
+one* Term leaf, the edit is an ordinary splice on that leaf and nothing is lost. Where the trace is
+ambiguous — one leaf, ten Box occurrences, the `par(i, 10, osc(i))` case — the user resolves it:
+change the shared leaf and all ten move, or materialize this one. That is the move
+*Bidirectional Evaluation with Direct Manipulation* [R3] makes for a general functional language,
+narrowed here to the unique-provenance case and the prompt.
+
+**Its one integration constraint is why this is not free.** The side table lives in the compile
+arena, dropped whole on idle (§5.9), and §13.3 forbids the UI from holding an arena id. So §13.3's
+published render list must carry a `value_id` per editable element, or the trace fails after a drop.
+§14 puts this in phase 7, and the design stands without it.
 
 ### 4.3 Mechanics
 
-*Source to box.* Every Term *ref* carries the CST node id it came from; every CST node carries a
-byte range. Selection and hover in either direction are a lookup. The interned value a ref points at
-carries no range (§4.6).
+*Source to box.* Every Term *ref* carries the byte span it was parsed from. Selection and hover in
+either direction are a lookup. The interned value a ref points at carries no span (§4.6).
 
-*Box to source.* An edit is a Term rewrite plus a splice: print only the rewritten subtree, replace
-exactly its byte range, leave the rest of the file alone. Comments and formatting outside the edit
-survive because they were never parsed away — they are still in the CST.
+*Box to source.* An edit is a Term rewrite plus a **splice**, and a splice is an *edit script* — a
+set of disjoint byte-range replacements — not a single replacement of the rewritten node's range.
+The distinction is the whole of §4.4: replacing a node's range reprints everything under it, and
+everything under it is where the user's comments are. Computing the script is an alignment of the
+old ref tree against the new value tree, and §4.4 gives it.
 
 The structural edits worth supporting first, each a small rewrite plus a splice: insert into a
 sequence (`a : b` → `a : x : b`), delete a stage, change a literal or a UI parameter, wrap a
-selection in a composition, rewire a `route`.
+selection in a composition, rewire a `route`. The first is the one that shows why the script
+matters: the rewritten node is the whole `Seq`, but the edit is an insertion of `x : ` at one
+offset, and `a` and `b` are never reprinted.
 
-*Cursor to box.* Given a byte offset, find the innermost CST node, map to its Term ref, highlight
-the box. The "linking" that makes the two panes feel like one program.
+*Cursor to box.* Given a byte offset, find the innermost ref whose span contains it and highlight
+its box. The "linking" that makes the two panes feel like one program.
 
 *Undo.* Text is the source of truth and everything below it is derived, so undo is a text-level
 operation and needs no counterpart in Term, Box or the box view. Restoring a previous text state
 re-derives the rest, and §8 treats the result as it would any other edit.
 
-### 4.4 The printer is load-bearing
+### 4.4 The splice is load-bearing, and the printer serves it
 
 Term-to-source printing appears in three places: splicing edits, materializing evaluated subtrees,
-and the `faust -e` equivalent. One structure covers all three.
+and the `faust -e` equivalent. One structure covers all three. But printing is the *smaller* half of
+the splice, and the design's central editing guarantee lives in the other half.
 
-**Text and Term form a quotient lens** (Foster, Pilkiewicz & Pierce, *Quotient Lenses*, 2008). `get`
-parses text into Term; `put` is a term rewrite plus a splice taking the *original text* as well as
-the new subtree — the CST is that second argument, and it is why bytes outside the edit survive. It
-is a *quotient* lens because `get` is lossy: Term carries no trivia (§5.1), so `print(parse(src))`
-cannot reproduce a file's comments and indentation. The equivalence is already named in §4.6: **two
-texts are equivalent when they parse to the same interned value id**, one relation quotienting out
-both trivia and redundant parentheses.
+**Text and Term form a retentive lens** (Zhu, Yang, Ko & Hu, *Retentive Lenses* [R4]). `get` parses
+text into Term and produces a set of **links** relating source regions to view regions; `put` takes
+the original source, the new view, and those links, and restores consistency while *retaining* the
+linked source regions. §4.6's `TermRef` tree is exactly that link set, so `put` aligns against it
+rather than reading a single range out of it.
+
+**Not a quotient lens**, which is the obvious near-miss (Foster, Pilkiewicz & Pierce [R5]) and
+inverts this design's purpose. Quotient lenses exist so that laws may hold *modulo* inessential
+detail — the paper's motivating list is whitespace, attribute order, line breaking — and its `put` is
+`choose(put(a, canonize(c)))`: canonize, then re-print. Trivia is discarded by construction. Here
+trivia is the user's comments. Two traps come with the framing: lossiness of `get` is what makes a
+lens a lens rather than a bijection, so it is not what makes one a *quotient*; and taking the
+equivalence to be "parses to the same interned value id" makes it the kernel of `get`, under which
+quotient GetPut is satisfied by a `put` that reformats the whole file and deletes every comment.
+
+The quotient-lens citation survives in one place: §4.7's printer is a **canonizer** for
+parenthesization and spelling, and the canonizer law (RECANONIZE, `canonize(choose b) ~ b`)
+instantiates to PutGet below.
 
 Four obligations, checked on the whole corpus:
 
-> **CST fidelity.** `text(cst(source)) == source`, byte for byte. Outside the lens: a property of
-> tree-sitter, and the guarantee that trivia survives a parse at all.
+> **Token coverage.** The token vector of §5.1 **tiles the file**: every byte lies in exactly one
+> token, comments and whitespace included. Outside the lens proper, and what lets an edit script
+> reuse a span without knowing what is inside it.
 >
 > **PutGet, printer soundness.** `value(parse(print(t))) == value(t)`, compared as interned ids and
 > so exact (§4.6). A printed Term re-reads as the same Term, form tags included (§4.1). Quantified
-> over **hole-free** terms (§4.5), since error recovery is context-dependent and a `Hole`'s bytes
-> reparsed in isolation need not recover to the same shape.
+> over **hole-free** terms (§4.5), since a `Hole`'s bytes reparsed in isolation need not recover to
+> the same shape as they did in context.
 >
-> **GetPut, splice locality.** Rewriting a subtree to an equal subtree leaves the file
-> byte-identical, and any other edit changes only the bytes inside that subtree's range. Holes are
-> *not* excepted: `print(Hole(s)) == s` verbatim, so a splice across broken text preserves it.
+> **Retentiveness.** For every edit, **every Term node whose value id appears in both the pre-edit
+> and post-edit ref trees retains its original bytes** — byte for byte, interior trivia included.
+> Hippocraticness (an edit to an equal subtree leaves the file byte-identical) is the special case
+> where the root matches. Holes are not excepted, so a splice across broken text preserves it
+> verbatim.
 >
-> **The canonizer law.** Reprinting normalizes redundant parentheses away (§4.5), so GetPut is
-> byte-exact where a subtree is already canonically parenthesized (§4.7) and converges in one step
-> everywhere else: `splice(splice(f)) == splice(f)`.
+> **Normalization idempotence.** Bytes that *are* reprinted come out canonically parenthesized
+> (§4.7), so a second splice over the same region changes nothing: `splice(splice(f)) == splice(f)`.
 
-**Printing a subtree is context-dependent, and plain `print` breaks PutGet.** A ref's range excludes
-the parentheses around it — grouping parens are anonymous in both grammars (§4.7) — so the `Seq` in
-`(a : b) : c` has the range `a : b`. Splicing a lower-precedence subtree over one changes how the
-surrounding bytes parse: `x , y` over the `b : c` of `a : b : c` gives `a : x , y`, reparsing as
-`(a : x) , y`. So the splice primitive is `print_in_context(term, parent_kind, side)`, parenthesizing
-by §4.7's rule before replacing the range — which is why phase 1 builds it alongside the printer.
+Retentiveness is what keeps comments and formatting in the file across an edit. Note what it asks
+beyond the weaker "bytes outside the edited range survive": that guarantee is satisfied by reprinting
+a whole subtree from Term, which drops every comment *inside* the edit.
+
+**The splice is an edit script, computed by alignment.** Given the old ref tree and the new value
+tree:
+
+1. **Match subtrees on Merkle hash.** Structural identity is already an integer comparison (§4.6),
+   so this is a hash-map pass, linear in tree size — *truediff*'s trick [R6], free here because §5.2
+   already computes the hashes. Ambiguity resolves positionally in source order (§5.5).
+2. **Emit disjoint byte edits over the unmatched residue.** Where the new tree gained a node the edit
+   is an *insertion at an offset*, not a replacement of the enclosing node's span. Where a node
+   changed in place it replaces that node's span alone.
+3. **Matched spans are copied, never printed.** This is where retentiveness comes from, and why gap
+   trivia survives: a comment between two siblings lies outside both spans and inside no replacement.
+
+`a : b` → `a : x : b` illustrates all three. `a` matches, `b` matches, one `Seq` is new; the script is
+a single insertion of `x : ` after `a`'s span. A whole-subtree reprint would have rewritten every byte
+of `a` and `b` and dropped their comments.
+
+**Printing a subtree is context-dependent, and plain `print` breaks PutGet.** A ref's span excludes
+the parentheses around it — grouping parens are anonymous (§4.7) — so the `Seq` in `(a : b) : c` has
+the span `a : b`. Emitting a lower-precedence subtree over one changes how the surrounding bytes
+parse: `x , y` over the `b : c` of `a : b : c` gives `a : x , y`, reparsing as `(a : x) , y`. So the
+script's printing primitive is `print_in_context(term, parent_kind, side)`, parenthesizing by §4.7's
+rule. Because the parser is ours, a ref may also record an **outer span** including any grouping
+parens it was written with, letting the script retain the user's parens instead of re-deriving them.
 
 **Only the top of §3's stack is a lens**, and the boundary is §4.1's. Term to Box has a `get` and no
 lawful `put`: evaluation beta-reduces and unrolls, so `par(i, 10, osc(i))` becomes ten subgraphs with
-nothing to invert. Box is a projection, and `materialize` (§4.2) is the one operation that leaves the
-lawful region, which is why it is user-initiated and announced.
-
-GetPut is what keeps a user's comments and formatting in the file across an edit.
+nothing to invert. Box is a projection, and `materialize` (§4.2) is the one operation leaving the
+lawful region, which is why it is user-initiated and announced. §4.2's trace-back tier does not leave
+it: it edits a Term leaf, so it is an ordinary `put`.
 
 ### 4.5 The Term inventory
 
-Term is the one structure the whole design leans on, so it is written down rather than left to be
-derived. The rule generating it is short: **one Term node per surface production in
-`parser/faustparser.y`, no node the grammar does not write, and exactly one node for what the grammar
+Term is the one structure the whole design leans on, so the inventory below is exhaustive. The rule
+generating it is short: **one Term node per surface production in
+`parser/faustparser.y`, no node the grammar does not write, and exactly one node for what the parser
 could not read.** Everything below follows from that.
 
 **Statements**, the file level. `Import(spec)`; `Declare(key, value)` and its three-token variant
@@ -276,8 +335,8 @@ non-goal, parsing all six is not (§2).
 (`parser/faustlexer.l:226-229`) — *not* `float`/`double`, which lex as the cast primitives
 (`:141-142`). A statement's `variantlist` accumulates by bitwise or (`:369-370`), and
 `acceptdefinition` (`:46-50`) admits the statement when the set is empty or contains the build mode.
-Term keeps the set and evaluation applies that filter unchanged, which is what lets one file define a
-name once per mode; each filtered statement emits an **info** diagnostic (§9.1) naming what was
+Term keeps the set and evaluation applies that filter unchanged, so one file may define a name once
+per mode; each filtered statement emits an **info** diagnostic (§9.1) naming what was
 dropped. Zero files in `libraries`, `tests` and `examples` use any of the four.
 
 **Expressions.** Five composition operators, binary: `Seq`, `Par`, `Split`, `Merge`, `Rec`. Scoping:
@@ -295,7 +354,8 @@ eighteen infix operators, `Delay1(expr)` for `x'`, and `NegIdent(name)` for pref
 `SUB FLOAT` and `SUB ident` (`:525-526`, `:600`), so `-x` is negation, `-3` is a literal, and
 `-(1+2)` is a partial application of the bare subtraction primitive. Probed: `process = -(1+2);`
 evaluates to `_, 3 : -`, a one-input box subtracting three, while `-x with { x = 3; }` evaluates to
-`-3`. The adopted grammar spells the second `negate_id: seq('-', $.identifier)`.
+`-3`. So `NegIdent` holds a name and never an expression, and a signed literal never becomes one —
+it is an `Int` or `Real` whose lexeme carries the sign (§4.8).
 
 **Leaves.** `Int(lexeme)` and `Real(lexeme)`; `Ident(lexeme)` — `NSID` is a lexer *definition*
 (`faustlexer.l:35`), not a token: it and a leading-`::` form both return **`IDENT`** (`:232-233`), so
@@ -309,44 +369,37 @@ picks by build precision — `nth(namelist, gFloatSize - 1)` (`signals/prim2.cpp
 is that selected name, not the declaration.
 
 **`Hole(lexeme, children)` — the one node no production writes.** §9 needs Term to survive a partial
-parse and §5.1 grades the grammar on it, so the exception is written down rather than improvised at
-the first `ERROR` node.
+parse, so the exception is specified rather than improvised at the first parse error.
 
-- **Payload.** The source bytes tree-sitter could not parse, empty for a `MISSING` node, which is
-  zero-width.
-- **Children.** The Term nodes of the hole's own recognizable named children, so a hole at an
-  `ERROR` node still renders `a` and `b` out of half-typed `a : b : `. They keep the box view
-  populated through the incomplete expressions that are the common state of the system (§8.3).
-- **Hash.** Over lexeme *and* child ids, since recovery depends on surrounding context and the
-  children are not a function of the lexeme. Two recoveries of the same bytes intern apart.
-- **Printer.** `print(Hole(s, _)) == s`, verbatim, ignoring the children — they are inside `s`. This
-  is what keeps §4.4's splice locality unrestricted.
+- **Payload.** The source bytes skipped during recovery, empty where a required token was absent,
+  which is zero-width.
+- **Children.** The Term nodes the parser had already built in the failing frame, so a hole still
+  renders `a` and `b` out of half-typed `a : b : `. They keep the box view populated through the
+  incomplete expressions that are the common state of the system (§8.3).
+- **Hash.** Over lexeme *and* child ids. The children are **not** a function of the lexeme: the same
+  bytes recovered inside a `with` block and at file level are reached through different parser
+  frames and yield different children, so two recoveries of the same bytes intern apart.
+- **Printer.** `print(Hole(s, _)) == s`, verbatim, ignoring the children — they are inside `s`.
+  Under §4.4's edit script this is a special case of retaining a matched span, so it costs nothing
+  extra.
 - **Downstream.** A `Hole` is itself a syntax diagnostic and evaluates to the `Error` box of §9,
   whose arity rule §6.1 gives. Nothing else in the pipeline needs a case for it.
 
-**"Recognizable named children" is a predicate.** A hole is built at an `ERROR` or `MISSING` CST
-node, scanning that node's *direct* children in source order:
+**Holes are constructed, not detected.** §5.1's parser is recursive descent, so the frame that fails
+builds the hole: record the diagnostic, consume to that frame's synchronization token, and wrap the
+consumed span with the children already parsed there. Those children are the frame's own local
+variables — when `a : b : ` runs out, `a` and `b` are in hand. No scan, no predicate over node kinds,
+no lowering that could fail to have a case.
 
-1. **Anonymous node** (a bare token — `:`, `(`, `=`) → skipped; its bytes stay in the payload.
-2. **Named node, not `ERROR`/`MISSING`** → lowered by the ordinary rules and kept. Lowering recurses
-   arbitrarily deep; only the *scan* is shallow.
-3. **Named `ERROR`/`MISSING`** → a nested `Hole`, kept. Nesting is preserved, so two recoveries of
-   the same bytes into different shapes hash apart.
-4. **Named node whose lowering has no case** → a `Hole` over its bytes, which keeps the lowering
-   total. On the corpus this is a **hard test failure**: every corpus file parses cleanly, so an
-   unlowerable named node means the grammar and §4.8 have drifted apart. Holes stay a runtime concept
-   for user text.
+The child list may be empty — the ordinary case for an absent required token, printing as the empty
+string — and every child's span lies inside the payload, so printing the payload verbatim and keeping
+children stay consistent.
 
-One level is enough: it already yields `a` and `b` from `a : b : `, and each kept child carries its
-own subtree. The child list may be empty — the ordinary case for a `MISSING` token, printing as the
-empty string — and every child's range lies inside the payload, which is what makes the verbatim
-printer rule consistent with keeping children at all.
-
-**Three form tags, not one per surface choice.** §4.1 asks for a tag "wherever the grammar offers a
-choice", which overstates the cost: because Term mirrors productions, most of those choices are
-*already* distinct nodes. `a + b` is `BinOp`, `(a, b) : +` is `Seq(Par(...), Prim)` and `+(a, b)` is
-`Apply(Prim, ...)` — three shapes, no tag. `x'` is `Delay1`, `x : mem` is `Seq`. What genuinely needs
-a tag is where two spellings produce one node:
+**Three form tags, not one per surface choice.** §4.1 asks Term to preserve spelling wherever the
+grammar offers a choice, which sounds like a tag per choice and is not: because Term mirrors
+productions, most of those choices are *already* distinct nodes. `a + b` is `BinOp`, `(a, b) : +` is
+`Seq(Par(...), Prim)` and `+(a, b)` is `Apply(Prim, ...)` — three shapes, no tag. `x'` is `Delay1`,
+`x : mem` is `Seq`. What genuinely needs a tag is where two spellings produce one node:
 
 | Tag | Choices | Why it cannot be inferred |
 |---|---|---|
@@ -358,7 +411,7 @@ The literal tag is the load-bearing one: it also carries nature, since `3` lexes
 `FLOAT` (`faustlexer.l:77-79`). Keep the lexeme and both problems are one problem.
 
 **What Term must refuse to do.** The reference desugars at parse time, and each case below is a place
-where copying it costs §4.4's splice locality. Listed with what Term keeps instead:
+where copying it costs §4.4's retentiveness. Listed with what Term keeps instead:
 
 - **Definition shape.** `makeDefinition` (`parser/sourcereader.cpp:135-157`) turns `f = e;` into a
   bare body, `f(x, y) = e;` into a lambda, a pattern clause into a one-rule `case`, and *several
@@ -374,21 +427,23 @@ where copying it costs §4.4's splice locality. Listed with what Term keeps inst
 - **`route(n, m)`** gains a third argument, `boxPar(boxInt(0), boxInt(0))` — the "fake route" of
   `:621`. The two-argument spelling is not recoverable from the three-argument node.
 - **Parentheses** are dropped outright: `( e )` yields `e` (`:602`). Term does the same, so grouping
-  is *not* a node and the printer re-derives it from precedence. That is sound for §4.4's second
-  property but not its third — reprinting a subtree normalizes the user's redundant parens away.
-  Splices only reprint what was edited, so the blast radius is the edited subtree.
+  is *not* a node and the printer re-derives it from precedence. That is sound for §4.4's PutGet —
+  a reprint reparses to the same value — and it costs byte-exactness on any node actually reprinted,
+  since the user's redundant parens normalize away. Retentiveness bounds the damage to exactly those
+  nodes, since matched ones are copied rather than printed, and a ref's optional outer span removes
+  it for the common case by retaining the parens outright.
 
-**What Term does not carry**: trivia, which is the CST's (§5.1); types and intervals, which are
-Signal's (§6.3); arity, which is Box's (§6.1). Each is derived downstream and re-derived on demand,
-so an edit invalidates nothing held in Term.
+**What Term does not carry**: trivia, which stays in the buffer, addressed by the gaps between
+sibling spans (§5.1); types and intervals, which are Signal's (§6.3); arity, which is Box's (§6.1).
+Each is derived downstream and re-derived on demand, so an edit invalidates nothing held in Term.
 
 ### 4.6 Values and refs
 
-Term is interned (§5.2) and every occurrence carries a byte range (§4.3). The two live in separate
+Term is interned (§5.2) and every occurrence carries a byte span (§4.3). The two live in separate
 structures.
 
-**The Merkle hash covers structure alone**, and carries no CST node id, since a node id encodes
-position. A blank line inserted at the top of a file therefore leaves every hash below it unchanged,
+**The Merkle hash covers structure alone** and carries no span, since a span encodes position. A
+blank line inserted at the top of a file therefore leaves every hash below it unchanged,
 along with every Signal node id and state field key derived from them — which is how §8.1's state
 identity survives unrelated edits elsewhere in the file, and how a reverb tail survives a whitespace
 edit.
@@ -399,24 +454,30 @@ edit.
   `{kind, form_tag, payload, child value-ids}`. Deduplicated globally across every open and imported
   file. This is what §5.2 memoizes on, what §8.1 keys state on, and what §4.4's printer soundness
   quantifies over.
-- **`TermRef`** — a per-file positional tree, one entry per syntactic node, `{value_id, cst_node_id}`,
-  isomorphic to the parse. Rebuilt whenever its file is reparsed. Never interned, never hashed.
+- **`TermRef`** — a per-file positional tree, one entry per syntactic node,
+  `{value_id, span, outer_span?}`, isomorphic to the parse. `outer_span` covers any grouping
+  parentheses the node was written with, absent when there were none (§4.4). Rebuilt whenever its
+  file is reparsed. Never interned, never hashed.
 
 Evaluation, Box, Signal and Plan consume value ids only. Splices, selection linking, the box view and
 diagnostics work on refs. That is the precise sense of "Term is the editable semantic surface": you
 edit an *occurrence*, and the value is what makes two occurrences the same program fragment.
 
+**The ref tree is §4.4's link set.** A retentive lens's `get` returns a view *and* a set of links
+relating source regions to view regions, and its `put` consumes them; `TermRef` is that set,
+arrived at independently and for other reasons. Nothing about it needs to change to serve §4.4 —
+only `put` does, by aligning against it rather than reading one span out of it.
+
 **Provenance lives in side tables, keyed by interned id, written first-writer-wins in deterministic
 traversal order (§5.5).** One rule, applied at every layer: `signal id -> value id` is a side table
-too, which is what keeps the originating term out of a Signal node's hash and the free CSE of §3
-intact.
+too, keeping the originating term out of a Signal node's hash and §3's free CSE intact.
 
 Both directions that need provenance resolve by walking the ref tree:
 
 - **Diagnostics.** A diagnostic names a value id. Rendering the open file walks that file's ref tree
   and tests each `value_id` against the diagnostic set, `O(nodes in the file)`. Every occurrence of a
   broken fragment is marked.
-- **State attribution.** Field -> signal -> value -> ref tree -> byte range, which is what §8.1's
+- **State attribution.** Field -> signal -> value -> ref tree -> byte range, the chain §8.1's
   source-proximity pairing consumes. Where a memo hit gives one shared state field several source
   locations, the attribution is the first in deterministic order (file resolution index, then byte
   offset) — a UI affordance and a migration heuristic.
@@ -434,7 +495,7 @@ which §8.1's length-mismatch rule reduces to a transient click.
 
 ### 4.7 Precedence, and where parentheses come from
 
-§4.5 drops grouping parens, so the printer re-derives them, and that derivation is what §4.4's third
+§4.5 drops grouping parens, so the printer re-derives them, and that derivation is what §4.4's fourth
 property means by "canonical".
 
 **The grammar is layered, and the layers do more work than the precedence table.** Four nonterminals
@@ -448,8 +509,8 @@ nest, each admitting strictly less than the last:
 | 4 | `primitive` | leaves, and `( expression )`, which re-enters level 1 (`:602`) | operand of `.`, callee of an application |
 
 Level 2 is the one the corpus exercises constantly: `,` is the argument separator, so a parallel
-composition passed as an argument is parenthesized. The adopted grammar reaches the same restriction
-by aliasing a separate `_argument` rule set (`grammar.js:155-171`).
+composition passed as an argument is parenthesized. In §5.1's parser the four levels are a single
+minimum-binding-power argument: parsing an argument position is one call with `min_bp` above `Par`.
 
 **Within a level, precedence and associativity are the reference's, lowest first**
 (`parser/faustparser.y:114-134`, `:204`, `:208`):
@@ -472,17 +533,38 @@ by aliasing a separate `_argument` rule set (`grammar.js:155-171`).
 | 14 | `(` — application | left | `Apply` |
 | 15 | `[` — `expr[defs]` | left | `ModifLocalDef` |
 
-The adopted grammar's `PREC` block (`grammar.js:1-20`) reproduces every level and associativity —
-two independent derivations agreeing.
+**This table is one runtime artifact, keyed on the operator token, and both the parser and the
+printer consume it.** The parser reads it forward, as `token -> (left_bp, right_bp)`; the printer
+reads it backward, through the rule below. Writing the fact once is the point. Split across a
+grammar's precedence block, a printer and a prose table, any two can agree while the third drifts,
+and holding that seam shut takes a drift test that only ever checks what all three happen to spell
+numerically.
+
+Keying on the token rather than on the Term node is what makes it one table: `BinOp` is a single node
+covering the eighteen infix operators across levels 7–11, and `Merge` covers two spellings, so a
+node-keyed table cannot address a row. Three shapes of entry share it — infix (levels 3–11), postfix
+(`'`, `.`, application, `[defs]`, levels 12–15), and suffix (`with`, `letrec`, levels 1–2) — which a
+Pratt parser handles uniformly as left-denotation handlers, and which the printer distinguishes only
+in deciding which side to test.
+
+**What one table costs.** With the parser and the printer reading the same rows, a *consistently
+wrong* reading of `faustparser.y` is invisible to §11.5 property 1 — PutGet round-trips perfectly
+under uniformly wrong precedence. A second derivation would catch that, and it is the one real
+argument for keeping one; it is not worth the four obligations §5.1 prices, and it is a partial catch
+anyway, since a grammar's precedence block covers the levels it spells numerically and reaches the
+rest through rule layering. The net that does catch it is phase 2's `.box` isomorphism, where wrong
+precedence changes the evaluated diagram. §15 records the consequence: precedence errors surface in
+phase 2 rather than phase 1.
 
 **The rule.** Printing child `C` at side `S` of parent `P`, parenthesize when `prec(C) < prec(P)`;
 when `prec(C) == prec(P)` and `S` is the side associativity does not favour — the left of a
 right-associative operator, the right of a left-associative one; or when `C` is `Par`, `With` or
 `LetRec` in a level-2 position. Otherwise not.
 
-Canonical is exactly that, and nowhere else. A canonical subtree splices back byte-identically, and
-one carrying redundant parens converges in a single reprint (§4.4). `print_in_context` is this rule
-plus the byte-range replacement, taking (`prec(P)`, `S`) and the position's level.
+Canonical is exactly that, and nowhere else. A canonical subtree reprints byte-identically, and one
+carrying redundant parens converges in a single reprint (§4.4). `print_in_context` is this rule plus
+the emission, taking (`prec(P)`, `S`) and the position's level; placing the result in the file is the
+edit script's job, not the printer's.
 
 ### 4.8 The Term node table
 
@@ -506,9 +588,9 @@ precision bitmask.
 | `MdocListing` | — | three booleans | `<listing k="v" … />` |
 | `MdocNotice` | — | — | `<notice/>` |
 
-`Clause` params are an `arglist` — patterns, not identifiers (`:475`) — which is what makes several
-clauses of one name a pattern-matching definition. `RecDef` is separate: its name is primed and it
-takes no parameters (`:456-464`).
+`Clause` params are an `arglist` — patterns, not identifiers (`:475`) — so several clauses of one
+name form a pattern-matching definition. `RecDef` is separate: its name is primed and it takes no
+parameters (`:456-464`).
 
 **Expressions.**
 
@@ -556,74 +638,98 @@ child is absent in the two-argument spelling, the distinction §4.5 keeps agains
 
 ---
 
-## 5. Incrementality
+## 5. Parsing and incrementality
 
-### 5.1 What tree-sitter is and is not for
+### 5.1 The parser
 
-tree-sitter is the right parser, but incremental reparse is not why. Parsing a Faust file from
-scratch is nowhere near the bottleneck, and a reparsed tree gives changed ranges — not a semantic
-diff, and not stable node identity across edits.
+**The parser is ours: a hand-written lexer and recursive-descent parser with a Pratt core for
+expressions.** A generated grammar is the obvious alternative, and `tree-sitter-faust` exists and
+parses this language — the two things usually offered in its favour are error recovery and trivia
+preservation, and neither holds up.
 
-It earns its place for two other things, both mandatory here:
+**Trivia is not a parser property at all.** Any parser recording byte spans into a buffer the host
+already owns (§13.2) preserves trivia, because nothing ever deleted it. It costs nothing to have and
+nothing chooses a parser.
 
-- **Error recovery.** A live editor parses syntactically incomplete text on every keystroke and must
-  still produce a usable tree.
-- **Trivia preservation.** Comments and whitespace are retained, which is what makes §4's splices
-  lossless.
+**Error recovery has no author-facing lever in tree-sitter, and this design needs one.** Its recovery
+is a runtime cost heuristic: on an unexpected token the parser pops to whichever prior state makes
+recovery cheapest and wraps what it popped in an `ERROR`. The grammar DSL has no `error` production,
+no synchronization tokens, and no cost hints; requests for them are long-standing and open [R7, R8].
+The property §14 has to hit — **a hole's extent stays inside the `;`-delimited statement containing
+the failure** — is therefore a property of a black box, measurable but not fixable, whose only lever
+is reshaping rules until the heuristic behaves, which changes what parses cleanly.
 
-**Those two are also why the printer is a separate artifact rather than a derived one.** Invertible
-syntax descriptions generate a parser and a printer from one description (Rendel & Ostermann, 2010),
-making §4.4's PutGet true by construction instead of by property test — but they generate parser
-*combinators*, which have neither property above. The trade is error recovery against derivability,
-and a live editor takes error recovery. The shared specification is `faustparser.y`: `grammar.js` and
-the printer are two derivations from it, which is what lets §4.7 check one against the other.
+Written by hand it is not a property to test but a loop invariant. Parse statements one at a time; on
+failure, record the diagnostic, consume to the synchronization token, and emit a `Hole` spanning
+exactly what was consumed, carrying the children the frame had already built (§4.5). Faust is
+unusually favourable — a flat, `;`-terminated statement list, so panic-mode recovery is the textbook
+case and the hard problems of brace-heavy or layout-sensitive languages do not arise.
 
-**The grammar is adopted.** `khiner/tree-sitter-faust` is published and vendors as a
-submodule under `lib/`. Measured, it parses **296/296 of `lib/faust/examples`** and 319/341 of
-`lib/faust/tests`, where the 22 remaining files are correct rejections: twenty-one use multirate
-syntax (`vectorize`, `serialize`, `#`, `[](0)`) that appears nowhere in `faustlexer.l` or
-`faustparser.y`, so reference Faust 2.85.9 rejects them too — residue of an abandoned branch — and the
-twenty-second is `error-tests/error24.dsp`, which is `process = :`.
+**And the structural coupling is the larger cost.** A generated grammar is a *second structural
+derivation* of `faustparser.y` alongside §4.5's Term inventory, and the two have to agree. Keeping
+them in agreement is four standing obligations — a node-granularity audit, a precedence-block drift
+test, a hard build failure on any node the lowering has no case for, and a grammar change to make
+`<equation>`/`<diagram>` hold expressions rather than prose. None is intrinsic to compiling Faust.
+All four are the price of the second derivation, and one derivation does not pay it.
 
-It covers the corners this design leans on — the `+>` alias, `expr[defs]`, `[a -> b]`, `any`, the
-precision prefixes, `declare name key value`, `::`-qualified names, `letrec … where`, both `route`
-arities, and `<mdoc>` with its nested `<equation>`/`<diagram>`/`<metadata>` — and keeps comments in
-`extras`, which is the trivia requirement above. It is pure `grammar.js`: each of flex's four start
-conditions is a distinct parse context, mdoc prose is a `/[^<]+/` token, strings are `"[^"]*"`
-(`faustlexer.l:235`), and block comments terminate at the first `*/`.
+**§4.5 and §4.8 already are the parser specification**, written production-by-production against
+`faustparser.y` with payloads, children, precedences and form tags. Building the parser from it is
+transcription.
 
-Three things remain:
+**The lexer.** Hand-written, mode-stacked, with four modes matching flex's start conditions: default,
+`<mdoc>` prose, and the `<equation>`/`<diagram>` bodies that switch *back* to expression lexing
+(§4.5). A mode stack makes that re-entry three lines, where a grammar without lexer modes has to
+encode it as rules and generally settles for prose. It emits a flat `vector<Token>{kind, span}` that
+**tiles the file** — every byte in exactly one token, comments and whitespace included. That tiling
+is §4.4's first obligation, and it is what §13.2's highlighting reads, so "one source of truth says
+what the text means" holds without a syntax tree. §4.5's three form tags fall out of keeping the
+token kind and span.
 
-- **CST fidelity** — `text(cst(source)) == source` byte for byte over both corpora (§4.4). This, not
-  the absence of an `ERROR` node, is what §4's splices rest on.
-- **Error-recovery quality on half-typed input**, which §9 leans on and a highlighting-oriented
-  grammar has never been graded on. The corpus is every corpus file truncated at a random byte, and
-  §4.5's `Hole` makes the grade concrete: **a hole's extent must stay inside the `;`-delimited
-  statement containing the truncation**, so an error in one statement cannot turn a later complete one
-  into a hole. Against `;` rather than the statement list because a *missing* `;` legitimately fuses
-  two statements — that fusion is the recovery working. Failures need an error-recovery rule in the
-  grammar, so they are phase-1 work.
-- **Node-granularity audit against §4.5** — that every Term node has a CST node to hang a ref on.
-  Run against the published grammar, it returns one gap and four facts to write the lowering around:
+**The parser.** Recursive descent for the fixed-shape constructs — statements, definitions and
+clauses, `with`/`letrec`/`environment`, `route`, the widgets, the foreign forms, mdoc parts — and
+Pratt for expressions, over §4.7's shared precedence table. It builds interned `TermValue`s and
+`TermRef`s **in one pass**: recursive descent produces children before parents, the order bottom-up
+Merkle hashing already wants, so interning happens at construction with no second traversal and no
+lowering step.
 
-  - **`<equation>` and `<diagram>` hold prose, not expressions** — `repeat($._doc_char)` with
-    `_doc_char` as `/[^<]+/` (`grammar.js:403-404`), where the reference parses a real `expression`
-    between the tags (`faustparser.y:423-427`). §4.8 needs an expression child, so this is the
-    grammar change phase 1 makes.
-  - **Grouping parens are anonymous** — `seq('(', $._expression, ')')` sits inline in the hidden
-    `_primitive` rule (`grammar.js:120`), so a parenthesized expression has no node and a ref's range
-    stops inside the parens. That suits Term, and §4.4's `print_in_context` is what splices under it.
-  - **The composition operator is an unnamed token.** `define_binary_comp` fields only `left` and
-    `right` (`grammar.js:24-25`), so §4.5's merge tag comes from the operator's text. The `^`/`pow`
-    tag does not: `^` is the named `$.pow` and bare `pow` an anonymous keyword in `_prim2`, so those
-    two differ by node type already.
-  - **Numeric literals carry their sign in the token** (`grammar.js:386-398`), where the reference
-    reaches a negative through `SUB INT` (`faustparser.y:525-526`), and `- 2` with a space goes
-    through the separate `unary_number` rule. All three lower to one `Int`/`Real` whose payload is
-    the verbatim span — what §4.5's literal tag already asks for.
-  - **`with` accepts a statement list.** `environment: seq('{', repeat($._statement), '}')` serves
-    both `with` and `environment{}` (`grammar.js:190`), where the reference gives `with` a `deflist`
-    of definitions only. The extra admissions are caught by evaluation rather than by the parse.
+**There is no CST.** The token vector and the ref tree carry everything a concrete syntax tree would:
+spans at every syntactic node, trivia in the gaps between sibling spans, and token kinds for
+highlighting. That is why §3's stack has five layers and §5.8 four queries.
+
+**Recovery, concretely.** A synchronization set: `;` at statement level, `}` `)` `]` for nested
+scopes. Where a required token is absent, insert a zero-width `Hole` and continue — §4.5's
+empty-payload case. Recovery is deterministic but *context-dependent*: the same bytes recovered
+inside a `with` block and at file level are reached through different frames, which is why §4.5
+hashes a hole over its children as well as its lexeme.
+
+**No incrementality.** Parsing from scratch is nowhere near the bottleneck, the largest corpus file
+is well under a megabyte, and reparse cost is `O(edited file)` rather than `O(program)` — editing a
+stdlib file reparses that file, not the 56 it sits among. §5.8's early cutoff then stops propagation
+wherever the value ids come out unchanged. Whole-file reparse on every keystroke, and nothing
+downstream needs to know an edit was incremental.
+
+**Why not a derived printer or a derived parser.** Invertible syntax descriptions generate both from
+one description [R9], and FliPpr inverts in the more useful direction, deriving a parser from a
+pretty-printer [R10] — either would make §4.4's PutGet true by construction rather than by property
+test. Both give up error recovery, and a live editor cannot. §4.7's shared precedence table recovers
+the part that matters, keeping the one fact both directions depend on in one place.
+
+**A generated grammar earns its place as a test oracle.** `khiner/tree-sitter-faust` is published,
+independently written, and useful in its own right — it is what a host application highlights `.dsp`
+files with (§13.2) — which makes it a **differential acceptance oracle** for phase 1: parse both
+corpora with both parsers and compare accept/reject, plus agreement on leaf token boundaries.
+Measured, it parses 296/296 of `lib/faust/examples` and 319/341 of `lib/faust/tests`, where the 22
+remaining are correct rejections: twenty-one use multirate syntax (`vectorize`, `serialize`, `#`,
+`[](0)`) appearing nowhere in `faustlexer.l` or `faustparser.y`, so reference Faust 2.85.9 rejects
+them too, and the twenty-second is `error-tests/error24.dsp`, which is `process = :`.
+
+It is an *acceptance* oracle and not a structural one. The two trees differ by design in at least
+five ways — grouping parens anonymous and inline, signed numeric literals lexing as one token where
+the reference reaches a negative through `SUB INT`, `<equation>`/`<diagram>` holding prose rather than
+expressions, `with` accepting a full statement list where the reference gives it a `deflist`, and the
+composition operator unnamed — so comparing shapes fails everywhere on purpose. Accept/reject parity
+across roughly 950 files still catches a lexer or layering mistake for almost nothing, at test time
+rather than runtime.
 
 ### 5.2 The mechanism is Merkle hashing
 
@@ -633,7 +739,13 @@ are recomputed only along the path from the changed node to the root.
 
 Evaluation is memoized on **(value id, environment id)**. Id equality *is* the diff — exact by
 construction, since interning resolves the hash to an id where the value is built (§4.6) — so no
-tree-diffing algorithm is needed anywhere.
+tree-diffing algorithm is needed to decide *what changed*.
+
+**One mechanism, three consumers.** The same hashes drive incremental evaluation here, state identity
+on reload (§8.1), and subtree matching in §4.4's splice alignment. The third is the one place a
+diff-shaped algorithm does appear, and it is the cheap kind: hash-keyed subtree matching over two
+trees held at once, which is how *truediff* [R6] reaches linear-time AST diffing. Nothing has to
+persist across a reparse, unlike the node-identity problem §8.1 declines to solve this way.
 
 The environment component is easy to miss and not optional: the same definition evaluates differently
 under different `with` scopes and parameter bindings, so environments are interned and hashed too.
@@ -685,8 +797,8 @@ it.
 
 **Files are input queries.** `file_text(path)` is a *source* in the query engine's sense: no
 dependencies, a revision, and everything downstream depending on it. Bumping a file's revision
-invalidates exactly its dependents, which is what carries an edit to a library through to every
-program importing it (§5.2).
+invalidates exactly its dependents, carrying an edit to a library through to every program importing
+it (§5.2).
 
 Resolution is itself a query, `resolve(spec, importing_file)`, for two reasons: the search path can
 change at runtime, and a *failed* resolution must be retried when the missing file appears. Caching
@@ -732,14 +844,15 @@ either way; only the size of the invalidated set differs.
 ### 5.8 The query engine
 
 §15 names incremental-equivalence bugs as a risk and §11.5 property 2 as the defence. Both are
-statements about this component, so it is specified rather than left as "a memoized query engine".
+claims about this component, so it gets a specification rather than the label "memoized query
+engine".
 
 **The engine spans only the path-addressed layers, and that is why it is small.** A query is needed
 exactly where a fact is named by something other than its own content — a path. Everything below
 Term is *content-addressed*: `eval` keyed on `(value id, environment id)`, propagation on box ids,
 analyses on signal ids, Plan on its root signal ids plus the build configuration. Those memos need
 no invalidation at all, since an edit produces different ids and therefore different keys — a stale
-entry is unreachable rather than wrong. So the invalidating engine covers five query kinds and
+entry is unreachable rather than wrong. So the invalidating engine covers four query kinds and
 stops:
 
 | Query | Kind | Depends on |
@@ -747,8 +860,7 @@ stops:
 | `file_text(path)` | input | — |
 | `vfs_revision()` | input | — |
 | `resolve(spec, importer)` | derived | `vfs_revision`, and the buffer set and search path it reads |
-| `cst(path)` | derived | `file_text(path)` |
-| `terms(path)` | derived | `cst(path)` |
+| `terms(path)` | derived | `file_text(path)` |
 | `file_env(path)` | derived | `terms(path)`, `resolve(...)`, `file_env(...)` of each import |
 
 `vfs_revision` is one global input bumped when a buffer opens or closes, the search path changes, or
@@ -759,11 +871,11 @@ avoided without per-path negative caching.
 **`import`, `component` and `library` are resolved by this layer, not by the evaluator, and the
 content-addressed claim above depends on it.** All three name a *path*, and resolution belongs with the
 other path-addressed queries so that its results carry revisions. `file_env(path)` resolves every
-spec in the file and the environment it
-produces carries an interned **resolution map**, `{spec -> file_env id}`, alongside its bindings.
-The evaluator reads the map and never touches the VFS. Editing a library changes its `file_env` id,
-hence the map, hence the environment id, hence the memo key — invalidation by key change. The map is
-interned once per file, so §5.2's O(1) environment hash is unaffected.
+spec in the file, and the environment it produces carries an interned **resolution map**,
+`{spec -> file_env id}`, alongside its bindings. The evaluator reads the map and never touches the
+VFS. Editing a library changes its `file_env` id, hence the map, hence the environment id, hence the
+memo key — invalidation by key change. The map is interned once per file, so §5.2's O(1) environment
+hash is unaffected.
 
 **Mechanism: revision stamping with early cutoff.** A global monotonic revision counter, bumped by
 any input write. Each cache entry holds `{result, changed_at, verified_at, deps}`. `get(q)`:
@@ -776,10 +888,18 @@ any input write. Each cache entry holds `{result, changed_at, verified_at, deps}
 
 That is around two hundred lines. Step 3's equality check is the early cutoff, and interning is what
 makes it free: every derived result is an interned id or a small per-file structure, so "equal" is
-integer comparison (§4.6). A whitespace edit changes `file_text` and `cst`, re-derives the same
-`terms` value ids, and `file_env` never recomputes — nothing below the query layer runs at all. That
-is §8.2's "when the new Plan hashes equal to the old, skip the swap", reached several stages earlier
-and for free.
+integer comparison (§4.6). A whitespace edit changes `file_text`, re-derives the same `terms` value
+ids, and `file_env` never recomputes — nothing below the query layer runs at all. That is §8.2's
+"when the new Plan hashes equal to the old, skip the swap", reached several stages earlier and for
+free.
+
+**`terms(path)` returns three things and only one counts for step 3.** Parsing straight to Term
+(§5.1) means one query produces the root value id, the ref tree and the token vector. Ref spans and
+token offsets shift on *every* whitespace edit, so comparing the whole result advances `changed_at`
+each keystroke and the cutoff never fires. **Equality for step 3 is the value component alone.** The
+ref tree and tokens are rebuilt regardless and reach the view layer through §13.3's snapshot rather
+than through the cutoff. This is the engine's one hand-written equality rule, and §15 names it as the
+first place to look when property 2 fails.
 
 **Two cycle detectors at two layers, deliberately not unified.** An import cycle is a query cycle:
 an in-flight stack detects re-entry, the re-entrant call returns an empty environment plus §5.6's
@@ -810,8 +930,8 @@ environments. These are the id spaces quoted by things that outlive a compile: d
 value ids (§9), `TermRef` entries hold them (§4.6), and every content-addressed memo key is built
 from them. Growth is bounded by *distinct terms ever typed*, `O(depth)` values per keystroke, so a
 long session adds tens of megabytes on top of the one-time cost of interning the standard library
-(56 files, 2.4 MB). Not collected: §8.1's state identity depends on ids staying put, which is what
-an append-only intern table provides.
+(56 files, 2.4 MB). Not collected: §8.1's state identity depends on ids staying put, and an
+append-only table never moves them.
 
 **Droppable arenas — rebuildable caches whose ids are valid only within one generation:**
 
@@ -825,8 +945,8 @@ standard-library evaluation, which is why the two drop independently: reclaiming
 should not throw away the eval cache §5.2 exists to fill.
 
 **One invariant makes this safe: nothing outside an arena holds an arena id.** Query results hold
-text, CSTs, Term value ids, ref trees and environment ids. Diagnostics hold value ids. The running
-`Instance` holds a state block keyed by §8.1's exact and shape **hashes**, not ids, so state
+text, token vectors, Term value ids, ref trees and environment ids. Diagnostics hold value ids. The
+running `Instance` holds a state block keyed by §8.1's exact and shape **hashes**, not ids, so state
 migration survives a generation boundary untouched. "Query" versus "content-addressed memo" turns
 out to be the same line as "permanent" versus "droppable".
 
@@ -874,7 +994,7 @@ of §4.5, applied on the way to Box:
 |---|---|
 | `BinOp(op, l, r)` | `Seq(Par(l, r), Prim(op))` |
 | `Delay1(x)` | `Seq(x, Prim(mem))` |
-| `Neg(x)` | `Seq(Par(Int 0, x), Prim(-))`, or a negative literal when `x` is one (§4.5) |
+| `NegIdent(name)` | `Seq(Par(Int 0, Ident(name)), Prim(-))` — never a literal, since a signed literal is an `Int`/`Real` and never a `NegIdent` (§4.5) |
 | `Definition(name, clauses)` | body, lambda, or `case` — `makeDefinition`'s four shapes (§4.5) |
 | `LetRec(body, recdefs, wheredefs)` | a `with` holding a recursive body definition and one projection per name |
 | `Route(i, o, ∅)` | `Route(i, o, (0, 0))` |
@@ -891,9 +1011,8 @@ gets a purpose-built `.dsp` the way §11.3's do:
 - **`component(f)` and `library(f)` evaluate in a fresh, empty environment** (`eval.cpp:463`, `:471`)
   — neither sees the importing scope. `component` evaluates that file's `process`, `library` yields
   the file as an environment value. The distinction is visible only in programs that shadow a stdlib
-  name, which is what the probe targets. Both reach the file through
-  §5.8's resolution map rather than through the VFS, which is what keeps evaluation a pure function of
-  interned ids.
+  name, so the probe targets exactly that. Both reach the file through §5.8's resolution map rather
+  than the VFS, keeping evaluation a pure function of interned ids.
 - **`.` resolves in the captured environment, not the current one** (`:435-452`). Lexical, and the
   reason `environment{}` and `library()` are usable as first-class values at all.
 - **`with` sees the enclosing scope**, and `import` inside a `with` block is expanded before the
@@ -1137,8 +1256,8 @@ value, `rdtable` consumes one, so a read of an `rwtable` *depends* on the write 
 emission places the write first within the sample with no ordering rule of its own — exactly the
 reference's semantics (§11.3). Table writes are placed by variability like everything else, so a
 constant-rate write lands in the init band rather than the loop. Index clamping for tables and
-soundfiles belongs here too, as a graph rewrite rather than backend code, which is what keeps the two
-tiers and the `.sig` comparison honest; §11.3 gives the forms and the insertion condition.
+soundfiles belongs here too, as a graph rewrite rather than backend code, keeping the two tiers and
+the `.sig` comparison honest; §11.3 gives the forms and the insertion condition.
 
 **Delay lines initialize to zero, except under `prefix`.** `prefix(x, y)` yields `x` at time 0 and
 `y` delayed by one sample thereafter — a one-sample delay with a caller-supplied initial value. Plan
@@ -1214,12 +1333,13 @@ that runs all three. Only `constants` executes the init band — resetting contr
 are not computations in it.
 
 `compute` has no post-loop step, deliberately: §6.3's guarded instructions store straight to their
-state fields, which is what the reference's *Post compute DSP* achieves by a longer route. Table
-fills land in `constants` rather than the class-level entry point the reference uses (§11.1).
+state fields, reaching by construction what the reference's *Post compute DSP* takes a longer route
+to. Table fills land in `constants` rather than the class-level entry point the reference uses
+(§11.1).
 
 - **Sample rate** enters exclusively through `constants`. Faust's `fSamplingFreq` is not an external
-  C symbol here (§7.4) — it is a runtime-provided value feeding the init band, which is what makes
-  `ma.SR` work.
+  C symbol here (§7.4) — it is a runtime-provided value feeding the init band, where `ma.SR` reads
+  it.
 - **A sample-rate change is a re-`constants`, not a recompile.** `de.delay(SR/10, x)` looks like a
   rate-dependent allocation, but delay lines are sized from the *interval* of the delay index (§6.3),
   and the standard library clamps `ma.SR` to `[1, 192000]` — which is why `max(1.0f, fSamplingFreq)`
@@ -1249,9 +1369,8 @@ uses double for both because the oracle does.
 
 **Floating-point environment.** The audio thread runs with flush-to-zero and denormals-are-zero
 enabled. Recursive filters decay into denormal territory constantly, and on most hardware that costs
-one to two orders of magnitude in throughput.
-Both are *per-thread* control-register settings, established on the audio thread at startup, not in
-`main`.
+one to two orders of magnitude in throughput. Both are *per-thread* control-register settings,
+established on the audio thread at startup, not in `main`.
 
 The testing consequence runs the other way. The reference emits no flush-to-zero code by default
 (`-ftz 0`, `global.cpp:457`) and its impulse harness is plain C++, so the oracle runs *without* FTZ
@@ -1282,8 +1401,8 @@ silently opens a vgroup named `Gain`. Match the case-insensitivity and the fall-
 **Labels are also evaluated, not copied.** `"Gain %i"` inside `par(i, 8, ...)` becomes eight distinct
 labels: the `%ident`, `%{ident}` and width-padded `%2ident` forms are substituted during
 *evaluation*, the identifier evaluated as an integer in the enclosing environment
-(`evaluate/eval.cpp:934-1022`).
-The padding is `printf` field width, not zero-fill: the table is `{"%d", "%1d", "%2d", "%3d", "%4d"}`
+(`evaluate/eval.cpp:934-1022`). The padding is `printf` field width, not zero-fill: the table is
+`{"%d", "%1d", "%2d", "%3d", "%4d"}`
 indexed by the digit in `%<n>ident` clamped to `0..4`, so `%2i` at `i = 3` yields `" 3"`, with a
 leading space. That makes it §6.1's job, not propagation's, and it is load-bearing twice — it is how
 iterated widgets get distinct paths at all, and §8.1 keys UI state migration on those paths, so a
@@ -1383,8 +1502,8 @@ not reset the slider.
 Give every state field a **stable identity derived from the Signal node that owns it** — not from
 allocation order, which shifts on every edit. Because Signal nodes are hash-consed from
 Merkle-hashed terms, an unchanged filter keeps its identity automatically, and that identity survives
-unrelated edits elsewhere in the file. That last clause is what forces §4.6's split: it holds only
-because the hash is provenance-free.
+unrelated edits elsewhere in the file. Surviving unrelated edits is what forces §4.6's split: it
+holds only because the hash is provenance-free.
 
 The node hash alone is not enough, and taking it alone defeats the example above. State for a
 feedback network lives on its `Rec` node, whose Merkle hash covers the whole body, so editing a gain
@@ -1395,13 +1514,13 @@ So every field carries a second key: a **shape hash**, the same Merkle hash comp
 literal payloads normalized away. Editing a constant leaves it alone; editing structure changes both.
 
 **This is the alignment problem**, which the literature splits into *keyed* alignment, on a stable
-identifier, and *similarity* alignment, on resemblance (Barbosa, Cretin, Foster, Pierce et al.,
-*Matching Lenses*, 2010). The three passes below are keyed, similarity, fresh. Similarity is right
-for the second: an anonymous subterm carries no stable key, and once an edit restructures the graph
-there is no recoverable fact about which old delay line a new one should inherit, so the pass decides
-a behaviour rather than approximating an answer. Editing needs none of it — every edit carries the
-ref it applies to (§4.3) — and migration's worst case is one field holding a same-shaped neighbour's
-history, truncated by the length rule below and gone within the filter's own decay.
+identifier, and *similarity* alignment, on resemblance (*Matching Lenses* [R11]). The three passes
+below are keyed, similarity, fresh. Similarity is right for the second: an anonymous subterm carries
+no stable key, and once an edit restructures the graph no recoverable fact says which old delay line
+a new one should inherit, so the pass decides a behaviour rather than approximating an answer.
+Editing needs none of it — every edit carries the ref it applies to (§4.3) — and migration's worst
+case is one field holding a same-shaped neighbour's history, truncated by the length rule below and
+gone within the filter's own decay.
 
 On reload, build the new state layout, then match new fields against old ones in three passes:
 
@@ -1419,6 +1538,13 @@ On reload, build the new state layout, then match new fields against old ones in
    candidate.** Byte rather than tree distance, since the ref tree is rebuilt on every reparse and
    its shape shifts with the edit while offsets do not. Ties break toward the lower offset, making
    the result independent of traversal order (§5.5).
+
+   A structural diff is the other answer — *truediff* [R6] gives nodes an identity surviving an
+   edit — declined here while adopted in §4.4, because the two problems hold different things.
+   §4.4's splice has both trees at once, so hash matching needs nothing to persist; migration
+   compares a layout built a revision ago against a ref tree rebuilt since, and the identity relating
+   them is what §5.1 gives up by reparsing whole files. Byte offsets do survive, so the pass uses
+   them.
 3. **No match** — initialize fresh.
 
 Within a match, a field of a different length (a delay line resized) copies the common window
@@ -1445,8 +1571,8 @@ on the audio thread.
 State preservation alone still clicks when the graph changes structurally, so cross-fade over a few
 milliseconds between old and new instances, running both during the overlap. Without it, "live" is
 unpleasant regardless of latency. The fade is **linear, with weights summing to one**, so two
-instances producing the same signal sum to exactly that signal — which is what §11.5 property 4
-asserts, and what an equal-power fade would raise by as much as 3 dB. And when the new Plan hashes equal to the old,
+instances producing the same signal sum to exactly that signal. §11.5 property 4 asserts it; an
+equal-power fade would raise it by as much as 3 dB. And when the new Plan hashes equal to the old,
 skip the swap entirely: an edit that does not change the compiled program costs nothing and stays
 exactly sample-identical.
 
@@ -1494,11 +1620,18 @@ program of §8.3 is the common case, and it has to stay responsive rather than a
 - **Errors are local.** An explicit `Error` node in Box and Signal propagates through the graph. A
   broken definition poisons itself and its dependents; everything else still compiles. Whether audio
   keeps running depends on whether `process` reaches the poisoned region, and §8.3 gives the rule.
-- **Partial trees still work.** tree-sitter's error recovery turns a half-typed expression into a
-  tree with an error node rather than a failure, and the rest of the file still renders as boxes. The
-  representation is §4.5's `Hole`: it keeps its recognizable children, so recovery inside a broken
-  expression still produces boxes, and it prints back verbatim. Its `Error` box has unconstrained arity
-  (§6.1), which is what keeps one typo from producing a diagnostic per enclosing composition.
+- **Partial trees still work.** §5.1's recovery turns a half-typed expression into a `Hole` rather
+  than a failure, and the rest of the file still renders as boxes. The hole keeps the children its
+  frame had already built, so recovery inside a broken expression still produces boxes, and it
+  prints back verbatim. Its `Error` box has unconstrained arity (§6.1), so one typo yields one
+  diagnostic rather than one per enclosing composition. **No editor state is meaningless** — the
+  property Hazel's typed holes guarantee for a full language [R12], reached here by holes plus
+  unconstrained-arity `Error`.
+- **The program with a hole in it does not run.** Hazel evaluates *around* holes, producing
+  indeterminate results so an incomplete program still has behaviour. Declined: running around a hole
+  means choosing a signal for it, and every choice — silence, pass-through — is a program the user
+  did not write, played into their monitors at full gain. §8.3's rule, hearing the last good program,
+  is the better answer for a DSP, and deliberate rather than a limitation.
 - **Divergence is bounded too.** `foo = foo;` and its subtler relatives make evaluation
   loop forever, and a batch compiler can afford to spin until someone kills it. A live one cannot:
   the compile thread stops answering and every later keystroke queues behind it, which reads as the
@@ -1557,8 +1690,8 @@ Simplicity is bought. Naming the price is what lets the trades be revisited know
 | Polyphony | Voice allocation, note routing, the `effect` convention | Addable purely above §7, since it is N instances plus a scheduler — but it costs two of the four sections of every reference `.ir` (§11.1) |
 | Compiling C for `ffunction` | A C toolchain dependency | Foreign code must be registered or `dlopen`able (§7.4) |
 
-Interval analysis is the one cut that is partial rather than total, so it deserves a note. The
-reference covers every primitive to a high standard because fixed-point support demands it. Without
+Interval analysis is the one cut that is partial rather than total. The reference covers every
+primitive to a high standard because fixed-point support demands it. Without
 fixed-point, intervals matter only where they change generated code — delay line sizing, and the
 clamping of table and soundfile indices — so elsewhere the rules can widen freely, costing at most
 code quality and improvable later on demand. Only elsewhere, though: on the arithmetic that reaches
@@ -1842,8 +1975,8 @@ well documented. What happens to the signals is left implicit:
   `static_cast` and LLVM `fptosi` both, with `-cir` off, `global.cpp:514`). We **define** it, and not
   by invention: the definition is what `-cir` itself generates,
   `int(min(2147483647.0, max(x, -2147483648.0)))` (`transform/sigPromotion.cpp:671`), plus NaN to 0,
-  which `-cir` leaves open. Both tiers implement that one definition, which is what §11.5 property 3
-  checks; the reference's own backends diverge here.
+  which `-cir` leaves open. Both tiers implement that one definition and §11.5 property 3 checks they
+  agree; the reference's own backends diverge here.
 
   **It lives in both backends' emission, not in the graph.** `-cir` implements it as a signal
   rewrite, but `gCheckIntRange` is `false` by default, so the graph we compare against has no clamp
@@ -1915,11 +2048,19 @@ diagnostics differ from the reference's by design.
 Six invariants the reference compiler has no analogue for, each cheap to test and each protecting
 something the product depends on:
 
-1. **Printer fidelity — the quotient-lens laws of §4.4** over the whole corpus, each with its stated
-   quantifier: CST fidelity, `text(cst(src)) == src`, on every file; PutGet,
-   `value(parse(print(t))) == value(t)`, for every hole-free term; GetPut, byte-identity on the
-   canonically parenthesized subset; and the canonizer law, `splice` idempotent byte-exactly over
-   every ref. Needs the splice primitive, which is why §14 puts it in phase 1.
+1. **Splice fidelity — the retentive-lens laws of §4.4** over the whole corpus, each with its stated
+   quantifier: token coverage, the token vector tiling every file byte-exactly; PutGet,
+   `value(parse(print(t))) == value(t)`, for every hole-free term; **Retentiveness**, that every
+   node whose value id survives an edit retains its original bytes including interior trivia, with
+   Hippocraticness (an identity edit is byte-identical) as its root case; and normalization
+   idempotence, `splice` idempotent byte-exactly over every ref. Needs the splice, which is why §14
+   puts it in phase 1.
+
+   Retentiveness is worth generating cases for rather than sampling: for every ref in every corpus
+   file, rewrite that subtree to itself, to a variant with one literal changed, and with one stage
+   inserted, then assert every *other* matched node is byte-identical and that comments inside the
+   rewritten subtree survive. The third case is the one a whole-subtree reprint fails, and the one a
+   user would otherwise find by losing a comment.
 2. **Incremental equivalence.** Apply a random edit, then compare the incrementally recompiled
    result against a from-scratch compile of the edited text. They must be identical — the invariant
    a memoizing compiler most easily breaks.
@@ -1966,13 +2107,15 @@ so a regenerated `.box` carries `declare version "2.87.2"`, a line §11.1 drops.
 **Build: CMake.** Decided by LLVM, which ships `find_package(LLVM)` and expects it; every alternative
 means hand-rolling discovery for the one dependency that is hardest to discover.
 
-**Dependencies, deliberately few, and every one a submodule under `lib/`:** tree-sitter's C runtime,
-the `tree-sitter-faust` grammar (§5.1), and doctest for unit tests, chosen on compile speed. The
-application layer adds three more — SDL3, Dear ImGui and miniaudio (§13.1) — and nothing under `src/`
-links any of them. The conformance and property suites are their own binary, with flags for which
-corpus, which level, and regenerate or compare. Fuzzing (§11.6) uses libFuzzer, built into clang.
-LLVM is optional and confined to the release backend behind an interface the interpreter also
-implements.
+**Dependencies, deliberately few, and every one a submodule under `lib/`:** doctest for unit tests,
+chosen on compile speed, and `lib/faust` as an oracle that is never linked. That is the whole of
+`src/`'s dependency set — §5.1's parser is ours, so there is no parser runtime to vendor. The
+application layer adds SDL3, Dear ImGui and miniaudio (§13.1), and nothing under `src/` links them.
+`tree-sitter-faust` appears only under `test/` as §5.1's acceptance oracle, and a host is free to
+keep using it for highlighting (§13.2). The conformance and property suites are their own binary,
+with flags for which corpus, which level, and regenerate or compare. Fuzzing (§11.6) uses libFuzzer,
+built into clang. LLVM is optional and confined to the release backend behind an interface the
+interpreter also implements.
 
 **The embedded standard library is a generated translation unit.** A CMake step walks
 `lib/faust/libraries/` **recursively** and emits one `.cpp` of `std::string_view` constants plus a
@@ -2004,15 +2147,15 @@ The decision is **embed, unmodified, and ship the provenance**:
   license is the fix, worth doing before any commercial distribution, and not something this design
   can settle unilaterally.
 
-Not embedding is the alternative, and it costs filesystem-free operation, the absent install step
-and version-skew immunity — three of the four reasons embedding is here (§5.6). Not worth paying to
-avoid a notice file.
+Not embedding costs filesystem-free operation, the absent install step and version-skew immunity —
+three of the four reasons embedding is here (§5.6). Not worth paying to avoid a notice file.
 
 ```
 faustlens/
   src/
-    syntax/      CST wrapper, Term values + refs, interning, Merkle
-                 hashing, provenance side tables, printer               (§4.6)
+    syntax/      lexer, recursive-descent + Pratt parser, Term values
+                 + refs, interning, Merkle hashing, provenance side
+                 tables, printer, splice alignment            (§4.4, §4.6, §5.1)
     files/       overlay VFS, import resolution, embedded stdlib          (§5.6)
     eval/        evaluator, pattern matching, environments, memo cache
     box/         Box graph, arity
@@ -2040,8 +2183,8 @@ faustlens/
     fuzz/
   lib/           every submodule
     faust/               oracle only, never linked                            (§11)
-    tree-sitter/         C runtime
-    tree-sitter-faust/   adopted upstream grammar                           (§5.1)
+    tree-sitter/         test only: acceptance-oracle runtime                (§5.1)
+    tree-sitter-faust/   test only: acceptance oracle                        (§5.1)
     sdl3/ imgui/ miniaudio/   app layer only                                (§13.1)
     doctest/             unit tests
 ```
@@ -2079,23 +2222,37 @@ The escape hatch, should SDL3's emscripten port disappoint for being newer than 
 `imgui_impl_metal` natively and WebGPU on web. No native GPU dependency at all, since Metal is in the
 SDK, macOS-only native, and no shared platform layer.
 
-### 13.2 The text pane is ours, not a widget
+### 13.2 The text buffer contract
 
 The one app-layer decision with consequences, and §4.3 already forced it. Text is the source of
 truth, undo is a text-level operation, the buffer *is* §5.6's layer-1 open buffer, and the compiler
-is a co-author of it through splices. An editor widget — ImGuiColorTextEdit and its forks — owns the
-buffer, owns the undo stack, and speaks line and column: three mismatches against a design where all
-three belong to someone else. Draw the pane against `ImDrawList` and own the buffer.
+is a co-author of it through splices.
 
-The contract is small and set entirely by sections above: byte offset to screen position and back
-(§4.3's cursor linking), arbitrary byte-range highlight sets (selection, diagnostics, hole extents),
-splices that preserve the cursor and push one undo entry, and highlighting driven from the CST rather
-than from a second lexer.
+**The requirement is an interface, not ownership.** Drawing our own editor satisfies it but is not
+it. The requirement is four things:
 
-**Storage is a flat `std::string` plus a line-start index.** No rope, no piece table: the largest
-corpus file is well under a megabyte, edits are a `memmove`, and a contiguous buffer is exactly what
-`ts_parser_parse_string` wants — which §5.1 permits, having already declined to depend on incremental
-reparse.
+- **Byte-addressed splices.** The compiler hands back an edit script — a set of disjoint
+  `{span, replacement}` pairs (§4.4) — applied as one undoable unit that preserves the cursor.
+- **Text-level undo.** Everything below text is derived (§4.3), so undo restores a previous text
+  state and the rest re-derives. Nothing in Term, Box or the box view participates.
+- **Byte-offset cursor mapping**, both directions, for §4.3's cursor linking.
+- **Readable buffers.** §5.6's overlay layer 1 needs the current bytes of any open buffer, so the
+  host exposes `read_buffer(path)` rather than the compiler holding them.
+
+A host already owning a text buffer with byte-range edits and an undo stack meets all four
+unchanged, the common case when FaustLens is embedded. What the contract rules out is an editor
+*widget* owning the undo stack and speaking line and column — ImGuiColorTextEdit and its forks —
+since two of the four then belong to something that does not know about splices.
+
+**Highlighting comes from §5.1's token vector**, through §13.3's snapshot, so one source of truth
+says what the text means. A host with an existing tree-sitter highlighting pipeline can keep using it
+for `.dsp` unchanged — a presentational path with no semantic coupling above it — and migrate later
+to gain what a grammar cannot supply: unbound names, hole extents, error spans, and statements greyed
+out by a precision filter (§4.5).
+
+**Standalone storage is a flat `std::string` plus a line-start index.** No rope, no piece table: the
+largest corpus file is well under a megabyte, edits are a `memmove`, and §5.1 reparses whole files
+anyway.
 
 ### 13.3 The view snapshot
 
@@ -2105,16 +2262,21 @@ reparse.
   query.
 - Edits post to the queue §5.8's engine already drains; the UI does not wait for the result.
 - The compile thread publishes an immutable **view snapshot** after each drain:
-  `{revision, per-file ref trees, diagnostic set, UI tree}`. The UI renders the newest one, which may
-  lag the buffer by one compile. At sub-millisecond parse and evaluate that is invisible, and it is
-  the same divergence §8.3 already makes visible for audio.
-- Syntax highlighting comes from the snapshot too, so one source of truth says what the text means.
+  `{revision, per-file ref trees, per-file token vectors, diagnostic set, UI tree}`. The UI renders
+  the newest one, which may lag the buffer by one compile. At sub-millisecond parse and evaluate that
+  is invisible, and it is the same divergence §8.3 already makes visible for audio.
+- Highlighting reads the token vectors out of that snapshot (§13.2), so nothing re-lexes the buffer.
 
 **A snapshot may hold only permanent ids.** Term value ids and ref trees are (§5.9), so the
 structural view is safe by construction — it renders Term. §4.2's evaluated view is not: expanding a
 node reads the eval arena, and arenas are dropped whole on idle. So expansion copies a materialized
 render list out at publish time rather than holding box ids across frames, which is §5.9's "nothing
 outside an arena holds an arena id" holding for the UI as it does for the running instance.
+
+**Each editable element of that render list carries the Term `value_id` it traces back to**, resolved
+at publish time through the `signal id -> value id` side table while the arena is alive. §4.2's
+trace-back tier consumes it, and taking it at publish time is what survives an arena drop. Elements
+with no unique originating value carry none — precisely the ambiguous case §4.2 hands to the user.
 
 ### 13.4 The box view
 
@@ -2124,11 +2286,24 @@ for `<:` and `:>`, a return path for `~` — and computes its bounding box botto
 pass, memoized per value id. Wires only ever connect siblings inside one composition node, so there
 is no edge routing, no crossing minimization, and no layout solver.
 
-**The deeper reason is that it keeps §4.4's lens asymmetric.** Everything on screen is a function of
-the term, so the diagram holds no private information. A transformation whose two sides both hold
-private state is a **symmetric lens** (Hofmann, Pierce & Wagner, POPL 2011), needing a persistent
-**complement** for what each side knows that the other does not, kept consistent under every edit.
-Derived layout removes the complement rather than managing it.
+**The deeper reason is that it keeps §4.4's lens asymmetric.** A transformation whose two sides both
+hold private state is a **symmetric lens** [R13], needing a persistent **complement** for what each
+side knows and the other does not, kept consistent under every edit. Derived layout removes the
+complement rather than managing it.
+
+**The complement is empty because nothing is persisted — a rule the view obeys, not a fact about
+layout.** Selection, expansion and scroll position are on screen and are not functions of the term;
+they would be a complement if they outlived an edit. Two need a stated key to ensure they do not:
+
+- **Selection** is re-resolved from a byte offset after every reparse, through §4.3's cursor-to-box
+  path. Nothing carries a ref across a revision.
+- **Expansion** keys on **(value id, environment id)** — §5.2's eval memo key, which determines the
+  expanded content. Not a ref, which shifts on every keystroke, and not a value id alone, which is
+  shared: occurrences under *different* environments evaluate differently and must not share
+  expansion state, while those under the same environment expand identically and may.
+
+Save any of it to disk and the complement stops being empty. That, not the absence of an `x` and a
+`y`, is what "no coordinates" buys.
 
 So there is **no node-editor library.** `imgui-node-editor` exists to manage free-positioned graphs
 with user-owned coordinates and persisted layout, exactly the state this refuses to have: nothing to
@@ -2137,15 +2312,16 @@ few hundred lines of shape primitives covers it.
 
 Interaction, mapping onto §4.3's edit catalogue:
 
-- **Selection is a ref**, and it drives both panes (§4.3). Arrow keys walk the term structurally —
-  parent, child, sibling — which is the reason to have a structural view at all.
+- **Selection is a ref** within a revision, and it drives both panes (§4.3); across a revision it is
+  the byte offset that persists, per the rule above. Arrow keys walk the term structurally — parent,
+  child, sibling — the reason to have a structural view at all.
 - **Editing is selection plus a key.** Delete removes a stage. Typing `:` `,` `<:` `:>` `~` wraps the
   selection in that composition. Enter on a literal or a UI parameter opens an inline field scoped to
   that node, committing on blur. A click in the gap between two stages opens a completion popup and
   inserts. Rewiring a `route` is the one genuine drag, between port endpoints inside the node.
 - **Every one of these is a term rewrite plus a splice**, so the text pane visibly changes on each and
-  the box view has no private edit path. Keyboard-first, with the mouse for navigation and selection,
-  which is what derived layout affords.
+  the box view has no private edit path. Keyboard-first, with the mouse for navigation and selection
+  — the interaction derived layout affords.
 - **Expansion is in-place.** A node expands to show its evaluated form inline, badged read-only, and
   collapses back, reusing the structural view's selection model and linking rules for a view entered
   to answer one question and then left.
@@ -2190,31 +2366,35 @@ The renderer swap of §13.1 is the easy part. What decides whether a browser bui
 
 Each exits on a passing test suite, not a judgment call.
 
-**Phase 1 — Skeleton and oracle.** Vendor `tree-sitter-faust` and close its three gaps (§5.1): CST
-fidelity over the corpora, an error-recovery corpus of mid-keystroke fragments graded by hole extent,
-and the node-granularity audit against §4.5. The §4.5 Term inventory — `Hole` included — as §4.6's
-value and ref layers, with interning, Merkle hashing, the provenance side tables, the printer, and the
-**splice primitive** (`print_in_context`, then replace a ref's byte range) — a dozen lines over the
-printer, and property 1's GetPut and canonizer laws cannot be stated without it. The overlay VFS and
-embedded standard library (§5.6, §12) with its notice step, since nothing in the corpus parses
-without resolving `import`. Oracle harness: build reference Faust at `regular.cmake` + `FIR_BACKEND`
-and regenerate all five levels at `-double` per §11.1, against the `faustlibraries` checkout of
-§11.4.
-*Exit:* §11.5 property 1 over the 319 test files reference Faust accepts, all 296 examples, and
-faustlibraries. The other 22 are pinned as *failures* (§5.1), where a parse signals grammar drift.
-Plus the hole-extent property over the truncation corpus, and a regenerated reference set matching
-the shipped files wherever precision does not differ. Two cheap drift tripwires land here too: a test
-asserting `grammar.js`'s `PREC` block and operator spellings against §4.7's table row for row — the
-one fact written down in three places — and §4.5's `Hole` rule 4 failing the build on any corpus
-file.
+**Phase 1 — Parser, splice and oracle.** The §5.1 lexer and parser: mode-stacked lexer emitting a
+tiling token vector, recursive descent with a Pratt core over §4.7's shared precedence table, and
+panic-mode recovery building §4.5's `Hole` at the point of failure. The §4.5 Term inventory — `Hole`
+included — as §4.6's value and ref layers, built in that same pass, with interning, Merkle hashing
+and the provenance side tables. Then the printer, `print_in_context`, and the **splice**: §4.4's
+alignment of an old ref tree against a new value tree, emitting a disjoint edit script. The splice is
+this phase's deliverable — property 1's Retentiveness cannot be stated without it, and every later
+phase's editing rests on it. The overlay VFS and embedded standard library (§5.6, §12) with its
+notice step, since nothing in the corpus parses without resolving `import`. Oracle harness: build
+reference Faust at `regular.cmake` + `FIR_BACKEND` and regenerate all five levels at `-double` per
+§11.1, against the `faustlibraries` checkout of §11.4.
+*Exit:* §11.5 property 1 — token coverage, PutGet, Retentiveness with its generated edit cases, and
+normalization idempotence — over the 319 test files reference Faust accepts, all 296 examples, and
+faustlibraries. The 22 remaining test files are pinned as *rejections* (§5.1), where an accept
+signals the parser has drifted past `faustparser.y`. Plus the **hole-extent property** over the
+truncation corpus: every hole's span lies inside the `;`-delimited statement containing the
+truncation. It is a construction rather than a measurement, so a failure is a bug in the
+synchronization set and has a fix. Plus §5.1's **differential acceptance oracle** against
+`tree-sitter-faust` — same accept/reject verdict and same leaf token boundaries across both corpora —
+and a regenerated reference set matching the shipped files wherever precision does not differ.
 
 **Phase 2 — Evaluation.** The §6.1 evaluator: abstraction, pattern matching, `with`/`letrec`/
 `environment`, `import`/`component`/`library`, iterations, metadata, label substitution (§7.2). Box
-graph with arity checking. Memoization and the query engine of §5.8 — the five queries, early cutoff,
-the resolution map, the import-cycle rule. The §6.1 probes land here too, including the ones for its
-open questions — they are how those get settled, so they are phase work rather than follow-up. Then
-the first app work: the §13.2 text pane and §13.3 snapshot, buildable the moment ref trees and
-diagnostics exist, and the debugging instrument for every phase after.
+graph with arity checking. Memoization and the query engine of §5.8 — the four queries, early cutoff
+including its value-component-only equality rule, the resolution map, the import-cycle rule. The
+§6.1 probes land here too, including the ones for its open questions — they are how those get
+settled, so they are phase work rather than follow-up. Then the first app work: §13.2's buffer
+contract with a pane satisfying it, and §13.3's snapshot, buildable the moment ref trees, token
+vectors and diagnostics exist, and the debugging instrument for every phase after.
 *Exit:* `.box` isomorphism on all 93 reference `.box` files; whole corpus evaluates; editing a
 library file invalidates exactly its dependents. Plus, in the pane, a diagnostic marked at *every*
 occurrence of its value id and a cursor that resolves to the innermost ref — §4.6's two ref-tree
@@ -2225,8 +2405,7 @@ normalization (canonical ordering plus constant folding — the simple version, 
 the soundfile read clamp. The parser for the reference `.sig` notation (§11.1) lands here, since
 nothing in this phase can be checked without it. Also the **read-only box view** (§13.4): derived
 layout and selection linking, no editing. It is tooling — reading the graph being propagated pays for
-itself here and in phase 4 — and it tests §13.4's premise against the live backend, which is what
-§15 asks for.
+itself here and in phase 4 — and it tests §13.4's premise against the live backend, as §15 asks.
 *Exit:* `.sig` isomorphism on all 93 reference `.sig` files, against the unnormalized dump first and
 the normalized one second, plus the `norm*`/`math_simp` probes. Where isomorphism fails only by
 association order, record it and defer to phase 5, where `filesCompare` decides whether it matters.
@@ -2258,12 +2437,15 @@ editor spends most of its time not compiling.
 *Exit:* §11.5 properties 2 and 4. Measured edit-to-audio latency on a `zita_rev1`-scale program, with
 the profile broken out by phase to confirm where time actually goes.
 
-**Phase 7 — Bidirectional editing.** The §4.3 edit catalogue as term rewrites over phase 1's splice
-primitive, driven by §13.4's interaction model, plus expand and materialize. Everything that
-*chooses* a rewrite; the mechanism that applies one already exists and is already under property 1,
-and the view that displays one has been up since phase 3.
-*Exit:* every structural edit on every reference program produces correct localized diffs, and
-identity edits produce byte-identical source.
+**Phase 7 — Bidirectional editing.** The §4.3 edit catalogue as term rewrites over phase 1's splice,
+driven by §13.4's interaction model, plus expand and materialize. Everything that *chooses* a
+rewrite; the mechanism that applies one already exists under property 1, and the view that displays
+one has been up since phase 3. §4.2's trace-back tier lands here or not at all: the `value_id` per
+editable render-list element (§13.3), the unique-provenance splice, and the ambiguity prompt. It is
+the one item the design stands without, so it is first to cut if the phase runs long.
+*Exit:* every structural edit on every reference program produces correct localized diffs — measured
+as Retentiveness, that every unchanged node keeps its bytes and its comments — and identity edits
+produce byte-identical source.
 
 **Phase 8 — LLVM tier.** LLVM IR emission, ORC JIT, ahead-of-time export.
 *Exit:* §11.5 property 3 across the corpus; performance measured against reference Faust's C++
@@ -2280,6 +2462,21 @@ worth having on its own. Phases 6 and 7 are the product.
 than by a speculative port, which makes the phase 5 impulse run load-bearing: it is the only thing
 standing between a simple normalizer and silent numeric drift.
 
+**Precedence errors surface a phase late.** One table serving both the parser and the printer (§4.7)
+means a *consistently wrong* reading of `faustparser.y` passes property 1, since PutGet round-trips
+fine under uniformly wrong precedence. Phase 2's `.box` isomorphism catches it, because wrong
+precedence changes the evaluated diagram. The mitigation is to know that phase 1's green suite is not
+evidence about precedence and to read `.box` failures in that light. The alternative — a second
+derivation to check against — costs the four obligations §5.1 prices.
+
+**The parser is a build item, not a dependency.** §5.1 puts roughly fifteen hundred lines that must
+agree with `faustparser.y` exactly on phase 1's critical path. Three things hold it down: §4.5 and
+§4.8 are already the specification, so the work is transcription; the acceptance oracle checks it
+against an independently written grammar over roughly 950 files; and the four levels and fifteen
+precedence rows are one table rather than scattered rules. The residual exposure is the mdoc lexer
+modes, which the corpus exercises thinly — worth hand-written cases rather than trusting corpus
+coverage.
+
 **The reference implementation is the specification.** Faust's published papers cover the algebra but
 not the evaluator's corner cases — pattern-match ordering, `with` scoping interactions, first-class
 `environment` capture, shadowing in `letrec`. Those get resolved by reading
@@ -2291,9 +2488,10 @@ is known before phase 6 depends on it.
 
 **Incremental equivalence bugs.** Memoizing compilers silently serve stale results. Property 2 and
 edit-sequence fuzzing are the defense, and both need to exist from phase 2 rather than be added
-later. §5.8 narrows the exposure structurally — only the five path-addressed queries can go stale,
+later. §5.8 narrows the exposure structurally — only the four path-addressed queries can go stale,
 since everything below Term is keyed on content — so the surface property 2 has to cover is small
-enough to reason about directly.
+enough to reason about directly. The one hand-written rule in that engine, `terms(path)` comparing on
+its value component alone (§5.8), is the place to look first when property 2 fails.
 
 **Label-path threading.** Faust encodes its UI hierarchy in labels rather than in the graph, through
 three mechanisms that all thread past code with nothing else to do with the UI (§7.2). Getting any
@@ -2324,64 +2522,133 @@ are known to be pleasant or not long before anything depends on them.
    reference's FIR plus per-backend emitters.
 5. **Two tiers, LLVM optional.** The edit loop must never wait on LLVM; a release build must not
    compromise on speed. Different problems, different answers.
-6. **Merkle hashing, not tree diffing — over interned values, with provenance beside them.** Id
-   equality is an exact diff. Terms split into provenance-free interned values and per-file refs
-   holding the byte ranges, so the hash covers structure alone and every filter's state survives a
-   stray newline (§4.6). tree-sitter is kept for error recovery and trivia, and the grammar is
-   adopted (§5.1).
-7. **Errors are local values, from the parse down.** Every phase emits diagnostics and continues.
-   Unparsable text is a `Hole` in Term that keeps its recognizable children and prints back verbatim
-   (§4.5), and it evaluates to an `Error` box of unconstrained arity (§6.1) so one typo yields one
-   diagnostic rather than one per enclosing composition.
-8. **State identity from node hashes — two of them.** State-preserving reload falls out of the
+6. **Merkle hashing over interned values, with provenance beside them.** Id equality is an exact
+   diff. Terms split into provenance-free interned values and per-file refs holding the byte spans,
+   so the hash covers structure alone and every filter's state survives a stray newline (§4.6). The
+   same hashes serve three consumers: incremental evaluation, state identity (§8.1), and subtree
+   matching in §4.4's splice — the one place a diff-shaped algorithm appears, and the cheap kind,
+   since both trees are in hand at once.
+7. **The parser is ours, and there is no CST.** Recursive descent with a Pratt core, over one
+   precedence table the printer also reads (§4.7); a generated grammar serves as a test oracle
+   instead (§5.1). Two reasons, the second larger: tree-sitter's error recovery is a cost heuristic
+   with no author-facing lever, so §14's hole-extent criterion could be measured but never fixed,
+   where by hand it is a loop invariant; and a generated grammar is a second structural derivation of
+   `faustparser.y` alongside §4.5's node table, whose seam costs an audit, a drift test, a
+   build-failure rule and a grammar change. §4.5 and §4.8 already *are* the specification, so
+   building it is transcription. §15 records what that gives up.
+8. **Errors are local values, from the parse down.** Every phase emits diagnostics and continues.
+   Unparsable text is a `Hole` in Term that keeps the children its parser frame had built and prints
+   back verbatim (§4.5), evaluating to an `Error` box of unconstrained arity (§6.1) so one typo
+   yields one diagnostic rather than one per enclosing composition.
+9. **State identity from node hashes — two of them.** State-preserving reload falls out of the
    hashing incrementality already requires. Merkle hashes propagate upward and state lives at the
    top, so a literal-normalized **shape hash** is the second key, holding a reverb tail across an
    edit to a constant inside it (§8.1). It is the one key left as a hash rather than an interned id,
    being many-to-one by design.
-9. **One symbol registry for both tiers.** Faust's foreign constructs split into runtime-provided
+10. **One symbol registry for both tiers.** Faust's foreign constructs split into runtime-provided
    constants (`fSamplingFreq`, which every program using `ma.SR` needs) and genuine external calls
    (rare). A single (name, signature) -> pointer registry serves both, so the interpreter can call
    native code and LLVM stays optional. Unresolved symbols poison a subgraph rather than failing the
    compile.
-10. **The UI tree is a descriptor, not a visitor.** Extracting groups, widgets and metadata into data
+11. **The UI tree is a descriptor, not a visitor.** Extracting groups, widgets and metadata into data
     at compile time removes the reference's `buildUserInterface` callback machinery, and the JSON
     description becomes a serialization of it rather than a parallel implementation.
-11. **The host owns file I/O.** The compiler emits soundfile *requirements*; decoding, search paths
+12. **The host owns file I/O.** The compiler emits soundfile *requirements*; decoding, search paths
     and caching live in the host. Missing files degrade to silence rather than failing the build.
-12. **Files are input queries, behind an overlay VFS.** Open buffers shadow the importing file's own
+13. **Files are input queries, behind an overlay VFS.** Open buffers shadow the importing file's own
     directory, which shadows the search path, which shadows an embedded standard library. That makes
     libraries live-editable, removes install steps and version skew, and lets the environment run with
     no filesystem at all. The importing-file layer is not decoration — the impulse corpus does not
     resolve without it (§11.4). Embedded copies are byte-identical to the pinned submodule and *eject*
     is the only way to modify one, which is also what settles redistribution (§12).
-13. **The invalidating engine covers only what is named by a path.** Text, CSTs, terms, resolution
+14. **The invalidating engine covers only what is named by a path.** Text, terms, resolution
     and file environments are queries with revisions; everything below Term is keyed on interned
     content, so a changed program produces different keys rather than wrong answers at the same key
     (§5.8). Revision stamping with early cutoff, and interning is what makes the cutoff free.
-14. **Two lifetimes, and the boundary is the same one.** Term values, environments and strings are
+15. **Two lifetimes, and the boundary is the same one.** Term values, environments and strings are
     permanent and append-only, because diagnostics and state identity quote their ids. Box, Signal,
     analyses and Plan live in arenas dropped whole on idle. Nothing outside an arena holds an arena id —
     the running instance keys state on hashes, not ids — so a drop costs one cold compile and nothing
     else (§5.9).
-15. **On a failed compile, keep the last good instance.** It keeps playing while the editor shows
+16. **On a failed compile, keep the last good instance.** It keeps playing while the editor shows
     the broken program (§8.3). Most keystrokes are invalid states, so this is the common path, not an
     error path.
-16. **Match the reference where it has one behaviour; define one only where its backends genuinely
+17. **Match the reference where it has one behaviour; define one only where its backends genuinely
     disagree.** The first half is §11.3 throughout, odd results reproduced rather than corrected —
     `"a:Gain"` opening a *vertical* group, since `encodeName` maps every unrecognized prefix
     character to vertical (§7.2), is the sharpest. The second half has one case: out-of-range and NaN
     float-to-int conversion, UB by default and evaluated differently by the reference's own C++ and
-    LLVM backends. It is specified once and implemented identically in both tiers, which is what
-    makes §11.5 property 3 a real check, and the specification is the reference's own `-cir` rewrite
+    LLVM backends. Specified once and implemented identically in both tiers, so §11.5 property 3 is
+    a real check, and the specification is the reference's own `-cir` rewrite
     — an existing option made mandatory, not a new semantic (§11.3).
-17. **Cut fixed-point, vector modes, and eighteen backends.** Simplicity is the constraint, and §10
+18. **Cut fixed-point, vector modes, and eighteen backends.** Simplicity is the constraint, and §10
     prices each cut.
-18. **Numeric fidelity to reference Faust is not cut** — but it is pursued by measurement (§11.2)
+19. **Numeric fidelity to reference Faust is not cut** — but it is pursued by measurement (§11.2)
     and by pinning semantics (§11.3), not by porting the reference's implementation.
-19. **The box view has no coordinates, and the text pane is ours.** Layout is derived from the term
-    on every frame, so there is nothing to save, nothing to hand-place, and no way for the diagram to
-    drift from the source — which is why `ImDrawList` and a few hundred lines of shape primitives
-    cover it in place of a node-editor library. It also keeps §4.4's lens asymmetric: saved
-    coordinates would be private view state, obliging a symmetric lens and its complement (§13.4).
-    The editor is ours for the mirror-image reason: buffer, undo stack and splices all belong to
-    sections above, so the pane owns them (§13.2, §13.4).
+20. **The box view has no coordinates, and the text buffer is a contract rather than a widget.**
+    Layout is derived from the term on every frame, so there is nothing to save, nothing to
+    hand-place, and no way for the diagram to drift from the source — which is why `ImDrawList` and a
+    few hundred lines of shape primitives cover it in place of a node-editor library. It also keeps
+    §4.4's lens asymmetric: saved coordinates would be private view state, obliging a symmetric lens
+    and its complement. The complement stays empty only because nothing is persisted, which makes
+    expansion's key — `(value id, environment id)`, not a ref — part of the decision rather than a
+    detail (§13.4). On the text side the requirement is four properties, not ownership: byte-addressed
+    splices, text-level undo, byte-offset cursor mapping and readable buffers. A host that already
+    owns an editor meets them; a widget that owns the undo stack and speaks line and column does not
+    (§13.2).
+
+---
+
+## 17. References
+
+Cited by tag above; each entry names what the design took.
+
+**Bidirectional transformation.**
+
+- **[R4]** Zirun Zhu, Zhixuan Yang, Hsiang-Shang Ko, Zhenjiang Hu. *Retentive Lenses.* 2020.
+  arXiv:2001.02031. — §4.4's framing. Adds **Retentiveness** to Correctness and Hippocraticness, and
+  enriches `get` to return links that `put` consumes. Its motivating example is a comment-carrying
+  CST with a `Paren` constructor against a paren-free AST: the shape of Text against Term.
+- **[R5]** J. Nathan Foster, Alexandre Pilkiewicz, Benjamin C. Pierce. *Quotient Lenses.* ICFP 2008.
+  — Source of the **canonizer** and its RECANONIZE law, used in §4.7; declined as §4.4's framing,
+  since its `put` canonizes then re-prints.
+- **[R11]** Davi M. J. Barbosa, Julien Cretin, Nate Foster, Michael Greenberg, Benjamin C. Pierce.
+  *Matching Lenses: Alignment and View Update.* ICFP 2010. — §8.1's *keyed* versus *similarity*
+  alignment.
+- **[R13]** Martin Hofmann, Benjamin C. Pierce, Daniel Wagner. *Symmetric Lenses.* POPL 2011. —
+  §13.4's **complement**, the cost of private state on both sides.
+- **[R3]** Mikaël Mayer, Viktor Kunčak, Ravi Chugh. *Bidirectional Evaluation with Direct
+  Manipulation.* OOPSLA 2018. arXiv:1809.04209. — §4.2's trace-back tier, narrowed to the
+  unique-provenance case.
+
+**Syntax, sugar and printing.**
+
+- **[R1]** Justin Pombrio, Shriram Krishnamurthi. *Resugaring: Lifting Evaluation Sequences through
+  Syntactic Sugar.* PLDI 2014.
+- **[R2]** Zhichao Guan, Yiyuan Cao, Tailai Yu, Ziheng Wang, Di Wang, Zhenjiang Hu. *Semantics
+  Lifting for Syntactic Sugar.* OOPSLA 2024. — The problem §4.1 declines by never desugaring in the
+  editable layer.
+- **[R9]** Tillmann Rendel, Klaus Ostermann. *Invertible Syntax Descriptions: Unifying Parsing and
+  Pretty Printing.* Haskell Symposium 2010.
+- **[R10]** Kazutaka Matsuda, Meng Wang. *FliPpr: A Prettier Invertible Printing System.* ESOP 2013;
+  *A System for Deriving Parsers from Pretty-Printers*, New Generation Computing 2018. — Would give
+  PutGet by construction; declined in §5.1 on error recovery.
+- **[R6]** Sebastian Erdweg, Tamás Szabó, André Pacak. *Concise, Type-Safe, and Efficient Structural
+  Diffing* (truediff). PLDI 2021. — §4.4's hash-matched alignment; declined in §8.1, which has no
+  tree identity surviving a reparse.
+
+**Live programming with incomplete programs.**
+
+- **[R12]** Cyrus Omar et al. *Total Type Error Localization and Recovery with Holes.* POPL 2024
+  (Distinguished Paper); *Live Functional Programming with Typed Holes*, POPL 2019. — §9's "no
+  meaningless editor states". Evaluation *around* holes is declined there.
+
+**tree-sitter.**
+
+- **[R7]** issue #1870, *How does one improve the error recovery of a grammar?* Open.
+- **[R8]** discussion #1205, *Is there any way to give hints to the error recovery process?* — Both
+  are the evidence for §5.1: no `error` production, no synchronization tokens, no cost hints.
+
+**Reference implementation.** `lib/faust` @ `515dc515c` (2.85.9-25) throughout, cited by file and
+line. `khiner/tree-sitter-faust` appears in §5.1 as the acceptance oracle and §13.2 as a highlighting
+path a host may keep.
