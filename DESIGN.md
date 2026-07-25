@@ -193,10 +193,21 @@ so two nodes; §4.5 inventories the nodes and the three cases that do need an ex
 - **Evaluated view (read-only).** The Box graph. What the program means. Reachable by expanding any
   node: evaluate that subterm and display the result.
 
-To edit inside an expanded view, the user invokes **materialize**: the Term subtree is replaced by a
-printed form of its evaluated Box graph, the source is rewritten to match, and the result is
-editable structurally. Lossy — names and the iteration are gone — but explicit and user-initiated:
-the difference between a tool with a sharp edge and one that corrupts your file.
+To edit inside an expanded view, the user invokes **materialize**: the evaluated Box subgraph is
+lifted back into Term, the source is rewritten to match, and the result is editable structurally.
+
+**The lift is its own map, and it runs one way only.** Box is post-desugaring, so lifting is the
+identity on every Box kind that is also a Term kind and takes the *desugared* spelling everywhere
+else — `(a, b) : +` not `a + b`, `x : mem` not `x'`, `(0, x) : -` not `-x`, `route`'s three-argument
+form, `letrec` as the `with`-plus-projections it was rewritten into (§6.1). It is **partial by
+design**: a closure, §9's `Error`, or the `Slot`/`Symbolic` pair modulation introduces (§6.1) is not
+a circuit, so materialize declines it with a diagnostic rather than inventing syntax. The target
+shape is what `faust -e` prints, which §11.1 already needs a parser for, so phase 2 holds those Term
+shapes before phase 7 has to produce them.
+
+So it is lossy four ways at once — names beta-reduced away, iterations unrolled, pattern matches
+specialized, and every surface form §4.1 exists to preserve replaced by its desugaring — but explicit
+and user-initiated: the difference between a tool with a sharp edge and one that corrupts your file.
 
 **A third tier sits between the two, and it is optional.** Materializing to change one number is a
 large hammer, and changing a number is what a user reaches for first after expanding a node. Where
@@ -239,8 +250,9 @@ re-derives the rest, and §8 treats the result as it would any other edit.
 ### 4.4 The splice is load-bearing, and the printer serves it
 
 Term-to-source printing appears in three places: splicing edits, materializing evaluated subtrees,
-and the `faust -e` equivalent. One structure covers all three. But printing is the *smaller* half of
-the splice, and the design's central editing guarantee lives in the other half.
+and the `faust -e` equivalent. One printer covers all three — though the last two start from Box and
+reach it through §4.2's lift first, since a printer over Term cannot read a Box. But printing is the
+*smaller* half of the splice, and the design's central editing guarantee lives in the other half.
 
 **Text and Term form a retentive lens** (Zhu, Yang, Ko & Hu, *Retentive Lenses* [R4]). `get` parses
 text into Term and produces a set of **links** relating source regions to view regions; `put` takes
@@ -285,29 +297,92 @@ Retentiveness is what keeps comments and formatting in the file across an edit. 
 beyond the weaker "bytes outside the edited range survive": that guarantee is satisfied by reprinting
 a whole subtree from Term, which drops every comment *inside* the edit.
 
-**The splice is an edit script, computed by alignment.** Given the old ref tree and the new value
-tree:
+**The splice is an edit script, produced in two layers.** Given the old ref tree `Refs`, the new
+value tree and the original bytes `S`, `splice` **renders** the new tree into a stream of retained
+spans and printed text, then **reconciles** that stream against the file. Neither layer is a tree
+diff: matching is a hash-map lookup, since §5.2 has already interned every value — *truediff*'s trick
+[R6], free here.
 
-1. **Match subtrees on Merkle hash.** Structural identity is already an integer comparison (§4.6),
-   so this is a hash-map pass, linear in tree size — *truediff*'s trick [R6], free here because §5.2
-   already computes the hashes. Ambiguity resolves positionally in source order (§5.5).
-2. **Emit disjoint byte edits over the unmatched residue.** Where the new tree gained a node the edit
-   is an *insertion at an offset*, not a replacement of the enclosing node's span. Where a node
-   changed in place it replaces that node's span alone.
-3. **Matched spans are copied, never printed.** This is where retentiveness comes from, and why gap
-   trivia survives: a comment between two siblings lies outside both spans and inside no replacement.
+An edit names the ref it applies to (§4.3), so both layers run **inside that ref's span** and every
+byte outside it is untouched. The indent §4.7's layout policy asks for is that span's start column.
 
-`a : b` → `a : x : b` illustrates all three. `a` matches, `b` matches, one `Seq` is new; the script is
-a single insertion of `x : ` after `a`'s span. A whole-subtree reprint would have rewritten every byte
-of `a` and `b` and dropped their comments.
+**Layer 1 — render, which is the printer with one clause in front of it.**
 
-**Printing a subtree is context-dependent, and plain `print` breaks PutGet.** A ref's span excludes
-the parentheses around it — grouping parens are anonymous (§4.7) — so the `Seq` in `(a : b) : c` has
-the span `a : b`. Emitting a lower-precedence subtree over one changes how the surrounding bytes
-parse: `x , y` over the `b : c` of `a : b : c` gives `a : x , y`, reparsing as `(a : x) , y`. So the
-script's printing primitive is `print_in_context(term, parent_kind, side)`, parenthesizing by §4.7's
-rule. Because the parser is ours, a ref may also record an **outer span** including any grouping
-parens it was written with, letting the script retain the user's parens instead of re-deriving them.
+```
+render(v, ctx):                    # v: new value id, ctx: the §4.7 position
+    r = claim(v)
+    if r:  emit Retain(retained_span(r, ctx))
+    else:  emit this node's own syntax per §4.7, recursing render() on each child
+```
+
+- **`claim(v)`** is the first ref in `Refs` with value id `v` and `span_begin >= cursor`, otherwise
+  the first with that value id anywhere — §5.5's positional tie-break as a function, answered by one
+  hash map from value id to a sorted span list. `cursor` is layer 2's: the two run as **one streaming
+  pass**, render emitting in the new tree's source order and reconcile consuming in that order.
+- **Refs are not consumed.** A value occurring twice in the new tree claims twice, and layer 2's
+  cursor decides which occurrence keeps its place and which is copied.
+- **A claim stops the descent.** Equal value ids are structurally identical subtrees (§4.6), so a
+  retained node's interior is never visited — which is what makes retention linear, and what keeps
+  the comments inside it.
+- **`retained_span`** yields the ref's `outer_span` where it has one, keeping the user's own parens.
+  Otherwise `span`, and where §4.7 calls for parens at `ctx` the emission becomes
+  `Print("(") Retain(span) Print(")")` — three items, still one retained span. `outer_span` is safe
+  everywhere, since `( expression )` re-enters level 1 from `primitive` (§4.7): the one place the
+  splice keeps bytes §4.7 would not re-derive.
+
+Retention and printing consult **one** parenthesization rule, which is what makes a retained subtree
+parse back to the value it was matched on. Plain `print` would not: a ref's span excludes the parens
+around it, grouping parens being anonymous (§4.7), so the `Seq` in `(a : b) : c` has the span
+`a : b`, and emitting that where a tighter parent expects an operand reparses — `x , y` over the
+`b : c` of `a : b : c` gives `a : x , y`, which is `(a : x) , y`. So the script's printing primitive
+is `print_in_context(term, parent_kind, side)`: §4.7's rule plus the emission.
+
+**Layer 2 — reconcile.** Walk the stream with a `cursor` into `S`, starting at the target span's
+first byte, accumulating *pending* text:
+
+| Stream item | Action |
+|---|---|
+| `Retain(s)`, `s.begin >= cursor` | flush `[cursor, s.begin)` against pending, then `cursor = s.end` |
+| `Retain(s)`, `s.begin < cursor` | the node moved, or this is a second occurrence — append `S[s]` to pending verbatim |
+| `Print(t)` | append `t` to pending |
+
+Flushing a region emits nothing when the original bytes already equal the pending text, and otherwise
+one replacement of that region. A final flush covers `[cursor, target.span_end)`. Every replacement
+lies strictly between two retained spans or at an end of the target region, so the script is disjoint
+and in source order by construction and **no replacement ever covers a retained span** — the third
+obligation discharged structurally rather than checked.
+
+The second row makes moves and duplication total rather than special cases: a swapped pair or a
+copied subtree still emits its bytes verbatim, retaining them inside a replacement instead of by
+staying put.
+
+**Comment salvage, because a rewritten gap is not an untouched one.** The bytes between two retained
+spans are a connective and its trivia, and an insertion rewrites exactly that region — so surviving
+comments there is bought, not free. A flush re-emits the region's comment tokens — enumerable, since
+§5.1's token vector tiles the file — around the new text: **before it where the comment precedes the
+region's first non-trivia token, after it otherwise**. Whitespace is not salvaged, the printer
+supplies it. So `a /* keep */ : b` becomes `a /* keep */ : x : b` and `a : /* about b */ b` becomes
+`a : x : /* about b */ b`, each comment staying on the side of the operator it was written on. Trivia
+*between* two non-trivia tokens of a rewritten connective is the one thing a splice loses, bounded to
+the operators the edit rewrites.
+
+**Seams must not fuse tokens.** Retention puts bytes beside bytes they were never adjacent to, and
+the lexer is maximal-munch: `Access(Int(3), name)` emitted as `3.name` lexes as the float `3.` then
+`name`, a different program. So emission inserts a space wherever concatenating across a seam would
+move a token boundary, decided by lexing the junction. The printer's obligation, and PutGet tests it.
+
+**`a : b` → `a : x : b`, worked through.** The new tree is `Seq(a, Seq(x, b))`, `:` being
+right-associative. `render` claims neither `Seq`, so it prints their syntax and claims `a` and `b`,
+giving `Retain(a) " : " "x" " : " Retain(b)`. Reconcile keeps both in place and flushes the three
+bytes `" : "` against the pending `" : x : "` — one replacement. A whole-subtree reprint would have
+rewritten every byte of `a` and `b` and dropped every comment inside them.
+
+**Why the four obligations hold.** The printed parts reparse by PutGet and the retained parts by the
+shared §4.7 rule, so the result parses to the new value. Retentiveness *is* layer 1's claim clause: a
+node whose value id appears in `Refs` is retained, and `Retain` copies rather than prints.
+Disjointness and ordering are layer 2's cursor. Idempotence is the identity case — a second splice
+over the same region claims every node, emits one `Retain` covering the whole target, flushes nothing
+and returns an empty script, which is also Hippocraticness.
 
 **Only the top of §3's stack is a lens**, and the boundary is §4.1's. Term to Box has a `get` and no
 lawful `put`: evaluation beta-reduces and unrolls, so `par(i, 10, osc(i))` becomes ten subgraphs with
@@ -349,6 +424,13 @@ mandatory prime as a grammar rule. Then `Apply(fn, args)`, `Access(expr, name)`,
 `Environment(stmts)`, `Component(path)`, `Library(path)`, `Waveform(numbers)`, and
 `Route(ins, outs, entries)`. Three surface-only shapes complete it: `BinOp(op, lhs, rhs)` for the
 eighteen infix operators, `Delay1(expr)` for `x'`, and `NegIdent(name)` for prefix `-`.
+
+**`With`, `LetRec`'s `where` clause and `ModifLocalDef` hold definitions only — a `deflist`, not a
+statement list** (`:474`, `:476`, `:516`). A `deflist` admits `variantlist definition` and nothing
+else, so no `import`, `declare` or mdoc block appears in one; only `Environment` takes a `stmtlist`
+(`:619`). Probed: `process = foo with { import("x.lib"); foo = 1; };` is a syntax error at `IMPORT`,
+while the same import inside an `environment{}` nested in that `with` compiles. The `variantlist`
+prefix rides along, so the precision filter above reaches a definition inside a `with` too.
 
 **`NegIdent` takes a name, not an expression.** The only prefix-minus productions are `SUB INT`,
 `SUB FLOAT` and `SUB ident` (`:525-526`, `:600`), so `-x` is negation, `-3` is a literal, and
@@ -426,6 +508,10 @@ where copying it costs §4.4's retentiveness. Listed with what Term keeps instea
   negative literal (`:525-526`). One surface operator, two desugarings, neither reversible.
 - **`route(n, m)`** gains a third argument, `boxPar(boxInt(0), boxInt(0))` — the "fake route" of
   `:621`. The two-argument spelling is not recoverable from the three-argument node.
+- **Pattern preparation.** `boxCase` runs every rule through `preparePattern`
+  (`boxes/boxes.cpp:945-1130`), rewriting each bare identifier in a pattern into a pattern variable —
+  so an identifier and a binder are different nodes, and which one a name is depends on where it
+  sits. Term keeps `Rule(patterns, body)` as written and §6.1 marks the binders on the way to Box.
 - **Parentheses** are dropped outright: `( e )` yields `e` (`:602`). Term does the same, so grouping
   is *not* a node and the printer re-derives it from precedence. That is sound for §4.4's PutGet —
   a reprint reparses to the same value — and it costs byte-exactness on any node actually reprinted,
@@ -458,6 +544,39 @@ edit.
   `{value_id, span, outer_span?}`, isomorphic to the parse. `outer_span` covers any grouping
   parentheses the node was written with, absent when there were none (§4.4). Rebuilt whenever its
   file is reparsed. Never interned, never hashed.
+
+**Both are flat arrays, and children live in a shared pool.** Node arities run from zero to
+unbounded — `Definition(clauses*)`, `Case(rules*)`, `Waveform(numbers*)`, `Hole(children*)` — so
+rather than a union or an inline-child optimization, every node addresses the same pool:
+
+```cpp
+struct TermValue {              // 16 bytes
+    uint8_t  kind;              // §4.8 node kind
+    uint8_t  form;              // form tag: merge/pow spelling, iterate kind, widget kind
+    uint16_t variants;          // §4.5 precision bitmask; 0 for non-statements
+    uint32_t payload;           // interned string id, or 0
+    uint32_t children;          // offset into child_pool
+    uint32_t child_count;
+};
+std::vector<TermValue> values;      // index == value id
+std::vector<uint32_t>  child_pool;  // append-only, deterministic order (§5.5)
+
+struct TermRef { uint32_t value_id, span_begin, span_end,
+                          outer_begin, outer_end,   // == span when no grouping parens
+                          first_child, child_count; };
+```
+
+Binary nodes pay two pool words they could have inlined, in exchange for one code path everywhere.
+The Merkle hash covers `{kind, form, variants, payload, children…}`, and an intern-table bucket hit
+compares that tuple plus the child span — `O(arity)`, as above.
+
+**Interning must roll the pool back on a hit.** §5.1 builds children before parents and interns at
+construction, so a node that resolves to an existing value would strand the children it just
+appended. Build them into a stack buffer and commit only on a miss; otherwise the pool grows with
+every duplicate subterm in the standard library, which is most of them.
+
+Refs are stored **pre-order with children contiguous**, so §4.3's cursor-to-box query descends from
+the root by binary search on child spans, `O(depth)` rather than a scan.
 
 Evaluation, Box, Signal and Plan consume value ids only. Splices, selection linking, the box view and
 diagnostics work on refs. That is the precise sense of "Term is the editable semantic surface": you
@@ -556,6 +675,11 @@ rest through rule layering. The net that does catch it is phase 2's `.box` isomo
 precedence changes the evaluated diagram. §15 records the consequence: precedence errors surface in
 phase 2 rather than phase 1.
 
+The rows above were checked once by hand against the bison block (`faustparser.y:113-134`, `:204`,
+`:208`): all fifteen match, associativity included. `LPAR` and `LCROC` carry their `%left` from the
+token block rather than the operator block, which is why levels 14 and 15 are easy to miss and are
+spelled out here. That is the second derivation, done once and recorded rather than maintained.
+
 **The rule.** Printing child `C` at side `S` of parent `P`, parenthesize when `prec(C) < prec(P)`;
 when `prec(C) == prec(P)` and `S` is the side associativity does not favour — the left of a
 right-associative operator, the right of a left-associative one; or when `C` is `Par`, `With` or
@@ -563,8 +687,44 @@ right-associative operator, the right of a left-associative one; or when `C` is 
 
 Canonical is exactly that, and nowhere else. A canonical subtree reprints byte-identically, and one
 carrying redundant parens converges in a single reprint (§4.4). `print_in_context` is this rule plus
-the emission, taking (`prec(P)`, `S`) and the position's level; placing the result in the file is the
-edit script's job, not the printer's.
+the emission, taking (`prec(P)`, `S`), the position's level and the indent column below; placing the
+result in the file is the edit script's job, not the printer's.
+
+**Spacing and line structure — the printer's other half.** Parenthesization is where the printer can
+be *wrong*; layout is where it is merely arbitrary, and leaving it arbitrary breaks §4.4's fourth
+obligation, since idempotence needs a deterministic policy. The rule follows §4.1's own split, and
+matches the dominant convention across the 446 corpus files (examples, tests and faustlibraries,
+excluding the generated `tests/codegen-tests/bug-wall.dsp`, whose 687k commas skew every total):
+
+- **Diagram-shaped operators** — `:` `<:` `:>` `+>` `~` — take one space each side; by file, the
+  corpus writes them spaced 171 to 53, 104 to 14, 65 to 10 and 65 to 27.
+- **Expression-shaped operators** — levels 7–11, plus `,`, `'`, `.`, application and `[defs]` — are
+  tight: `f(a,b)`, `a*b+c`, `x@n`, `x'`, `e.name`. `,` is the one that looks inconsistent and is not:
+  split by paren depth, the corpus writes it tight 12223 to 9902 inside `( )` and 22067 to 663 at
+  depth 0.
+- `=` takes one space each side (433 files to 1); `;` is tight against what precedes it; one space
+  before `with`, `letrec`, `where` and before `{`.
+
+**Expressions never contain a newline**, at any length: no width budget, no break-cost model. Splice
+output lands in text the user has already formatted, and a wrapped fragment would fight it.
+
+**Only statement lists break lines.** One `Definition` or `RecDef` per line; `with {`, `letrec {`,
+`case {` and `environment {` open on the current line — the corpus writes the brace on the same line
+1024 times against 14 — with contents at **indent + 4** (8424 lines lead with four spaces against
+2086 with eight, consistent with 4-space nesting) and the closing `}` at the opening line's indent.
+The edit script supplies the indent column from the insertion point.
+
+Nothing else carries layout: `Int` and `Real` print their lexeme verbatim (§4.8), `MdocProse` and
+`Hole` print verbatim, so mdoc blocks bring their own newlines and need no policy.
+
+Idempotence follows: `print` is a pure function of (term, parent kind, side, level, indent), and a
+second splice over the same region matches the printed node by value id and copies its span instead
+of reprinting. The cost lands exactly where §4.4 bounds it — a node that *is* reprinted loses its
+author's spacing, so `a , b` normalizes to `a,b`, while matched nodes never do.
+
+**The printer is not a formatter.** It emits bytes only for nodes the alignment left unmatched.
+Nothing in §4.4 implies a format-document operation, and adding one would discard the trivia
+retentiveness exists to keep.
 
 ### 4.8 The Term node table
 
@@ -600,9 +760,9 @@ parameters (`:456-464`).
 | `BinOp` | lhs, rhs | operator, incl. the `^`/`pow` tag | 7–11 |
 | `Delay1` | expr | — | 12 |
 | `NegIdent` | — | name lexeme | primitive (`SUB ident`, `:600`) |
-| `With` | expr, defs: stmt* | — | 1 |
-| `LetRec` | expr, recdefs: `RecDef`*, wheredefs: stmt* | — | 2 |
-| `ModifLocalDef` | expr, defs: stmt* | — | 15 |
+| `With` | expr, defs: `Definition`* | — | 1 |
+| `LetRec` | expr, recdefs: `RecDef`*, wheredefs: `Definition`* | — | 2 |
+| `ModifLocalDef` | expr, defs: `Definition`* | — | 15 |
 | `Apply` | fn, args: expr* (level 2) | — | 14 |
 | `Access` | expr, — | name lexeme | 13 |
 | `Lambda` | body | param name lexemes | primitive |
@@ -676,14 +836,32 @@ All four are the price of the second derivation, and one derivation does not pay
 `faustparser.y` with payloads, children, precedences and form tags. Building the parser from it is
 transcription.
 
-**The lexer.** Hand-written, mode-stacked, with four modes matching flex's start conditions: default,
-`<mdoc>` prose, and the `<equation>`/`<diagram>` bodies that switch *back* to expression lexing
-(§4.5). A mode stack makes that re-entry three lines, where a grammar without lexer modes has to
-encode it as rules and generally settles for prose. It emits a flat `vector<Token>{kind, span}` that
+**The lexer.** Hand-written and mode-stacked. It emits a flat `vector<Token>{kind, span}` that
 **tiles the file** — every byte in exactly one token, comments and whitespace included. That tiling
 is §4.4's first obligation, and it is what §13.2's highlighting reads, so "one source of truth says
 what the text means" holds without a syntax tree. §4.5's three form tags fall out of keeping the
 token kind and span.
+
+**The kind set is 139: the 135 tokens `faustlexer.l` returns, plus four of ours.** The four are
+`Whitespace`, `LineComment` and `BlockComment` — which flex discards and the tiling obligation needs
+— and `Unknown`, flex's `EXTRA` fallback. One rule is deliberately not the reference's: **mdoc prose
+is one token per maximal run**, not per character. Flex returns `DOCCHAR` a character at a time and
+its own source doubts the choice (`faustlexer.l:41`, "char by char, may be slow ??"); per-character
+tokens would size the vector by file length rather than by structure. Note also that no lexer rule
+matches a signed number — `ADD INT`/`SUB INT` are parser productions (`faustparser.y:525-526`) — so
+§4.5's literal form tag is assembled from two tokens.
+
+**Three modes on a stack: default, mdoc prose, mdoc listing.** Flex declares four states, but
+`comment` is not one we need — it exists because flex discards comments, where we emit `/*…*/` as one
+token by scanning for `*/`. The stack is what makes `<equation>`, `<diagram>` and `<metadata>` work:
+each *pushes* default (`faustlexer.l:56`, `:58`, `:60`) and the closing tags — which carry no start
+condition and so live in default — pop back to prose (`:57`, `:59`, `:61`). A grammar without lexer
+modes has to encode that as rules and generally settles for prose.
+
+**Listing mode needs a whitespace token, which flex lacks.** `lst` is an exclusive state (`%x`) with
+no whitespace production, so unmatched input falls through to flex's default ECHO: parsing
+`<listing dependencies="true" />` writes two stray spaces to the compiler's stdout — harmless there,
+fatal to the tiling obligation here.
 
 **The parser.** Recursive descent for the fixed-shape constructs — statements, definitions and
 clauses, `with`/`letrec`/`environment`, `route`, the widgets, the foreign forms, mdoc parts — and
@@ -696,11 +874,34 @@ lowering step.
 spans at every syntactic node, trivia in the gaps between sibling spans, and token kinds for
 highlighting. That is why §3's stack has five layers and §5.8 four queries.
 
-**Recovery, concretely.** A synchronization set: `;` at statement level, `}` `)` `]` for nested
-scopes. Where a required token is absent, insert a zero-width `Hole` and continue — §4.5's
-empty-payload case. Recovery is deterministic but *context-dependent*: the same bytes recovered
-inside a `with` block and at file level are reached through different frames, which is why §4.5
-hashes a hole over its children as well as its lexeme.
+**Recovery, concretely.** Each frame carries its own synchronization set, and the reference anchors
+the choice: its own error productions sync at `;` (`definition : error ENDDEF`, `faustparser.y:454`,
+and `recinition` likewise at `:459`).
+
+| Frame | Consumes | Stops before | Reached from |
+|---|---|---|---|
+| statement list | `;` | `}`, EOF | file level, `environment { }` |
+| definition list | `;` | `}`, `]` | `with { }`, `letrec … where { }`, `[defs]` |
+| rec list | `;` | `}`, `where` | `letrec { }` |
+| rule list | `;` | `}` | `case { }` — a rule ends in `;` (`:775`) |
+| argument list | — | `,`, `)` | `f(…)`, widget bounds, `route`, iteration counts |
+
+Two rules make §14's hole-extent criterion a construction rather than a measurement:
+
+1. **A frame never consumes a token in any enclosing frame's stop set.** The loop invariant, and what
+   keeps a hole inside the `;`-delimited statement containing the failure.
+2. **A sync token counts only at the frame's entry bracket depth.** Scanning tracks `()`, `{}` and
+   `[]`, or a statement-level recovery stops at the first `;` inside a nested `with` or `case` body
+   rather than at the end of the statement.
+
+Where a required token is absent, insert a zero-width `Hole` and continue — §4.5's empty-payload
+case. Recovery is deterministic but *context-dependent*: the same bytes recovered inside a `with`
+block and at file level are reached through different frames, which is why §4.5 hashes a hole over
+its children as well as its lexeme.
+
+**`[` heads two productions** — `Modulation` (`LCROC modlist LAPPLY expression RCROC`, `:609`) and
+`ModifLocalDef` (`infixexp LCROC deflist RCROC`, `:516`). Position separates them with no lookahead:
+`[` in prefix position is a modulation, `[` in infix position is a local-definition modification.
 
 **No incrementality.** Parsing from scratch is nowhere near the bottleneck, the largest corpus file
 is well under a megabyte, and reparse cost is `O(edited file)` rather than `O(program)` — editing a
@@ -971,8 +1172,34 @@ evaluates to `Error`, and arity is checked at construction everywhere else. So `
 whatever count is asked of it and absorbs its neighbours, keeping the diagnostic set the size of the
 mistake — §9's locality rule, enforced where it is cheapest.
 
+**Box's inventory is Term's minus the sugar plus six, and it splits in two.** No table, because the
+generating rule is short: drop the surface-only forms desugared away below — `BinOp`, `Delay1`,
+`NegIdent`, `LetRec`, the two-argument `Route` — and add the six kinds no Term node denotes,
+`PatternVar` with its partially applied `PatternMatcher`, `Slot` and `Symbolic` from modulation, the
+closure, and `Error`.
+
+The split that matters is **transient against normal form**. Most kinds exist only *during*
+evaluation: `Ident`, `Apply`, `Lambda`, `Access`, `Case`, `PatternVar`, `Modulation`,
+`ModifLocalDef`, `With`, the four iterations, `Component`, `Library`, `Metadata` and closures are all
+consumed by the rules in this section. What survives is the **normal form** — the 34 kinds
+propagation dispatches on (`propagate/propagate.cpp`): the five composition operators and `route`,
+`_` and `!`, `Int` and `Real`, the six primitive arities, the three foreign forms, the seven widgets
+and three groups, `waveform`, `soundfile`, `environment`, and `Slot`/`Symbolic`. `Error` is the
+exception that survives as §9's poison.
+
+The normal form is what §4.2's lift needs a case for, what arity-at-construction rules over, and what
+`faust -e` prints — a much smaller set than the full inventory.
+
 File-level `declare` is namespaced by its file: bare in the root, keyed `<file>/<key>` in any import
 (§11.1 gives the spelling), with a missing root `declare name` synthesized from the basename.
+
+**`declare name key "value"` is a different channel with a different lifetime.** §4.5's `DeclareDef`
+does not annotate the file: `addFunctionMetadata` (`parser/sourcereader.cpp:168-190`) wraps the
+*named definition's body* in a metadata box, and evaluating that box inserts the pair into the same
+set the file-level `declare`s land in, then evaluates through it (`evaluate/eval.cpp:549-551`). So
+this metadata reaches §7's artifact **only if the definition is actually evaluated** —
+reachability-dependent where a file-level `declare` is not. A definition `process` never reaches
+contributes nothing, which reads as a dropped annotation.
 
 **The observability boundary is `.box` plus accept/reject.** Two evaluators agreeing on `.box`
 isomorphism for every program, and on which programs are rejected, are indistinguishable. That turns
@@ -996,6 +1223,7 @@ of §4.5, applied on the way to Box:
 | `Delay1(x)` | `Seq(x, Prim(mem))` |
 | `NegIdent(name)` | `Seq(Par(Int 0, Ident(name)), Prim(-))` — never a literal, since a signed literal is an `Int`/`Real` and never a `NegIdent` (§4.5) |
 | `Definition(name, clauses)` | body, lambda, or `case` — `makeDefinition`'s four shapes (§4.5) |
+| `Case(rules)` | the same rules, each pattern's binders marked `PatternVar` — below |
 | `LetRec(body, recdefs, wheredefs)` | a `with` holding a recursive body definition and one projection per name |
 | `Route(i, o, ∅)` | `Route(i, o, (0, 0))` |
 | `Environment(stmts)` | a closure over the statements' environment |
@@ -1015,12 +1243,20 @@ gets a purpose-built `.dsp` the way §11.3's do:
   than the VFS, keeping evaluation a pure function of interned ids.
 - **`.` resolves in the captured environment, not the current one** (`:435-452`). Lexical, and the
   reason `environment{}` and `library()` are usable as first-class values at all.
-- **`with` sees the enclosing scope**, and `import` inside a `with` block is expanded before the
-  block is pushed (`:565-567`).
+- **`with` sees the enclosing scope**, and its local definitions run through `expandList` before the
+  layer is pushed (`:565-567`). That matters for `import`, which reaches the list only through
+  `environment { … }` — a `with` body is a `deflist` and cannot hold one (§4.5). Both desugar to
+  `boxWithLocalDef`, so one call site serves both.
 - **Patterns are evaluated; right-hand sides are not** (`evalRule`). Rule bodies stay unevaluated
   until a match selects one.
 - **Pattern matching is incremental over applied arguments**, so a `case` may be partially applied
   and matching resumes as further arguments arrive.
+- **Iteration at zero count is two different answers, and `seq` evaluates its body anyway.** `par`,
+  `sum` and `prod` at zero all yield the 0→0 circuit `route(0, 0, (0,0))` (`eval.cpp:1044`, `:1135`,
+  `:1163`), so `sum(i, 0, e)` is *not* the integer 0 and `prod(i, 0, e)` is *not* 1. `seq` at zero
+  instead evaluates the body once with the index bound to 0 purely to measure it (`neutralExpSeq`,
+  `:1065-1088`), requires `ins == outs` — an error raised over a body that never runs — and returns
+  an identity bus of that width, or the same 0→0 circuit where the width is 0.
 - **Evaluation constant-folds numeric tuples through primitives**: `2, 3 : +` evaluates to `5`,
   propagated and simplified mid-evaluation (`:395-418`). So Box is *not* purely structural — easy to
   miss, and visible directly in `.box`.
@@ -1030,6 +1266,130 @@ gets a purpose-built `.dsp` the way §11.3's do:
 semantics, the automaton is one way to get it, and direct structural matching over interned terms is
 another. `Tree` as a universal representation. Parse-time desugaring, which §4.5 shows is actively
 harmful here. The `gLoopDetector(1024, 400)` constants, since §9 bounds divergence its own way.
+
+**Declining the automaton means saying what a binder is, and the reference answers that before any
+matching runs.** `boxCase` passes every rule through `preparePattern` (`boxes/boxes.cpp:945-1130`),
+which rewrites each **bare identifier in a pattern position** into a distinct `PatternVar` node —
+positional and syntactic, never a scope lookup, so `f(x, x) = …;` binds `x` twice whether or not `x`
+is also defined at file level. The traversal is not uniform, and its exceptions are the rule:
+
+- **An identifier callee is a reference, not a binder.** `boxAppl` recurses into the arguments and
+  leaves an identifier callee alone (`:967-973`), so in `f(x)`, `f` resolves and `x` binds. Any other
+  callee is prepared like anything else.
+- **Recursed:** the five composition operators, `route`, `inputs`/`outputs`, a group's body, a
+  `with`'s body but *not* its definitions, and an iteration's body but not its variable or count.
+- **Opaque:** literals, waveforms, `_`, `!`, every primitive, a UI widget whole, the three foreign
+  forms, `environment`, `component`, `.`-access, a lambda, and a nested `case`. An identifier reached
+  only through one of these is not a binder.
+
+`Ident` in a pattern position is therefore not an `Ident` in Box, so this is a row in the desugaring
+table above rather than a Term node: Term keeps §4.8's `Rule(patterns, body)` as written and the
+marking happens on the way to Box, where the reference does it at parse time (§4.5).
+
+**Patterns are then evaluated, and the pattern variables survive it.** `evalPattern`
+(`evaluate/eval.cpp:1545-1549`) evaluates the prepared pattern in the rule's environment, so the
+*reference* half of a pattern resolves, while a `PatternVar` evaluates to itself (`:646`, where the
+scope-lookup line sits commented out). `patternSimplification` (`:848-863`) then folds any
+sub-pattern that is a closed 0→1 numeric expression down to its literal, traversing exactly the five
+composition operators and `route` to reach them (`:786-804`). So `f(2+3)` and `f(5)` are one pattern.
+
+**Matching, per rule rather than per automaton.** The reference builds one left-to-right tree
+automaton over all rules at once [R14], and the only state it shares between rules is the prefix of
+arguments already tested — which a live-rule set carries just as well. So per `case`, evaluated once
+and memoized on (rules, environment) as `evalCase` memoizes (`eval.cpp:1498-1506`): a vector of
+per-rule environments, each starting from the enclosing environment behind an **environment
+barrier**, plus a set of live rules. Each applied argument is matched against every live rule's next
+pattern:
+
+- `PatternVar(id)` matches any box and binds `id` in that rule's environment — unless `id` is already
+  bound behind the barrier, in which case the two boxes must be **equal** and the rule leaves the
+  live set if they are not (`patternmatcher.cpp:812-830`). That is the viability rule below, and what
+  the barrier is for: the comparison must see only the bindings this match made, which is why it goes
+  through `searchIdDef`.
+- A composite pattern — the five composition operators, or `route` — matches a box of the same kind,
+  recursing pairwise.
+- Everything else matches by equality.
+
+**Equality there is Box identity, so Box is hash-consed** as Signal is (§6.2) and the check is an
+integer comparison. The reference leans on the same thing, `tlib` having uniqued every `Tree`, which
+is why its non-linearity test is the bare pointer comparison `Z != Z1`.
+
+**Application consumes one argument at a time** (`eval.cpp:1265-1295`), with three outcomes. No live
+rule is `eval:no-matching-rule` (§9.1, a thrown exception in the reference). Every live rule
+exhausted selects the **first live rule in source order** (`patternmatcher.cpp:844-857`) and
+evaluates its body in that rule's accumulated environment. Otherwise the live set, the environments
+and the arguments consumed carry forward as a partially applied value — the whole of the
+incrementality the automaton's state was holding.
+
+**All rules in a `case` share one pattern count, checked at construction.** `checkRulelist`
+(`parser/sourcereader.cpp:462-486`) rejects a `case` whose rules disagree, and `makeDefinition`
+(`:135-165`) applies the same check to the several-clauses-of-one-name route, so
+`f(x) = 1; f(x,y) = 2;` is rejected too. Zero patterns with several variants — `f = 1; f = 2;` — is a
+**redefinition** error raised there (`:154-156`) rather than at §9.1's cited site. So "every live
+rule exhausted" is simply "that many arguments consumed", with no per-rule bookkeeping. The reference
+reaches the same place indirectly, its `final` testing whether a state has any outgoing transition at
+all (`patternmatcher.cpp:260`), which would let a longer rule hold a shorter one back — unreachable
+from the surface, like `powprim.hh`'s negative exponent (§11.3).
+
+**Modulation is a rewrite over the evaluated body, and §2 puts it in scope, so its rule belongs
+here.** The surface form is `[ p1 : c1, p2 : c2 -> e ]` — each modulator a target path and an
+optional circuit separated by `:` (`modentry`, `parser/faustparser.y:470-471`) — curried into nested
+single-modulator nodes, outermost first in source order (`buildBoxModulation`,
+`boxes/boxes.cpp:350-357`). Evaluating one (`evaluate/eval.cpp:709-775`):
+
+1. **The target is a label, so it is evaluated as one.** `evalLabel` applies §7.2's `%i` substitution,
+   and `target2path` then splits the result on `/` into a path.
+2. **An omitted circuit means `*`.** The default is `boxPrim2(sigMul)`, which has *two* inputs — so a
+   bare `["Wet" -> e]` means "multiply that widget by an incoming signal", not "leave it alone".
+3. **The circuit is checked:** at most 2 inputs, exactly 1 output, and a circuit at all.
+4. **The body is fully evaluated first**, and the rewrite runs over the resulting Box.
+5. **The rewrite implants at matching widgets** (`transform/boxModulationImplanter.cpp:102-205`). At a
+   button, checkbox, slider, nentry or bargraph whose path matches, the widget becomes `circuit` for
+   0 inputs, `widget : circuit` for 1, and `(widget, slot) : circuit` for 2. At a group, the group's
+   own path is matched against the tail of the target and stripped where it matches, and the walk
+   descends **either way** — an unmatched group is not pruned. Every other box rebuilds structurally.
+6. **A two-input circuit adds an input to the whole expression.** The result is wrapped in
+   `Symbolic(slot, body)`, whose arity is the body's plus one, and propagation binds the first
+   incoming signal to that slot (`propagate/propagate.cpp:502-515`, `boxes/boxtype.cpp:210-218`).
+   Modulators supply those inputs in source order.
+7. **No match is a warning, not an error**, so the body passes through unmodulated.
+
+Two things are easy to get backwards. Matching is **ordered-subsequence containment**, not equality:
+the target `(b, d, e)` matches a widget path `(a, b, c, d, e, f)`
+(`boxModulationImplanter.cpp:60-93`), so a partial path selects. And the paths compared here have
+their **metadata stripped**, by `superNormalizePath` (`propagate/labels.cpp:240-262`) — the opposite
+of §7.2's rule for the paths propagation builds, where the metadata is deliberately kept. Two path
+builders, two behaviours — and `labels.cpp`'s own comment above `superNormalizePath` says metadata is
+not removed while its code removes it.
+
+`Slot` and `Symbolic` are the only two Box kinds with no surface syntax, reachable from here and
+nowhere else, which is why §4.2's materialize declines a subterm containing one.
+
+**The corpus barely covers this.** Two files use modulation at all —
+`tests/jax-tests/dsp/poly_synth.dsp:14` and `poly_synth_param.dsp:18`, both the same
+`["freq": replace, "gain": replace, "gate": replace -> synth]` — exercising none of the default
+circuit, the 0- and 1-input arms, group descent or subsequence matching. Like §15's mdoc lexer modes,
+the probes are the coverage and a green corpus is not evidence.
+
+**`e[defs]` re-closes a closure over a modified environment**, and §2 puts it in scope too. `eval`
+(`:446-456`) evaluates `e`, requires a **closure** — anything else is `eval:not-a-closure` — rebuilds
+it over `copyEnvReplaceDefs` of its captured environment (`evaluate/environment.cpp:193-222`), and
+evaluates the rebuilt closure. The copy is narrower than it sounds, and three parts of it carry:
+
+- **Only the closure's top layer is copied.** The new layer sits on the same parent stack, so
+  everything further out is shared rather than duplicated.
+- **The copied definitions are re-pointed at the new layer**, but only where a closure's environment
+  is *exactly* the old layer (`updateClosures`, `:173-183`). That one-level rewrite is what lets the
+  layer's own definitions see the replacements.
+- **The replacing definitions close over the *current* environment**, not the captured one — the
+  scope where `e[defs]` is written. That is what makes this a modification rather than a substitution.
+
+**This is the one operation §5.2's environment model does not get for free**, since it replaces a
+layer where the model only extends one. So it builds a fresh layer node from the old one's bindings
+with the replacements applied and hashes that — `O(bindings in the layer)`, once per `e[defs]`
+evaluated, which is rare. Nothing else moves: the result is an ordinary interned environment keyed
+by its id. No file in `examples`, `tests` or `libraries` uses `e[defs]`, so it too is probe-covered
+rather than corpus-covered.
 
 **Three the papers leave open, read out of the source.** Each keeps its phase-2 `.box` probe, which
 now confirms rather than decides.
@@ -1111,6 +1471,33 @@ Over the Signal DAG, memoized per node id:
   (`extended/maxprim.hh:141-142`, `extended/minprim.hh:141-142`) sit inside `generateCode(Klass*,
   ...)`, the deprecated `ocpp` backend, where all it buys is an `int(...)` around an already-int
   operand. Nature plus an interval of `[0,1]` carries what downstream needs.
+
+  **Variability decides the band, so its rules are pinned here rather than left to intuition.** §11.1
+  compares it, `.fir` band parity is downstream of it and §11.5 property 6 tests it — three checks
+  that need a specification to check against. The lattice is `{konst = 0, block = 1, samp = 3}`
+  (`signals/sigtype.hh:62`) and the join is a **bitwise or**, `samp` being `block | 2`. A three-value
+  enum joined with `max` agrees with it by accident rather than by construction, which is the sort of
+  thing that holds until a rule is added.
+
+  Most nodes join their operands. The leaves and the exceptions are the content
+  (`signals/sigtyperules.cpp`):
+
+  | Node | Variability |
+  |---|---|
+  | signal input | sample (`:494`) |
+  | `fconstant` / `fvariable` | constant (`:975`) / block (`:985`) |
+  | `ffunction` | the join of its arguments — but **sample when it has none** (`:948-957`) |
+  | UI input widgets | block |
+  | bargraph | its input's type promoted to at least block (`:630-640`) |
+  | `soundfile` | block, and its length and rate `max(block, part index)` (`:645-665`) |
+  | `lowest(x)` / `highest(x)` | constant, and **real**, over a point interval at `x`'s bound (`:768-778`) |
+  | any delay — `mem`, `@`, `prefix` | **sample**, whatever the source was (`:502-545`) |
+
+  Two of those bite. **A nullary `ffunction` is sample-rate by assumption**, the reference modelling
+  it on `rand()` so that it varies per call and never hoists, while one with arguments takes their
+  join and hoists exactly as far as they allow. And **any delay forces sample-rate**, so a delayed
+  slider is not block-rate. A generator subgraph is typed in an empty environment (`:716-718`),
+  confirming §6.3's "its own little program" from the typing side too.
 - **Interval inference** — bounds per node. Kept because it is load-bearing, not for completeness: it
   sizes delay lines, decides which table and soundfile accesses need clamping, and rejects programs
   whose delays cannot be bounded (§10 explains the reduced scope). `assertbounds`, `lowest` and
@@ -1658,15 +2045,31 @@ Every phase emits into one set, so the record is one shape:
   reachable from `process` declines the swap. `info` carries what the compiler did correctly and
   invisibly, like a precision-filtered statement (§4.5) or a substituted soundfile (§7.3).
 - **`code`** is a stable enum prefixed by the phase raising it: `syn` for parse and `Hole`, `res` for
-  resolution and import cycles, `eval` for scope, arity, pattern and loop bounds, `type` for nature,
-  interval and delay bounds, `plan` for scheduling and allocation, `link` for foreign symbols. The
+  resolution and import cycles, `eval` for scope, arity, pattern and loop bounds, `type` for nature
+  and interval, `plan` for delay bounds, scheduling and allocation, `link` for foreign symbols. The
   prefix is what lets §11.4 compare error *classes* against `tests/error-tests` rather than strings.
+  Delay bounds sit under `plan` because the prefix names the phase that *raises* the diagnostic: the
+  interval is a typing result, but the rejection is `checkDelayInterval` from the max-delay pass,
+  which §6.3 places in lowering.
 - **`subject`** is an interned Term value id, never a byte range; ranges come from walking the open
   file's ref tree (§4.6), which marks every occurrence of a shared fragment.
 - **`related[]`** carries further value ids where a diagnostic is about a pair — a shadowed rule and
   its shadower (§6.1), a redefinition and its collision, an import cycle and its closing edge.
 - **`payload`** is the typed data the message renders from: an arity mismatch's two counts, an
   unbound name, the interval that failed to bound a delay.
+
+The starting set, extended by each phase as it lands. It is short because the prefix is what §11.4
+compares: a code earns its place once a diagnostic distinguishes itself from its neighbours.
+
+| Prefix | Codes |
+|---|---|
+| `syn` | `unexpected-token`, `unterminated-comment`, `unterminated-string`, `unterminated-mdoc`, `empty-case` (`sourcereader.cpp:463`), `bad-listing-attribute` |
+| `res` | `file-not-found`, `import-cycle`, `read-error` |
+| `eval` | `unbound-name`, `arity-mismatch`, `no-matching-rule`, `redefinition` (`environment.cpp:84-100`), `rule-shadowed` (warning, `patternmatcher.cpp:640-663`), `not-applicable`, `bad-access`, `non-constant-iteration-count`, `loop-detected`, `depth-exceeded`, `not-a-closure` (§6.1, `eval.cpp:454`), `bad-modulation-circuit` (§6.1), `no-modulation-target` (warning, §6.1) |
+| `type` | `prefix-init-not-init-time` (`sigtyperules.cpp:507-511`) |
+| `plan` | `delay-unbounded`, `delay-negative` (`occurrences.cpp:169`), `table-size-not-literal` |
+| `link` | `symbol-unresolved`, `signature-mismatch` |
+| `info` | `precision-filtered` (§4.5), `soundfile-substituted` (§7.3) |
 
 Two properties come from sections above. Diagnostics hold **permanent ids only** (§5.9), so a set
 outlives an arena drop. And the set is **deterministically ordered** (§5.5) — file resolution index,
@@ -2001,6 +2404,21 @@ well documented. What happens to the signals is left implicit:
   provably in range is left alone, which is why §6.3 ties interval precision to generated code.
   Soundfile reads are clamped unconditionally at propagation, to `max(0, min(i, length-1))`
   (`propagate/propagate.cpp:630`). Together these are what hold every access inside the state block.
+
+**Intervals that are asserted rather than derived.** Three come out of the type rules as constants,
+and each feeds §6.3's delay sizing and clamp insertion, so getting one wrong changes emitted code
+rather than only code quality:
+
+- **A delayed signal's interval gains zero**, because the line starts there:
+  `reunion(source, [0,0])` for both `mem` and `@` (`signals/sigtyperules.cpp:504`, `:544`). Under
+  `prefix` it gains the *initial value's* interval instead (`:507-512`) — the interval-level statement
+  of §6.3's "delay lines initialize to zero, except under `prefix`".
+- **A soundfile buffer read is real with interval `[-1, 1]`**, hard-coded (`:676`). That is an
+  assumption about the data, not a derivation: a file whose samples exceed unity produces an interval
+  the compiler believes and the decoded audio violates. It bounds anything downstream that reaches an
+  index.
+- **A soundfile's length and rate are int over `[0, INT32_MAX]`** (`:645-665`), which is why §6.3's
+  measured slice puts `length` on the arithmetic reaching an index.
 
 **Already pinned elsewhere:** `select2`/`select3` evaluate both branches (§6.3); delay lines
 initialize to zero except under `prefix`, whose initial value must itself be init-time computable
@@ -2370,11 +2788,12 @@ Each exits on a passing test suite, not a judgment call.
 tiling token vector, recursive descent with a Pratt core over §4.7's shared precedence table, and
 panic-mode recovery building §4.5's `Hole` at the point of failure. The §4.5 Term inventory — `Hole`
 included — as §4.6's value and ref layers, built in that same pass, with interning, Merkle hashing
-and the provenance side tables. Then the printer, `print_in_context`, and the **splice**: §4.4's
-alignment of an old ref tree against a new value tree, emitting a disjoint edit script. The splice is
-this phase's deliverable — property 1's Retentiveness cannot be stated without it, and every later
-phase's editing rests on it. The overlay VFS and embedded standard library (§5.6, §12) with its
-notice step, since nothing in the corpus parses without resolving `import`. Oracle harness: build
+and the provenance side tables. Then the printer, `print_in_context`, and the **splice**: §4.4's two
+layers — render, claiming refs against the new value tree, and reconcile, turning that stream into a
+disjoint edit script with comment salvage. The splice is this phase's deliverable — property 1's
+Retentiveness cannot be stated without it, and every later phase's editing rests on it. The overlay
+VFS and embedded standard library (§5.6, §12) with its notice step, since nothing in the corpus
+parses without resolving `import`. Oracle harness: build
 reference Faust at `regular.cmake` + `FIR_BACKEND` and regenerate all five levels at `-double` per
 §11.1, against the `faustlibraries` checkout of §11.4.
 *Exit:* §11.5 property 1 — token coverage, PutGet, Retentiveness with its generated edit cases, and
@@ -2388,9 +2807,11 @@ synchronization set and has a fix. Plus §5.1's **differential acceptance oracle
 and a regenerated reference set matching the shipped files wherever precision does not differ.
 
 **Phase 2 — Evaluation.** The §6.1 evaluator: abstraction, pattern matching, `with`/`letrec`/
-`environment`, `import`/`component`/`library`, iterations, metadata, label substitution (§7.2). Box
-graph with arity checking. Memoization and the query engine of §5.8 — the four queries, early cutoff
-including its value-component-only equality rule, the resolution map, the import-cycle rule. The
+`environment`, `import`/`component`/`library`, iterations, metadata, label substitution (§7.2), and
+the two §2 singles out — modulation and `e[defs]`, both needing hand-written probes, the corpus
+having two files of the first and none of the second. Box graph with arity checking.
+Memoization and the query engine of §5.8 — the four queries, early cutoff including its
+value-component-only equality rule, the resolution map, the import-cycle rule. The
 §6.1 probes land here too, including the ones for its open questions — they are how those get
 settled, so they are phase work rather than follow-up. Then the first app work: §13.2's buffer
 contract with a pane satisfying it, and §13.3's snapshot, buildable the moment ref trees, token
@@ -2440,8 +2861,10 @@ the profile broken out by phase to confirm where time actually goes.
 **Phase 7 — Bidirectional editing.** The §4.3 edit catalogue as term rewrites over phase 1's splice,
 driven by §13.4's interaction model, plus expand and materialize. Everything that *chooses* a
 rewrite; the mechanism that applies one already exists under property 1, and the view that displays
-one has been up since phase 3. §4.2's trace-back tier lands here or not at all: the `value_id` per
-editable render-list element (§13.3), the unique-provenance splice, and the ambiguity prompt. It is
+one has been up since phase 3. §4.2's Box-to-Term lift is the phase's one piece of new machinery, a
+case per Box kind against the `.box` shapes phase 2 already parses. §4.2's trace-back tier lands here
+or not at all: the `value_id` per editable render-list element (§13.3),
+the unique-provenance splice, and the ambiguity prompt. It is
 the one item the design stands without, so it is first to cut if the phase runs long.
 *Exit:* every structural edit on every reference program produces correct localized diffs — measured
 as Retentiveness, that every unchanged node keeps its bytes and its comments — and identity edits
@@ -2467,7 +2890,9 @@ means a *consistently wrong* reading of `faustparser.y` passes property 1, since
 fine under uniformly wrong precedence. Phase 2's `.box` isomorphism catches it, because wrong
 precedence changes the evaluated diagram. The mitigation is to know that phase 1's green suite is not
 evidence about precedence and to read `.box` failures in that light. The alternative — a second
-derivation to check against — costs the four obligations §5.1 prices.
+derivation to check against — costs the four obligations §5.1 prices. Bought instead: the one-time
+hand-check of all fifteen rows recorded in §4.7, which retires the *reading* half of the risk and
+leaves only a table read correctly and consumed wrongly.
 
 **The parser is a build item, not a dependency.** §5.1 puts roughly fifteen hundred lines that must
 agree with `faustparser.y` exactly on phase 1's critical path. Three things hold it down: §4.5 and
@@ -2475,7 +2900,9 @@ agree with `faustparser.y` exactly on phase 1's critical path. Three things hold
 against an independently written grammar over roughly 950 files; and the four levels and fifteen
 precedence rows are one table rather than scattered rules. The residual exposure is the mdoc lexer
 modes, which the corpus exercises thinly — worth hand-written cases rather than trusting corpus
-coverage.
+coverage. §5.1's listing-mode finding is the evidence: flex's `lst` state has no whitespace rule and
+silently ECHOes, which no amount of corpus parsing would surface, since the reference *accepts* those
+files.
 
 **The reference implementation is the specification.** Faust's published papers cover the algebra but
 not the evaluator's corner cases — pattern-match ordering, `with` scoping interactions, first-class
@@ -2648,6 +3075,13 @@ Cited by tag above; each entry names what the design took.
 - **[R7]** issue #1870, *How does one improve the error recovery of a grammar?* Open.
 - **[R8]** discussion #1205, *Is there any way to give hints to the error recovery process?* — Both
   are the evidence for §5.1: no `error` production, no synchronization tokens, no cost hints.
+
+**Pattern matching.**
+
+- **[R14]** Albert Gräf. *Left-to-Right Tree Pattern Matching.* RTA 1991, LNCS 488. — The
+  construction behind `patternmatcher/`, named in its own source comment
+  (`patternmatcher.cpp:358-372`). Declined in §6.1: the automaton shares only the prefix of
+  arguments already tested, which a live-rule set carries directly.
 
 **Reference implementation.** `lib/faust` @ `515dc515c` (2.85.9-25) throughout, cited by file and
 line. `khiner/tree-sitter-faust` appears in §5.1 as the acceptance oracle and §13.2 as a highlighting
