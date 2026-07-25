@@ -137,11 +137,11 @@ Construction-site arity checking makes malformed nodes unrepresentable, so there
 write.
 
 **Plan is a linear instruction list — simultaneously a bytecode and a trivial LLVM emission
-source.** The design's best simplification. The reference maintains FIR, a full imperative IR with
-expression trees, statements and types, plus a distinct code emitter per backend. Produce
-three-address code over virtual registers in the shared lowering instead and both backends go thin:
-the interpreter is a dispatch loop, the LLVM emitter a one-pass walk mapping each instruction to one
-or two IRBuilder calls. One IR, two nearly trivial consumers.
+source.** The reference maintains FIR, a full imperative IR with expression trees, statements and
+types, plus a distinct code emitter per backend. Produce three-address code over virtual registers
+in the shared lowering instead and both backends go thin: the interpreter is a dispatch loop, the
+LLVM emitter a one-pass walk mapping each instruction to one or two IRBuilder calls. One IR, two
+nearly trivial consumers.
 
 ---
 
@@ -158,8 +158,8 @@ So do not invert evaluation. **Render the Term graph as boxes and edit that.**
 
 `par(i, 10, osc(i))` displays as a single `par` node with a multiplicity badge, because that is what
 the source says. Editing it rewrites the term, and the mapping back to text is exact because nothing
-was evaluated in between. The hardest problem in the system becomes a non-problem: no
-provenance-inversion machinery, no "is this edit legal" predicate, no partial round-tripping.
+was evaluated in between. So there is no provenance-inversion machinery, no "is this edit legal"
+predicate, and no partial round-tripping.
 
 **Term is pre-desugaring; Box is post-desugaring** — the opposite of the reference, and what §4.4
 rests on. Faust's *grammar* rewrites `a + b` into `boxSeq(boxPar(a, b), boxAdd())`
@@ -206,8 +206,8 @@ shape is what `faust -e` prints, which §11.1 already needs a parser for, so pha
 shapes before phase 7 has to produce them.
 
 So it is lossy four ways at once — names beta-reduced away, iterations unrolled, pattern matches
-specialized, and every surface form §4.1 exists to preserve replaced by its desugaring — but explicit
-and user-initiated: the difference between a tool with a sharp edge and one that corrupts your file.
+specialized, and every surface form §4.1 exists to preserve replaced by its desugaring — but
+explicit and user-initiated.
 
 **A third tier sits between the two, and it is optional.** Materializing to change one number is a
 large hammer, and changing a number is what a user reaches for first after expanding a node. Where
@@ -284,11 +284,14 @@ Four obligations, checked on the whole corpus:
 > over **hole-free** terms (§4.5), since a `Hole`'s bytes reparsed in isolation need not recover to
 > the same shape as they did in context.
 >
-> **Retentiveness.** For every edit, **every Term node whose value id appears in both the pre-edit
-> and post-edit ref trees retains its original bytes** — byte for byte, interior trivia included.
-> Hippocraticness (an edit to an equal subtree leaves the file byte-identical) is the special case
-> where the root matches. Holes are not excepted, so a splice across broken text preserves it
-> verbatim.
+> **Retentiveness.** Stated against the **target span** — the edited ref's `outer_span`, its bytes
+> plus any grouping parentheses around them (§4.6). Every byte outside it is unchanged, and **every
+> node of the new tree whose value id occurs in the pre-edit ref tree inside that span is emitted as
+> the bytes of one such occurrence** — byte for byte, interior trivia included. Per *occurrence*, not
+> per value id: where a value occurs several times, each new occurrence is answered by an old one,
+> one keeping its place and the rest copied. Hippocraticness (an edit to an equal subtree leaves the
+> file byte-identical) is the special case where the root matches. Holes are not excepted, so a
+> splice across broken text preserves it verbatim.
 >
 > **Normalization idempotence.** Bytes that *are* reprinted come out canonically parenthesized
 > (§4.7), so a second splice over the same region changes nothing: `splice(splice(f)) == splice(f)`.
@@ -298,35 +301,78 @@ beyond the weaker "bytes outside the edited range survive": that guarantee is sa
 a whole subtree from Term, which drops every comment *inside* the edit.
 
 **The splice is an edit script, produced in two layers.** Given the old ref tree `Refs`, the new
-value tree and the original bytes `S`, `splice` **renders** the new tree into a stream of retained
-spans and printed text, then **reconciles** that stream against the file. Neither layer is a tree
+value tree and the original bytes `S`, `splice` **renders** the new tree into a sequence of retained
+spans and printed text, and **reconciles** that sequence against the file. Neither layer is a tree
 diff: matching is a hash-map lookup, since §5.2 has already interned every value — *truediff*'s trick
 [R6], free here.
 
-An edit names the ref it applies to (§4.3), so both layers run **inside that ref's span** and every
-byte outside it is untouched. The indent §4.7's layout policy asks for is that span's start column.
+An edit names the ref it applies to (§4.3), so the whole of `splice` runs **inside that ref's target
+span**, and the indent §4.7's layout policy asks for is that span's start column.
 
-**Layer 1 — render, which is the printer with one clause in front of it.**
+**The two layers are one function.** Render's `claim` reads the cursor reconcile advances, so a
+materialized stream would have to be revisited to resolve its own claims. Render calls `retain` and
+`print` directly instead, and the sequence exists only as the call order, so render and reconcile
+cannot disagree on ordering. The whole of it:
 
 ```
+splice(target, new_root):          # target: the ref being rewritten; S: the file's bytes
+    cursor  = target.outer_begin   # reconcile's position in S; only ever advances
+    pending = ""                   # text emitted since the last retained span
+    script  = []
+    render(new_root, ctx0)         # ctx0: the §4.7 position and indent of target
+    flush(target.outer_end)
+    return script
+
 render(v, ctx):                    # v: new value id, ctx: the §4.7 position
     r = claim(v)
-    if r:  emit Retain(retained_span(r, ctx))
-    else:  emit this node's own syntax per §4.7, recursing render() on each child
+    if r:  retain(retained_span(r, ctx))
+    else:  emit this node's own syntax per §4.7 with print(), recursing render()
+           on each child in source order
+
+retain(s):
+    if s.begin >= cursor:          # keeps its place
+        flush(s.begin)
+        cursor = s.end
+    else:                          # the node moved, or this is a second occurrence
+        pending += S[s]
+
+print(t):
+    pending += t
+
+flush(upto):                       # reconcile [cursor, upto) against pending
+    if S[cursor, upto) != pending:
+        script += { [cursor, upto) -> salvage(pending, cursor, upto) }
+    pending = ""
+    cursor  = upto
 ```
 
-- **`claim(v)`** is the first ref in `Refs` with value id `v` and `span_begin >= cursor`, otherwise
-  the first with that value id anywhere — §5.5's positional tie-break as a function, answered by one
-  hash map from value id to a sorted span list. `cursor` is layer 2's: the two run as **one streaming
-  pass**, render emitting in the new tree's source order and reconcile consuming in that order.
-- **Refs are not consumed.** A value occurring twice in the new tree claims twice, and layer 2's
-  cursor decides which occurrence keeps its place and which is copied.
+- **`claim(v)`** is the first ref **inside the target span** with value id `v` beginning at or after
+  `cursor`, otherwise the first inside that span anywhere — §5.5's positional tie-break as a
+  function, answered by one hash map from value id to a sorted span list, binary-searched to the
+  sub-range the target covers. Both tests read `outer_span`, since that is what `retained_span` emits
+  and so what `retain` compares against the cursor: `outer_begin >= cursor`, and
+  `outer_begin >= target.outer_begin && outer_end <= target.outer_end` for "inside". Both
+  containment bounds are needed and inclusive — an ancestor can share the target's start offset, and
+  the target's own ref must qualify or an identity edit would reprint.
+- **Restricting the claim to the target is what keeps the script inside it.** Searched over the
+  whole file, a claim can return a ref beginning *after* the target ends; `retain` advances `cursor`
+  past the target's last byte, the final `flush` is an inverted range, and a retention has escaped
+  the region the edit promised to stay inside. A value occurring only outside the target is printed
+  instead, costing a retention opportunity and nothing else — those bytes are untouched either way.
+- **The region is the target's `outer_span`, for the same reason.** The target's own ref is the one
+  whose `outer_span` extends past its `span`, so a region bounded by `span` puts
+  `retained_span(target)` partly outside it: an identity edit takes `retain`'s second arm and the
+  final flush replaces `a : b` with `(a : b)` — parens added on a no-op. The cost of bounding by
+  `outer_span` is that a target that *is* rewritten has its own parentheses re-derived from §4.7
+  rather than retained.
+- **Refs are not consumed.** A value occurring twice in the new tree claims twice, and the cursor
+  decides which occurrence keeps its place and which is copied.
 - **A claim stops the descent.** Equal value ids are structurally identical subtrees (§4.6), so a
   retained node's interior is never visited — which is what makes retention linear, and what keeps
   the comments inside it.
 - **`retained_span`** yields the ref's `outer_span` where it has one, keeping the user's own parens.
   Otherwise `span`, and where §4.7 calls for parens at `ctx` the emission becomes
-  `Print("(") Retain(span) Print(")")` — three items, still one retained span. `outer_span` is safe
+  `print("(") retain(span) print(")")` — three calls, still one retained span. `outer_span` is safe
   everywhere, since `( expression )` re-enters level 1 from `primitive` (§4.7): the one place the
   splice keeps bytes §4.7 would not re-derive.
 
@@ -337,31 +383,21 @@ around it, grouping parens being anonymous (§4.7), so the `Seq` in `(a : b) : c
 `b : c` of `a : b : c` gives `a : x , y`, which is `(a : x) , y`. So the script's printing primitive
 is `print_in_context(term, parent_kind, side)`: §4.7's rule plus the emission.
 
-**Layer 2 — reconcile.** Walk the stream with a `cursor` into `S`, starting at the target span's
-first byte, accumulating *pending* text:
+**What the cursor buys.** `flush` emits nothing where the original bytes already equal the pending
+text, and otherwise one replacement of that region. Since `cursor` only advances and every
+replacement lies strictly between two retained spans or at an end of the target region, the script is
+disjoint and in source order by construction and **no replacement ever covers a retained span** — the
+third obligation discharged structurally rather than checked. `retain`'s second arm makes moves and
+duplication total rather than special cases: a swapped pair or a copied subtree emits its bytes
+verbatim, retained inside a replacement instead of by staying put.
 
-| Stream item | Action |
-|---|---|
-| `Retain(s)`, `s.begin >= cursor` | flush `[cursor, s.begin)` against pending, then `cursor = s.end` |
-| `Retain(s)`, `s.begin < cursor` | the node moved, or this is a second occurrence — append `S[s]` to pending verbatim |
-| `Print(t)` | append `t` to pending |
-
-Flushing a region emits nothing when the original bytes already equal the pending text, and otherwise
-one replacement of that region. A final flush covers `[cursor, target.span_end)`. Every replacement
-lies strictly between two retained spans or at an end of the target region, so the script is disjoint
-and in source order by construction and **no replacement ever covers a retained span** — the third
-obligation discharged structurally rather than checked.
-
-The second row makes moves and duplication total rather than special cases: a swapped pair or a
-copied subtree still emits its bytes verbatim, retaining them inside a replacement instead of by
-staying put.
-
-**Comment salvage, because a rewritten gap is not an untouched one.** The bytes between two retained
-spans are a connective and its trivia, and an insertion rewrites exactly that region — so surviving
-comments there is bought, not free. A flush re-emits the region's comment tokens — enumerable, since
-§5.1's token vector tiles the file — around the new text: **before it where the comment precedes the
-region's first non-trivia token, after it otherwise**. Whitespace is not salvaged, the printer
-supplies it. So `a /* keep */ : b` becomes `a /* keep */ : x : b` and `a : /* about b */ b` becomes
+**Comment salvage.** The bytes between two retained spans are a connective and its trivia, and an
+insertion rewrites exactly that region, so retention does not reach the comments in it. That is
+`salvage`: it re-emits the region's comment tokens — enumerable, since §5.1's token vector tiles the
+file — around the new text, **before it where the comment precedes the region's first non-trivia
+token, after it otherwise**, and it runs only where `flush` decided on a replacement. Whitespace is
+not salvaged, the printer supplies it. So
+`a /* keep */ : b` becomes `a /* keep */ : x : b` and `a : /* about b */ b` becomes
 `a : x : /* about b */ b`, each comment staying on the side of the operator it was written on. Trivia
 *between* two non-trivia tokens of a rewritten connective is the one thing a splice loses, bounded to
 the operators the edit rewrites.
@@ -369,20 +405,23 @@ the operators the edit rewrites.
 **Seams must not fuse tokens.** Retention puts bytes beside bytes they were never adjacent to, and
 the lexer is maximal-munch: `Access(Int(3), name)` emitted as `3.name` lexes as the float `3.` then
 `name`, a different program. So emission inserts a space wherever concatenating across a seam would
-move a token boundary, decided by lexing the junction. The printer's obligation, and PutGet tests it.
+move a token boundary, decided by lexing the junction. Three junctions need it: `print` and `retain`
+check what they append against the tail of `pending`, and `flush` checks a replacement's first and
+last bytes against the file on either side. The printer's obligation, and PutGet tests it.
 
 **`a : b` → `a : x : b`, worked through.** The new tree is `Seq(a, Seq(x, b))`, `:` being
 right-associative. `render` claims neither `Seq`, so it prints their syntax and claims `a` and `b`,
-giving `Retain(a) " : " "x" " : " Retain(b)`. Reconcile keeps both in place and flushes the three
-bytes `" : "` against the pending `" : x : "` — one replacement. A whole-subtree reprint would have
-rewritten every byte of `a` and `b` and dropped every comment inside them.
+giving `retain(a) print(" : ") print("x") print(" : ") retain(b)`. The cursor keeps both retained
+spans in place, and the one flush compares the three bytes `" : "` against the pending `" : x : "` —
+one replacement. A whole-subtree reprint would have rewritten every byte of `a` and `b` and dropped
+every comment inside them.
 
 **Why the four obligations hold.** The printed parts reparse by PutGet and the retained parts by the
-shared §4.7 rule, so the result parses to the new value. Retentiveness *is* layer 1's claim clause: a
-node whose value id appears in `Refs` is retained, and `Retain` copies rather than prints.
-Disjointness and ordering are layer 2's cursor. Idempotence is the identity case — a second splice
-over the same region claims every node, emits one `Retain` covering the whole target, flushes nothing
-and returns an empty script, which is also Hippocraticness.
+shared §4.7 rule, so the result parses to the new value. Retentiveness *is* `render`'s claim clause:
+a node whose value id occurs among the target's refs is retained, and `retain` copies rather than
+prints. Disjointness and ordering are the cursor. Idempotence is the identity case — a second splice
+over the same region claims the target's own ref at the root, retains it whole, flushes nothing and
+returns an empty script, which is also Hippocraticness.
 
 **Only the top of §3's stack is a lens**, and the boundary is §4.1's. Term to Box has a `get` and no
 lawful `put`: evaluation beta-reduces and unrolls, so `par(i, 10, osc(i))` becomes ten subgraphs with
@@ -392,10 +431,9 @@ it: it edits a Term leaf, so it is an ordinary `put`.
 
 ### 4.5 The Term inventory
 
-Term is the one structure the whole design leans on, so the inventory below is exhaustive. The rule
-generating it is short: **one Term node per surface production in
-`parser/faustparser.y`, no node the grammar does not write, and exactly one node for what the parser
-could not read.** Everything below follows from that.
+Every phase below reads Term, so the inventory is exhaustive. The rule generating it is short:
+**one Term node per surface production in `parser/faustparser.y`, no node the grammar does not
+write, and exactly one node for what the parser could not read.** Everything below follows from that.
 
 **Statements**, the file level. `Import(spec)`; `Declare(key, value)` and its three-token variant
 `DeclareDef(name, key, value)` (`:401-402`), which attaches metadata to a named definition and is
@@ -449,6 +487,32 @@ eleven UI constructors with their labels and bounds; and the three foreign forms
 picks by build precision — `nth(namelist, gFloatSize - 1)` (`signals/prim2.cpp:57-61`). So
 `float sinf|sin|sinl(float)` resolves to `sin` at this design's default f64, and §7.4's registry key
 is that selected name, not the declaration.
+
+**One lexeme rides in the node; every further lexeme is a `Str` child.** §4.6's `TermValue` carries a
+single payload word, and five nodes name more than one lexeme: `DeclareDef`, `Lambda`, `FFun`,
+`FConst` and `FVar`, as §4.8 spells out. The grammar answers this itself: `name`, `string`,
+`uqstring`, `fstring`, `fun`, `type` and `argtype` are seven productions denoting the same thing, a
+bare lexeme, so they share one node — **`Str(lexeme)`**, holding the lexeme verbatim with its quotes
+where it came from a `STRING`. The generating rule above takes one clause: one node per surface
+production, except that the lexeme-only productions share `Str`.
+
+`Declare(key, value)` already had this shape. `Str` is an ordinary interned value with an ordinary
+ref, so a splice retains a string literal's bytes like anything else's and a diagnostic names one.
+Where a node holds two `Str` *lists* the split goes in `form` — `FFun` alone.
+
+**`Waveform` holds `Int`/`Real` children.** `vallist` is a comma-separated list of `number`s
+(`:388-398`), and a signed literal is already an `Int` or `Real` carrying its sign, so the values are
+ordinary leaves with ordinary refs, editable one at a time.
+
+**`MdocListing` fits in `form`.** Its three attributes may appear in any order, repeat, or be absent
+(`:435-446`), which looks like more state than one byte holds and is not: three value bits and three
+presence bits, printed in grammar order. Order and repetition normalize away on a reprint exactly as
+redundant parentheses do below, and PutGet compares values.
+
+**`Prim`'s payload is a primitive code.** The payload word's *interpretation* is per-kind: an
+interned lexeme for most nodes, the primitive's enumerator for `Prim`, nothing where a node has
+neither. Interning the spelling and looking it up would not work here, since `^` and `pow` name one
+primitive under two spellings — the spelling is `form`, the primitive is the payload.
 
 **`Hole(lexeme, children)` — the one node no production writes.** §9 needs Term to survive a partial
 parse, so the exception is specified rather than improvised at the first parse error.
@@ -552,11 +616,12 @@ rather than a union or an inline-child optimization, every node addresses the sa
 ```cpp
 struct TermValue {              // 16 bytes
     uint8_t  kind;              // §4.8 node kind
-    uint8_t  form;              // form tag: merge/pow spelling, iterate kind, widget kind
+    uint8_t  form;              // per-kind discriminant: merge/pow spelling, iterate kind,
+                                // widget kind, MdocListing's six bits, FFun's name count
     uint16_t variants;          // §4.5 precision bitmask; 0 for non-statements
-    uint32_t payload;           // interned string id, or 0
+    uint32_t payload;           // per-kind: an interned lexeme, Prim's code, or 0 (§4.5)
     uint32_t children;          // offset into child_pool
-    uint32_t child_count;
+    uint32_t child_count;       // children in source order
 };
 std::vector<TermValue> values;      // index == value id
 std::vector<uint32_t>  child_pool;  // append-only, deterministic order (§5.5)
@@ -569,6 +634,11 @@ struct TermRef { uint32_t value_id, span_begin, span_end,
 Binary nodes pay two pool words they could have inlined, in exchange for one code path everywhere.
 The Merkle hash covers `{kind, form, variants, payload, children…}`, and an intern-table bucket hit
 compares that tuple plus the child span — `O(arity)`, as above.
+
+**Children are stored in source order**, which is what §4.4's single pass depends on: `render` walks
+them in that order while the reconcile cursor only advances. It also fixes the position of §4.5's
+`Str` children — a `Lambda`'s parameters precede its body, an `FFun`'s return type precedes its
+names.
 
 **Interning must roll the pool back on a hit.** §5.1 builds children before parents and interns at
 construction, so a node that resolves to an existing value would strand the children it just
@@ -736,8 +806,8 @@ precision bitmask.
 | Node | Children | Payload | Prints as |
 |---|---|---|---|
 | `Import` | — | spec lexeme | `import("spec");` |
-| `Declare` | value: string | key lexeme | `declare key "v";` |
-| `DeclareDef` | value: string | name, key lexemes | `declare name key "v";` |
+| `Declare` | value: `Str` | key lexeme | `declare key "v";` |
+| `DeclareDef` | key: `Str`, value: `Str` | name lexeme | `declare name key "v";` |
 | `Definition` | clauses: `Clause`* | name lexeme | one line per clause |
 | `Clause` | params: expr* (level 2, may be empty), body: expr | — | `name(p, q) = body;` / `name = body;` |
 | `RecDef` | body: expr | name lexeme | `'name = body;` |
@@ -745,7 +815,7 @@ precision bitmask.
 | `MdocProse` | — | text | verbatim |
 | `MdocEquation`, `MdocDiagram` | expr | — | `<equation>e</equation>` |
 | `MdocMetadata` | — | name lexeme | `<metadata>name</metadata>` |
-| `MdocListing` | — | three booleans | `<listing k="v" … />` |
+| `MdocListing` | — | three value and three presence bits in `form` (§4.5) | `<listing k="v" … />` |
 | `MdocNotice` | — | — | `<notice/>` |
 
 `Clause` params are an `arglist` — patterns, not identifiers (`:475`) — so several clauses of one
@@ -765,7 +835,7 @@ parameters (`:456-464`).
 | `ModifLocalDef` | expr, defs: `Definition`* | — | 15 |
 | `Apply` | fn, args: expr* (level 2) | — | 14 |
 | `Access` | expr, — | name lexeme | 13 |
-| `Lambda` | body | param name lexemes | primitive |
+| `Lambda` | params: `Str`+, body: expr | — | primitive |
 | `Case` | rules: `Rule`* | — | primitive |
 | `Rule` | patterns: expr* (level 2), body: expr | — | — |
 | `Modulation` | entries: `Modulator`*, expr | — | primitive |
@@ -774,12 +844,13 @@ parameters (`:456-464`).
 | `Inputs`, `Outputs` | expr | — | primitive |
 | `Environment` | stmts: stmt* | — | primitive |
 | `Component`, `Library` | — | path string | primitive |
-| `Waveform` | — | number lexemes | primitive |
+| `Waveform` | numbers: (`Int` \| `Real`)+ | — | primitive |
 | `Route` | ins, outs (level 2), entries: expr (optional) | — | primitive |
 | `Hole` | children (§4.5) | source bytes | verbatim |
 
-`Lambda` parameters are plain identifiers (`params`, `:466-469`), unlike `Clause`'s. `Route`'s third
-child is absent in the two-argument spelling, the distinction §4.5 keeps against the fake route.
+`Lambda` parameters are plain identifiers (`params`, `:466-469`), unlike `Clause`'s. They are binding
+occurrences, so they are `Str` children. `Route`'s third child is absent in the two-argument
+spelling, the distinction §4.5 keeps against the fake route.
 
 **Leaves.**
 
@@ -787,14 +858,15 @@ child is absent in the two-argument spelling, the distinction §4.5 keeps agains
 |---|---|
 | `Int`, `Real` | the literal lexeme verbatim, sign and all (§4.5) |
 | `Ident` | lexeme, `::`-qualification included |
-| `Prim` | which primitive — the nullary set of §4.5, each infix operator used bare, `mem`, `prefix`, `int`, `float`, the math functions, `rdtable`, `rwtable`, `select2`, `select3`, `attach`, `enable`, `control`, `assertbounds`, `lowest`, `highest`, `_`, `!` |
+| `Str` | a bare lexeme, verbatim, quotes included where it came from a `STRING` (§4.5) |
+| `Prim` | which primitive, as a code (§4.5) — the nullary set of §4.5, each infix operator used bare, `mem`, `prefix`, `int`, `float`, the math functions, `rdtable`, `rwtable`, `select2`, `select3`, `attach`, `enable`, `control`, `assertbounds`, `lowest`, `highest`, `_`, `!`; `form` carries the `^`/`pow` spelling |
 | `Button`, `Checkbox` | label string |
 | `NumericWidget` | kind ∈ `{vslider, hslider, nentry}`, label; children `init`, `min`, `max`, `step` at level 2 |
 | `Bargraph` | kind ∈ `{vbargraph, hbargraph}`, label; children `min`, `max` at level 2 |
 | `Group` | kind ∈ `{vgroup, hgroup, tgroup}`, label; child expr at level 1 |
 | `Soundfile` | label; child channel count at level 2 |
-| `FFun` | one to four `\|`-separated names, return type, argument types incl. `any`, include file, library string |
-| `FConst`, `FVar` | type, name, include file |
+| `FFun` | no payload; children in source order are `Str`(return type), one to four `Str` names, the `Str` argument types incl. `any`, `Str`(include file), `Str`(library), with `form` holding the name count that splits the two lists |
+| `FConst`, `FVar` | name lexeme; `form` ∈ `{int, float}`; child `Str`(include file) |
 
 ---
 
@@ -821,9 +893,9 @@ is reshaping rules until the heuristic behaves, which changes what parses cleanl
 
 Written by hand it is not a property to test but a loop invariant. Parse statements one at a time; on
 failure, record the diagnostic, consume to the synchronization token, and emit a `Hole` spanning
-exactly what was consumed, carrying the children the frame had already built (§4.5). Faust is
-unusually favourable — a flat, `;`-terminated statement list, so panic-mode recovery is the textbook
-case and the hard problems of brace-heavy or layout-sensitive languages do not arise.
+exactly what was consumed, carrying the children the frame had already built (§4.5). Faust's
+statement list is flat and `;`-terminated, so panic-mode recovery is the textbook case and the hard
+problems of brace-heavy or layout-sensitive languages do not arise.
 
 **And the structural coupling is the larger cost.** A generated grammar is a *second structural
 derivation* of `faustparser.y` alongside §4.5's Term inventory, and the two have to agree. Keeping
@@ -833,8 +905,7 @@ test, a hard build failure on any node the lowering has no case for, and a gramm
 All four are the price of the second derivation, and one derivation does not pay it.
 
 **§4.5 and §4.8 already are the parser specification**, written production-by-production against
-`faustparser.y` with payloads, children, precedences and form tags. Building the parser from it is
-transcription.
+`faustparser.y` with payloads, children, precedences and form tags.
 
 **The lexer.** Hand-written and mode-stacked. It emits a flat `vector<Token>{kind, span}` that
 **tiles the file** — every byte in exactly one token, comments and whitespace included. That tiling
@@ -929,8 +1000,7 @@ five ways — grouping parens anonymous and inline, signed numeric literals lexi
 the reference reaches a negative through `SUB INT`, `<equation>`/`<diagram>` holding prose rather than
 expressions, `with` accepting a full statement list where the reference gives it a `deflist`, and the
 composition operator unnamed — so comparing shapes fails everywhere on purpose. Accept/reject parity
-across roughly 950 files still catches a lexer or layering mistake for almost nothing, at test time
-rather than runtime.
+across roughly 950 files still catches a lexer or layering mistake, at test time rather than runtime.
 
 ### 5.2 The mechanism is Merkle hashing
 
@@ -973,9 +1043,9 @@ written.
 ### 5.4 Where it stops, and why that is fine
 
 Codegen is whole-function. The compute loop is one block in a topological order over a shared state
-layout, so one changed node means a new function. Every scheme to avoid this is worse than the
-problem: compiling each definition into a separately relinkable unit with its own state would
-destroy global CSE, shared delay lines and loop fusion, which is most of what makes Faust fast.
+layout, so one changed node means a new function. Avoiding it means compiling each definition into a
+separately relinkable unit with its own state, which would destroy global CSE, shared delay lines and
+loop fusion — most of what makes Faust fast.
 
 The answer is not to make codegen incremental but to make it **cheap**. Emitting bytecode is a
 topological sort plus linear instruction emission over a flat array; regenerating all of it per
@@ -1087,7 +1157,7 @@ any input write. Each cache entry holds `{result, changed_at, verified_at, deps}
 3. Otherwise recompute, setting `verified_at` to the current revision either way, and `changed_at`
    only if the new result differs from the old.
 
-That is around two hundred lines. Step 3's equality check is the early cutoff, and interning is what
+That is the whole mechanism. Step 3's equality check is the early cutoff, and interning is what
 makes it free: every derived result is an interned id or a small per-file structure, so "equal" is
 integer comparison (§4.6). A whitespace edit changes `file_text`, re-derives the same `terms` value
 ids, and `file_env` never recomputes — nothing below the query layer runs at all. That is §8.2's
@@ -1170,11 +1240,12 @@ source range.
 **`Error` has unconstrained arity, and composing anything with it yields `Error`.** §4.5's `Hole`
 evaluates to `Error`, and arity is checked at construction everywhere else. So `Error` satisfies
 whatever count is asked of it and absorbs its neighbours, keeping the diagnostic set the size of the
-mistake — §9's locality rule, enforced where it is cheapest.
+mistake — §9's locality rule, falling out of the arity check rather than needing a pass.
 
 **Box's inventory is Term's minus the sugar plus six, and it splits in two.** No table, because the
 generating rule is short: drop the surface-only forms desugared away below — `BinOp`, `Delay1`,
-`NegIdent`, `LetRec`, the two-argument `Route` — and add the six kinds no Term node denotes,
+`NegIdent`, `LetRec`, the two-argument `Route` — drop `Str`, a lexeme carrier the rules below read
+rather than evaluate (§4.5) — and add the six kinds no Term node denotes,
 `PatternVar` with its partially applied `PatternMatcher`, `Slot` and `Symbolic` from modulation, the
 closure, and `Error`.
 
@@ -1673,8 +1744,8 @@ an interpreter backend (`compiler/generator/interpreter`, `tests/interp-tests`) 
 
 *If per-sample interpretation proves too slow for large programs*, the escalation is block-wise
 interpretation: partition the graph into feedback-free regions that can run one instruction across a
-whole buffer, leaving only cycles per-sample. A significant speedup and a significant complication —
-build it when a measured program demands it, not before.
+whole buffer, leaving only cycles per-sample. It trades a partitioning pass and two dispatch paths
+for the throughput — build it when a measured program demands it, not before.
 
 ### 6.5 The LLVM tier
 
@@ -2018,7 +2089,7 @@ program of §8.3 is the common case, and it has to stay responsive rather than a
   indeterminate results so an incomplete program still has behaviour. Declined: running around a hole
   means choosing a signal for it, and every choice — silence, pass-through — is a program the user
   did not write, played into their monitors at full gain. §8.3's rule, hearing the last good program,
-  is the better answer for a DSP, and deliberate rather than a limitation.
+  is the better answer for a DSP.
 - **Divergence is bounded too.** `foo = foo;` and its subtler relatives make evaluation
   loop forever, and a batch compiler can afford to spin until someone kills it. A live one cannot:
   the compile thread stops answering and every later keystroke queues behind it, which reads as the
@@ -2030,8 +2101,7 @@ program of §8.3 is the common case, and it has to stay responsive rather than a
   declines the swap. This is the value-level detector; the path-level one for import cycles lives in
   the query engine and works differently, for reasons §5.8 gives.
 
-A real departure from the reference compiler, which throws a `faustexception` and abandons
-compilation. Not an optional refinement — it is what "live" means.
+A departure from the reference compiler, which throws a `faustexception` and abandons compilation.
 
 ### 9.1 The diagnostic record
 
@@ -2102,14 +2172,14 @@ a delay or table index a widened answer is not pessimal, it rejects working prog
 emitted graph, so there the rules stay at least as tight as the reference's. §6.3 measures that
 slice across the corpus and puts thirteen operations in it, against the reference's ~50 files.
 
-What is emphatically *not* cut is the definition language, the algebra, or numeric fidelity. Those
-are the language.
+What is *not* cut is the definition language, the algebra, or numeric fidelity. Those are the
+language.
 
 ---
 
 ## 11. Correctness
 
-The reference repository ships an unusually good oracle and this plan leans on it hard.
+The reference repository ships an oracle at five levels, and this plan uses all of them.
 `lib/faust/tests/impulse-tests/reference/` holds `.box` (evaluated diagram as source), `.sig`
 (normalized signal graph), `.type` (per-node type and interval), `.fir` (state layout and band split,
 §11.1) and `.ir` (a 60000-frame impulse response) — 93/93/92/93 of the first four and 94 usable of
@@ -2140,10 +2210,10 @@ only key whose duplicate values all print, every other key printing just the fir
 `declare name` is synthesized from the basename, and `filename` is always set (`:195-204`).
 
 **`.sig` is not source.** It is an SSA dump in a notation of its own (`ID_5 = letrec(W0 = (ID_4));`,
-`proj0`, `ID_7 = ID_6@0`, `buffer`, `length`) and needs a small dedicated parser — a real
-deliverable, a few hundred lines. Two properties make it easier than it looks: every right-hand side
-is exactly *one* operation over `ID` references and literals, never a nested expression, and its only
-normalization is reading the reference's explicit `@0` as identity (§6.2).
+`proj0`, `ID_7 = ID_6@0`, `buffer`, `length`) and needs a parser of its own, which §12 puts under
+`test/conformance/`. Two properties make it easier than it looks: every
+right-hand side is exactly *one* operation over `ID` references and literals, never a nested
+expression, and its only normalization is reading the reference's explicit `@0` as identity (§6.2).
 
 **Write that parser against regenerated files, not the shipped ones.** The two notations already
 differ: `signals/ppsig.cpp:276-279` separates `sigWRTbl4p`'s four arguments with `;`, while the
@@ -2285,16 +2355,16 @@ to this design, and it is paid up front, on a theory rather than on evidence. No
 so the "unnormalized" dump still carries constant folding, product normalization and the delay fusion
 above. It isolates sum association — which is exactly the question at issue, but only that one.
 
-**Build the simple thing first and let the corpus decide.** A canonical ordering plus constant
-folding is a small amount of code. Run the whole corpus against `filesCompare` and port fidelity only
-where the comparison actually fails — the corpus carries `norm1`, `norm2`, `norm3` and `math_simp`
+**Build the simple thing first and let the corpus decide.** Start with a canonical ordering plus
+constant folding, run the whole corpus against `filesCompare`, and port fidelity only where the
+comparison actually fails — the corpus carries `norm1`, `norm2`, `norm3` and `math_simp`
 to exercise exactly this, so the feedback is immediate and specific.
 
 The risk is real but bounded. For a *stable* filter a differently-associated sum produces an error
 that stays bounded rather than growing, which is why most programs will pass; those that diverge name
-themselves, and porting the reference's ordering for those cases is a targeted job rather than a
-subsystem. What must not happen is shipping without running the comparison and assuming tolerance
-covers it — which is why §15 files this as the sharpest correctness risk in the project.
+themselves, and only their ordering gets ported. What must not happen is shipping without running
+the comparison and assuming tolerance covers it — which is why §15 files this as the sharpest
+correctness risk in the project.
 
 ### 11.3 Semantics that must match exactly
 
@@ -2463,13 +2533,14 @@ diagnostics differ from the reference's by design.
 
 ### 11.5 Properties specific to this design
 
-Six invariants the reference compiler has no analogue for, each cheap to test and each protecting
-something the product depends on:
+Six invariants the reference compiler has no analogue for, each protecting something the product
+depends on:
 
 1. **Splice fidelity — the retentive-lens laws of §4.4** over the whole corpus, each with its stated
    quantifier: token coverage, the token vector tiling every file byte-exactly; PutGet,
-   `value(parse(print(t))) == value(t)`, for every hole-free term; **Retentiveness**, that every
-   node whose value id survives an edit retains its original bytes including interior trivia, with
+   `value(parse(print(t))) == value(t)`, for every hole-free term; **Retentiveness**, that every byte
+   outside the edited ref's target span is unchanged and every node of the new tree whose value
+   occurs inside that span is emitted as an old occurrence's bytes, interior trivia included, with
    Hippocraticness (an identity edit is byte-identical) as its root case; and normalization
    idempotence, `splice` idempotent byte-exactly over every ref. Needs the splice, which is why §14
    puts it in phase 1.
@@ -2478,12 +2549,15 @@ something the product depends on:
    file, rewrite that subtree to itself, to a variant with one literal changed, and with one stage
    inserted, then assert every *other* matched node is byte-identical and that comments inside the
    rewritten subtree survive. The third case is the one a whole-subtree reprint fails, and the one a
-   user would otherwise find by losing a comment.
+   user would otherwise find by losing a comment. Two more aim at §4.4's region rule rather than its
+   matching: rewrite a subtree to a value occurring *outside* the target span and assert the script
+   stays inside the target; and take every ref carrying an `outer_span` as an identity edit and
+   assert an empty script. Neither failure appears in a corpus sampled at random.
 2. **Incremental equivalence.** Apply a random edit, then compare the incrementally recompiled
    result against a from-scratch compile of the edited text. They must be identical — the invariant
    a memoizing compiler most easily breaks.
 3. **Tier agreement.** Interpreter and LLVM outputs must match within tolerance across the corpus.
-   Two independent backends checking each other is the cheapest real bug-finder available.
+   Two independent backends checking each other finds bugs neither suite targets.
 4. **State-preservation continuity.** A no-op edit while running must leave the output sample-
    identical across the reload; a gain edit inside a feedback network must not cost the tail. The
    first tests §8.2's fade and swap shortcut, the second §8.1's shape pass.
@@ -2499,8 +2573,8 @@ something the product depends on:
 ### 11.6 Fuzzing and oracle hygiene
 
 Grammar-directed differential fuzzing — random arity-correct terms compiled by both compilers,
-impulse responses compared — finds the evaluator and normalization bugs a curated corpus misses, and
-is cheap once the harness exists. Extend it with random *edit sequences* to attack property 2.
+impulse responses compared — finds the evaluator and normalization bugs a curated corpus misses,
+over the harness §11.1 already builds. Extend it with random *edit sequences* to attack property 2.
 
 Build the oracle from the submodule. The `faust` on this machine's `PATH` is 2.66.9 against the
 submodule's 2.85.9, and the checked-in reference files were generated with 2.81.0 — regenerate from
@@ -2698,11 +2772,11 @@ with no unique originating value carry none — precisely the ambiguous case §4
 
 ### 13.4 The box view
 
-**Position is derived, never user-owned.** The whole design follows from it. Term is a tree, so each
-node lays its children out in a fixed pattern by kind — left to right for `:`, stacked for `,`, a fan
-for `<:` and `:>`, a return path for `~` — and computes its bounding box bottom-up in one recursive
-pass, memoized per value id. Wires only ever connect siblings inside one composition node, so there
-is no edge routing, no crossing minimization, and no layout solver.
+**Position is derived, never user-owned.** The rest of the view follows from it. Term is a tree, so
+each node lays its children out in a fixed pattern by kind — left to right for `:`, stacked for `,`,
+a fan for `<:` and `:>`, a return path for `~` — and computes its bounding box bottom-up in one
+recursive pass, memoized per value id. Wires only ever connect siblings inside one composition node,
+so there is no edge routing, no crossing minimization, and no layout solver.
 
 **The deeper reason is that it keeps §4.4's lens asymmetric.** A transformation whose two sides both
 hold private state is a **symmetric lens** [R13], needing a persistent **complement** for what each
@@ -2725,8 +2799,8 @@ Save any of it to disk and the complement stops being empty. That, not the absen
 
 So there is **no node-editor library.** `imgui-node-editor` exists to manage free-positioned graphs
 with user-owned coordinates and persisted layout, exactly the state this refuses to have: nothing to
-save, nothing to hand-place, and no way for the diagram to drift from the source. `ImDrawList` plus a
-few hundred lines of shape primitives covers it.
+save, nothing to hand-place, and no way for the diagram to drift from the source. `ImDrawList` plus
+shape primitives of our own covers it.
 
 Interaction, mapping onto §4.3's edit catalogue:
 
@@ -2755,8 +2829,8 @@ no further dependency, and the host holds the decoded buffers in the per-URL cac
 across recompiles.
 
 The control surface renders §7.2's UI tree directly — groups, sliders, buttons and bargraphs from a
-descriptor tree is close to a transcription in an immediate-mode toolkit, writing through the relaxed
-atomics of §8.2. It is also where the metadata the compiler carries but does not act on earns its
+descriptor tree map one-to-one onto immediate-mode calls, writing through the relaxed atomics of
+§8.2. It is also where the metadata the compiler carries but does not act on earns its
 keep: `style:knob`, `scale:log`, `unit:Hz`, `hidden:1`. §7.1's channel mismatch surfaces here rather
 than silently producing quiet.
 
@@ -2789,13 +2863,13 @@ tiling token vector, recursive descent with a Pratt core over §4.7's shared pre
 panic-mode recovery building §4.5's `Hole` at the point of failure. The §4.5 Term inventory — `Hole`
 included — as §4.6's value and ref layers, built in that same pass, with interning, Merkle hashing
 and the provenance side tables. Then the printer, `print_in_context`, and the **splice**: §4.4's two
-layers — render, claiming refs against the new value tree, and reconcile, turning that stream into a
-disjoint edit script with comment salvage. The splice is this phase's deliverable — property 1's
-Retentiveness cannot be stated without it, and every later phase's editing rests on it. The overlay
-VFS and embedded standard library (§5.6, §12) with its notice step, since nothing in the corpus
-parses without resolving `import`. Oracle harness: build
-reference Faust at `regular.cmake` + `FIR_BACKEND` and regenerate all five levels at `-double` per
-§11.1, against the `faustlibraries` checkout of §11.4.
+layers as one pass — render claiming the target's refs against the new value tree, reconcile turning
+that call sequence into a disjoint edit script with comment salvage. The splice is this phase's
+deliverable — property 1's Retentiveness cannot be stated without it, and every later phase's editing
+rests on it. The overlay VFS and embedded standard library (§5.6, §12) with its notice step, since
+nothing in the corpus parses without resolving `import`. Oracle harness: build reference Faust at
+`regular.cmake` + `FIR_BACKEND` and regenerate all five levels at `-double` per §11.1, against the
+`faustlibraries` checkout of §11.4.
 *Exit:* §11.5 property 1 — token coverage, PutGet, Retentiveness with its generated edit cases, and
 normalization idempotence — over the 319 test files reference Faust accepts, all 296 examples, and
 faustlibraries. The 22 remaining test files are pinned as *rejections* (§5.1), where an accept
@@ -2894,11 +2968,11 @@ derivation to check against — costs the four obligations §5.1 prices. Bought 
 hand-check of all fifteen rows recorded in §4.7, which retires the *reading* half of the risk and
 leaves only a table read correctly and consumed wrongly.
 
-**The parser is a build item, not a dependency.** §5.1 puts roughly fifteen hundred lines that must
-agree with `faustparser.y` exactly on phase 1's critical path. Three things hold it down: §4.5 and
-§4.8 are already the specification, so the work is transcription; the acceptance oracle checks it
-against an independently written grammar over roughly 950 files; and the four levels and fifteen
-precedence rows are one table rather than scattered rules. The residual exposure is the mdoc lexer
+**The parser is ours, and it must match `faustparser.y` exactly.** §5.1 puts a hand-written lexer and
+parser on phase 1's critical path. Three things hold it down: §4.5 and §4.8 are already the
+specification; the acceptance oracle checks it against an independently written grammar over roughly
+950 files; and the four levels and fifteen precedence rows are one table rather than scattered
+rules. The residual exposure is the mdoc lexer
 modes, which the corpus exercises thinly — worth hand-written cases rather than trusting corpus
 coverage. §5.1's listing-mode finding is the evidence: flex's `lst` state has no whitespace rule and
 silently ECHOes, which no amount of corpus parsing would surface, since the reference *accepts* those
@@ -2910,8 +2984,8 @@ not the evaluator's corner cases — pattern-match ordering, `with` scoping inte
 `compiler/evaluate/eval.cpp` and by differential fuzzing, not from documentation.
 
 **Interpreter throughput.** If per-sample dispatch cannot sustain a realistic program in real time,
-§6.4's block-wise escalation is a significant complication. Measure early, in phase 5, so the answer
-is known before phase 6 depends on it.
+the fallback is §6.4's block-wise escalation, which adds a partitioning pass and a second dispatch
+path. Measure early, in phase 5, so the answer is known before phase 6 depends on it.
 
 **Incremental equivalence bugs.** Memoizing compilers silently serve stale results. Property 2 and
 edit-sequence fuzzing are the defense, and both need to exist from phase 2 rather than be added
@@ -2961,8 +3035,8 @@ are known to be pleasant or not long before anything depends on them.
    with no author-facing lever, so §14's hole-extent criterion could be measured but never fixed,
    where by hand it is a loop invariant; and a generated grammar is a second structural derivation of
    `faustparser.y` alongside §4.5's node table, whose seam costs an audit, a drift test, a
-   build-failure rule and a grammar change. §4.5 and §4.8 already *are* the specification, so
-   building it is transcription. §15 records what that gives up.
+   build-failure rule and a grammar change. §4.5 and §4.8 already *are* the specification. §15
+   records what that gives up.
 8. **Errors are local values, from the parse down.** Every phase emits diagnostics and continues.
    Unparsable text is a `Hole` in Term that keeps the children its parser frame had built and prints
    back verbatim (§4.5), evaluating to an `Error` box of unconstrained arity (§6.1) so one typo
@@ -3014,8 +3088,8 @@ are known to be pleasant or not long before anything depends on them.
     and by pinning semantics (§11.3), not by porting the reference's implementation.
 20. **The box view has no coordinates, and the text buffer is a contract rather than a widget.**
     Layout is derived from the term on every frame, so there is nothing to save, nothing to
-    hand-place, and no way for the diagram to drift from the source — which is why `ImDrawList` and a
-    few hundred lines of shape primitives cover it in place of a node-editor library. It also keeps
+    hand-place, and no way for the diagram to drift from the source — which is why `ImDrawList` and
+    shape primitives of our own cover it in place of a node-editor library. It also keeps
     §4.4's lens asymmetric: saved coordinates would be private view state, obliging a symmetric lens
     and its complement. The complement stays empty only because nothing is persisted, which makes
     expansion's key — `(value id, environment id)`, not a ref — part of the decision rather than a
