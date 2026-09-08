@@ -46,8 +46,7 @@ void Crossfade(const double *const *from, int32_t from_channels, double *const *
             const int64_t at = done + f;
             const double t = at >= length ? 1.0 : double(at) / double(length);
             const double old = src ? src[f] : 0.0;
-            // `old + t * (new - old)`, not `t * new + (1 - t) * old`: where the instances
-            // agree the difference is exactly zero.
+            // Use `old + t * (new - old)` to preserve identical output exactly.
             dst[f] = old + t * (dst[f] - old);
         }
     }
@@ -55,7 +54,7 @@ void Crossfade(const double *const *from, int32_t from_channels, double *const *
 
 void EnableFlushToZero() {
 #if defined(__aarch64__) || defined(_M_ARM64)
-    // FPCR's FZ flushes denormals in and out, so there is no separate DAZ.
+    // ARM FPCR FZ flushes both input and output denormals.
     uint64_t fpcr;
     __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
     __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr | (1ull << 24)));
@@ -91,7 +90,6 @@ std::unique_ptr<Host::Voice> Host::MakeVoice(Interp &dsp) const {
     return v;
 }
 
-// Lock-free from any thread.
 bool Host::Retire(Voice *v) {
     for (std::atomic<Voice *> &slot : Retired) {
         Voice *empty = nullptr;
@@ -112,7 +110,7 @@ std::vector<Interp *> Host::Collect() {
 }
 
 void Host::Process(const float *in, float *out, uint32_t frames) {
-    // On *this* thread: a start notification fires on whichever thread started it.
+    // Set denormal handling on the callback thread.
     static thread_local bool ftz = false;
     if (!ftz) {
         ftz = true;
@@ -122,7 +120,7 @@ void Host::Process(const float *in, float *out, uint32_t frames) {
 
     if (Voice *next = Incoming.exchange(nullptr, std::memory_order_acquire)) {
         if (Fading && !Retire(Fading)) {
-            // `Swap` guaranteed room, so this is unreachable. Dropping it leaks.
+            // Swap reserves enough retirement slots; failure would leak the voice.
             Incoming.store(next, std::memory_order_release);
         } else {
             if (Current && next->From == Current->Dsp) TransferState(next->Transfer, *Current->Dsp, *next->Dsp);
@@ -160,8 +158,7 @@ void Host::Process(const float *in, float *out, uint32_t frames) {
 
 bool Host::Swap(Interp &next, const Interp *from, const StateTransfer &transfer) {
     if (!Running || Incoming.load(std::memory_order_acquire) != nullptr) return false;
-    // Counted before publishing, so the audio thread's retires cannot fail: an untaken
-    // hand-off, the one fading, and the one replaced.
+    // Reserve retirement slots before publishing for the pending, fading, and replaced voices.
     size_t free_slots = 0;
     for (const std::atomic<Voice *> &slot : Retired) free_slots += slot.load(std::memory_order_relaxed) == nullptr ? 1 : 0;
     if (free_slots < 3) return false;
@@ -179,7 +176,7 @@ std::expected<void, std::string> Host::Start(Interp &dsp) {
 
     auto configure = [&](bool with_capture) {
         ma_device_config cfg = ma_device_config_init(with_capture ? ma_device_type_duplex : ma_device_type_playback);
-        // Zero channels and rate ask for the device's own, converting format only.
+        // Zero preserves the device's channel count and sample rate.
         cfg.playback.format = ma_format_f32;
         cfg.playback.channels = 0;
         cfg.capture.format = ma_format_f32;
@@ -212,7 +209,7 @@ std::expected<void, std::string> Host::Start(Interp &dsp) {
 
     Chunk = std::max<int32_t>(1024, int32_t(Device->Device.playback.internalPeriodSizeInFrames));
 
-    // Before the device runs, so the first callback meets a live instance.
+    // Initialize at the device sample rate before the first callback.
     dsp.Init(SampleRate);
     Current = MakeVoice(dsp).release();
 

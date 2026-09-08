@@ -9,7 +9,7 @@ namespace faustlens::controls {
 
 namespace {
 
-// A label may repeat a key, and the values are a set, so the lowest wins.
+// Use the lowest value for repeated metadata keys.
 std::string Meta(const UiNode &n, const std::string &key) {
     const auto it = n.Meta.find(key);
     if (it == n.Meta.end() || it->second.empty()) return "";
@@ -24,7 +24,6 @@ double LogSafe(double v) { return std::log(std::max(DBL_EPSILON, v)); }
 
 double ExpSafe(double v) { return std::min(DBL_MAX, std::exp(v)); }
 
-// From the declared step: 1 prints an integer, 0.01 two, and a declared 0 three.
 int Decimals(double step) {
     if (!(step > 0)) return 3;
     for (int d = 0; d < 5; ++d) {
@@ -39,7 +38,6 @@ int Decimals(double step) {
 Style StyleOf(const UiNode &n) {
     Style s;
     const std::string hidden = Meta(n, "hidden");
-    // `[hidden]` with no value means hidden. Only an explicit `0` does not.
     s.Hidden = n.Meta.contains("hidden") && hidden != "0";
     s.Knob = Meta(n, "style") == "knob";
     const std::string scale = Meta(n, "scale");

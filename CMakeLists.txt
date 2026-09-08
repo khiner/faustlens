@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-# C is only for the tree-sitter acceptance oracle under test/.
+# C is used by the tree-sitter acceptance oracle.
 project(faustlens CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -15,15 +15,8 @@ endif()
 
 option(FAUSTLENS_TESTS "Build the test binaries" ON)
 
-# MemorySanitizer does not exist on macOS, so a clean run is evidence, not proof:
-# no uninitialized reads are caught. Configure a second tree rather than switching
-# this one, and reuse the oracle the regular tree generated:
-#   cmake -B build-san -DFAUSTLENS_SANITIZE=ON -DFAUSTLENS_GUI=OFF
-#   FAUSTLENS_ORACLE_DIR=$PWD/build/oracle ./build-san/test/faustlens_tests
 option(FAUSTLENS_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
-# Layout geometry is a pure function of Term, so `faustlens_boxview` is testable
-# without a window and the front end can be dropped from the sanitizer tree.
 option(FAUSTLENS_GUI "Build the SDL3 + Dear ImGui front end" ON)
 
 if(FAUSTLENS_SANITIZE)
@@ -31,8 +24,7 @@ if(FAUSTLENS_SANITIZE)
     add_link_options(-fsanitize=address,undefined)
 endif()
 
-# The standard library is embedded from this checkout and the oracle is generated
-# against it, so both must come from the same commit.
+# Use the same faustlibraries revision for embedding and oracle generation.
 set(FAUSTLENS_FAUSTLIBRARIES "${CMAKE_SOURCE_DIR}/lib/faust/libraries"
     CACHE PATH "faustlibraries checkout to embed")
 
@@ -42,13 +34,10 @@ if(NOT EXISTS "${FAUSTLENS_FAUSTLIBRARIES}/stdfaust.lib")
         "  git -C lib/faust submodule update --init libraries")
 endif()
 
-# Audio host and soundfile decoding. No window, so it sits outside `FAUSTLENS_GUI`
-# and the sanitizer tree builds it too. miniaudio's own CMake builds the
-# high-level engine and offers no way to drop it.
+# Build audio hosting and decoding independently of the GUI for headless tests.
 add_library(miniaudio STATIC lib/miniaudio/miniaudio.c)
 target_include_directories(miniaudio SYSTEM PUBLIC lib/miniaudio)
-# The audio callback is the mixer, so the high-level API is dead weight. Decoding
-# stays, since it is half the reason miniaudio was chosen.
+# Use miniaudio device I/O and decoding without the high-level engine.
 target_compile_definitions(miniaudio PUBLIC
     MA_NO_ENGINE MA_NO_NODE_GRAPH MA_NO_RESOURCE_MANAGER MA_NO_GENERATION MA_NO_ENCODING)
 if(APPLE)
@@ -57,14 +46,11 @@ if(APPLE)
 endif()
 
 if(FAUSTLENS_GUI)
-    # The app is one executable, so static keeps the link simple.
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
     set(SDL_STATIC ON CACHE BOOL "" FORCE)
     set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
     add_subdirectory(lib/sdl3 EXCLUDE_FROM_ALL)
 
-    # Dear ImGui ships no CMake of its own. Core units plus the two backends,
-    # with `imgui_demo.cpp` deliberately left out.
     add_library(imgui STATIC
         lib/imgui/imgui.cpp
         lib/imgui/imgui_draw.cpp

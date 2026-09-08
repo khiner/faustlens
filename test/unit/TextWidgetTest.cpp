@@ -53,7 +53,7 @@ struct Widget {
     }
     void Command(ImGuiKey key, bool shift = false) {
         auto &io = ImGui::GetIO();
-        io.AddKeyEvent(ImGuiMod_Super, true); // native macOS command is remapped by ImGui
+        io.AddKeyEvent(ImGuiMod_Super, true); // ImGui remaps native macOS Command.
         if (shift) io.AddKeyEvent(ImGuiMod_Shift, true);
         Key(key);
         io.AddKeyEvent(ImGuiMod_Super, false);
@@ -98,7 +98,7 @@ TEST_CASE("the active text widget accepts arbitrary text and reloads shared undo
     CHECK(w.Draft.Cursor == 11);
     CHECK(w.Draft.Anchor == 11);
     w.Key(ImGuiKey_Backspace);
-    CHECK(w.Buffer().Text() == "process=("); // removes a whole UTF-8 character
+    CHECK(w.Buffer().Text() == "process=(");
     w.Command(ImGuiKey_Z);
     CHECK(w.Buffer().Text() == "process=(é");
     w.Command(ImGuiKey_Z, true);

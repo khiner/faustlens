@@ -1,5 +1,4 @@
-// "Only what depends on it" is asserted over graph reachability. "Within one block" is
-// only measured.
+// Assert dependency isolation and measure block responsiveness.
 #include "conformance/Sweep.h"
 #include "property/Corpus.h"
 #include "runtime/Interp.h"
@@ -38,7 +37,7 @@ bool IsInput(UiKind k) {
     }
 }
 
-// A value the host could write that is not the one `resetControls` left there.
+// Return a valid control value different from its initial value.
 double Elsewhere(const UiNode &w) {
     if (w.Kind == UiKind::Button || w.Kind == UiKind::Checkbox) return w.Init == 0 ? 1 : 0;
     return w.Init == w.Max ? w.Min : w.Max;
@@ -56,7 +55,7 @@ std::vector<double> Blocks(const Plan &p, const UiNode &ui, uint32_t write, doub
     for (int32_t c = 0; c < nout; ++c) op[c] = out[c].data();
 
     for (int32_t b = 0; b <= Settle; ++b) {
-        // A sine, not an impulse: most programs are silent by the measured block and undercount.
+        // Use a sine input so programs remain active during the measured block.
         for (int32_t c = 0; c < nin; ++c)
             for (int32_t i = 0; i < Block; ++i) in[c][i] = 0.25 * std::sin(2 * M_PI * 440.0 * (b * Block + i) / 44100.0);
         if (b == Settle && write != 0xFFFFFFFFu) dsp.SetControl(write, value);
@@ -71,8 +70,8 @@ std::vector<double> Blocks(const Plan &p, const UiNode &ui, uint32_t write, doub
 struct Result {
     std::string Name;
     int Controls = 0, Moved = 0;
-    // Per kind, because a whole kind reading zero is the shape a scheduling bug takes.
-    std::map<std::string, std::pair<int, int>> ByKind; // moved, total
+    // Group by widget kind to expose rate-scheduling failures.
+    std::map<std::string, std::pair<int, int>> ByKind;
     std::vector<std::string> Bad;
 };
 
@@ -165,6 +164,6 @@ TEST_CASE("control responsiveness: a control changes the next block, and only wh
     MESSAGE("  by kind: ", kinds);
     for (const std::string &b : bad) MESSAGE("  ", b);
     CHECK(bad.empty());
-    // A control read in the wrong band stops moving anything without failing the check above.
+    // Check responsiveness separately from dependency isolation.
     CHECK(moved >= 560);
 }

@@ -66,7 +66,6 @@ TEST_CASE("a key press against a selection is a term rewrite plus a splice") {
     f.SelectAt("a");
     CHECK(f.Do(Key::Sequence));
     CHECK(f.Text() == "process = a : _ : b;\n");
-    // The second key lands on the stage the first left selected, not the whole sequence.
     CHECK(f.Do(Key::Parallel));
     CHECK(f.Text() == "process = a,_ : _ : b;\n");
 }
@@ -105,7 +104,7 @@ TEST_CASE("a selection names an occurrence, not a value") {
 }
 
 TEST_CASE("a click inside an application selects the stage the diagram draws") {
-    // The widget is drawn as one stage, so a byte in its `step` selects it, not the literal.
+    // Select the widget from its argument span.
     Open f("process = hslider(\"gain\", 0, 0, 1, 0.1);\n");
     f.SelectAt("0.1");
     const FileView &v = f.View();
@@ -138,12 +137,11 @@ TEST_CASE("the inline field commits through the catalogue, and declines") {
 }
 
 TEST_CASE("an edit script is refused against bytes its links do not address") {
-    // A ref tree is rebuilt on every reparse, so applying to a moved-on buffer would corrupt it.
+    // Reject refs from a different source revision.
     Open f("process = a : b;\n");
     f.SelectAt("b");
     const Edit e = EditFor(f.Session.Terms, f.View(), f.Sel, Key::Sequence);
     REQUIRE(e.Target != NoRef);
-    // The view is allowed to lag the buffer by one compile.
     f.Buffer().Replace(0, 0, "// a line the view has never seen\n");
     const std::string before = f.Text();
     CHECK_FALSE(Apply(f.Session.Terms, f.Ws, f.View(), e));
@@ -187,7 +185,6 @@ TEST_CASE("every composition key reaches its composition") {
 }
 
 TEST_CASE("a click in the diagram selects the occurrence it drew") {
-    // `_` is one interned value with many occurrences, so the drawn path is what names this one.
     Open f(
         "other = _, _;\n"
         "process = other <: _, _;\n"
@@ -208,7 +205,6 @@ TEST_CASE("a click in the diagram selects the occurrence it drew") {
     f.Sel = boxview::SelectPath(v, root, ProcessBodyRef(f.Session.Terms, v), hit);
     const RefId at = boxview::SelectedRef(v, f.Sel);
     REQUIRE(at != NoRef);
-    // Inside `process`, not inside `other`.
     const size_t process_at = f.Text().find("process");
     CHECK(v.Refs.Refs[at].SpanBegin > process_at);
 }
@@ -217,7 +213,6 @@ TEST_CASE("a drag between two ports toggles the connection it names") {
     Open f("process = route(2, 2, 1, 1);\n");
     f.SelectAt("route");
 
-    // Absent, so it connects. Appending a pair rebuilds every `Par`, so the spacing goes.
     CHECK(f.Drag(2, 2));
     CHECK(f.Text() == "process = route(2,2,1,1,2,2);\n");
 
@@ -235,10 +230,8 @@ TEST_CASE("a drag that names no connection changes nothing") {
         CHECK(f.Text() == "process = route(2, 2, 1, 1);\n");
     }
     SUBCASE("the connection that is already there") {
-        // Connecting a pair already present would be a no-op, so the drag disconnects instead.
         f.SelectAt("route");
         REQUIRE(f.Drag(1, 1));
-        // The two-argument spelling, the only one the grammar has for no entries.
         CHECK(f.Text() == "process = route(2,2);\n");
     }
 }

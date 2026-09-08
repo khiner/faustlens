@@ -9,13 +9,11 @@
 namespace faustlens {
 namespace {
 
-// Operators that take their padding wires first.
 bool SpecialInfix(Prim p) { return (p >= Prim::Add && p <= Prim::Control) || p == Prim::Pow; }
 
 bool Structural(BoxKind k) { return IsComposition(k) || k == BoxKind::Route; }
 
-// The label's absolute path, reversed, group codes and metadata stripped. An empty
-// name is no segment: no `minput` target names one.
+// Return the reversed absolute path without group codes, metadata, or empty segments.
 std::vector<std::string> LabelPath(std::string_view label) {
     std::vector<std::string> abs;
     for (const PathSeg &seg : LabelToPath(label)) {
@@ -44,7 +42,7 @@ std::vector<std::string> TargetToPath(std::string_view target) {
     return path;
 }
 
-// Ordered-subsequence containment, not equality, so a partial path selects.
+// Match partial paths as ordered subsequences.
 bool PathMatchesLabel(std::span<const std::string> path, std::span<const std::string> label) {
     size_t j = 0;
     for (const std::string &s : path) {
@@ -55,8 +53,8 @@ bool PathMatchesLabel(std::span<const std::string> path, std::span<const std::st
     return true;
 }
 
-// Paths are reversed, so a group matches the target's tail. `rest` carries inside.
 bool MatchGroup(std::span<const std::string> group, std::span<const std::string> target, std::vector<std::string> &rest) {
+    // Reversed group paths match the target suffix.
     if (group.size() > target.size()) return false;
     const size_t at = target.size() - group.size();
     if (!std::equal(group.begin(), group.end(), target.begin() + at)) return false;
@@ -75,17 +73,16 @@ BoxId Evaluator::Apply(BoxId fun, std::span<const BoxId> args, ValueId subject) 
     if (Boxes.KindOf(fun) == BoxKind::PatternMatcher) return Apply(MatchArgument(fun, args[0], subject), args.subspan(1), subject);
 
     if (Boxes.KindOf(fun) != BoxKind::Closure) {
-        // A non-function `F` applied is `(a, b, ...) : F`, wires padding out to `F`'s inputs.
+        // Apply a non-function F as `(a, b, ...) : F`, padding unused inputs with wires.
         const BoxId efun = ToSymbolic(fun);
         const auto par = [&](std::span<const BoxId> l) {
             BoxId r = l.back();
             for (size_t i = l.size() - 1; i-- > 0;) r = Compose(BoxKind::Par, l[i], r, subject);
             return r;
         };
-        // Folding beats declining here: three corpus programs lost against twenty-seven.
         const auto seq = [&](BoxId l, BoxId r) { return Compose(BoxKind::Seq, l, r, subject); };
         std::vector<BoxId> list(args.begin(), args.end());
-        const Arity fa = Boxes.ArityOf(efun); // by value: `Arities` grows below
+        const Arity fa = Boxes.ArityOf(efun); // Copy before Arities can reallocate.
         if (!fa.Known) return seq(par(list), fun);
 
         int32_t outs = 0;
@@ -116,7 +113,7 @@ BoxId Evaluator::Apply(BoxId fun, std::span<const BoxId> args, ValueId subject) 
     return Apply(Eval(kids[1], inner), args.subspan(1), subject);
 }
 
-// A closed 0->1 sub-pattern folds to its literal, so `f(2+3)` is `f(5)`.
+// Fold closed scalar patterns so `f(2+3)` matches `f(5)`.
 BoxId Evaluator::SimplifyPattern(BoxId p) {
     if (const auto v = FoldConstant(Boxes, p)) return MakeNum(Boxes, *v);
     if (!Structural(Boxes.KindOf(p))) return p;
@@ -130,7 +127,7 @@ BoxId Evaluator::EvalCase(ValueId rules, EnvId env) {
     if (const auto it = PmMemo.find(key); it != PmMemo.end()) return it->second;
 
     PMState state;
-    // The barrier scopes a non-linear pattern's equality test to this match.
+    // Limit repeated-variable equality to this pattern match.
     const EnvId base = Envs.PushBarrier(env);
     for (const ValueId rule : TermKids(rules)) {
         const std::vector<ValueId> kids = TermKids(rule);
@@ -148,7 +145,6 @@ BoxId Evaluator::EvalCase(ValueId rules, EnvId env) {
 bool Evaluator::MatchPattern(BoxId pattern, BoxId arg, EnvId &rule_env) {
     if (Boxes.KindOf(pattern) == BoxKind::PatternVar) {
         const StrId name = Boxes.Get(pattern).Payload;
-        // A repeated variable must get equal boxes, which is an id comparison.
         if (const Binding *b = Envs.Lookup(rule_env, name, /*stop_at_barrier=*/true)) return b->Kind == BindKind::Value && b->Id == arg;
         rule_env = Envs.PushValue(rule_env, name, BindKind::Value, arg);
         return true;
@@ -164,12 +160,11 @@ bool Evaluator::MatchPattern(BoxId pattern, BoxId arg, EnvId &rule_env) {
 
 BoxId Evaluator::MatchArgument(BoxId pm, BoxId arg, ValueId subject) {
     const BoxNode n = Boxes.Get(pm);
-    PMState state = Boxes.PMStateAt(n.Aux); // by value: this step produces a new one
+    PMState state = Boxes.PMStateAt(n.Aux); // Copy before appending matcher state.
     const std::vector<ValueId> rules = TermKids(n.Payload);
     const auto consumed = size_t(n.ChildCount);
 
-    // A recursive count would otherwise arrive as a graph and never match its base
-    // case. Gated on a literal, or a graph binds as one.
+    // Fold arguments when numeric patterns require concrete values.
     bool match_num = false;
     for (size_t r = 0; r < rules.size(); ++r) {
         if (!state.Live[r] || consumed >= state.Patterns[r].size()) continue;
@@ -204,7 +199,6 @@ BoxId Evaluator::MatchArgument(BoxId pm, BoxId arg, ValueId subject) {
     return Boxes.Make(BoxKind::PatternMatcher, 0, n.Payload, Boxes.AddPMState(std::move(state)), args);
 }
 
-// A bare identifier in a pattern position binds, never a lookup. The cases below are the rule.
 BoxId Evaluator::EvalInPattern(ValueId t, EnvId env) {
     const TermValue n = Terms.Get(t);
     const std::vector<ValueId> kids = TermKids(t);
@@ -213,7 +207,7 @@ BoxId Evaluator::EvalInPattern(ValueId t, EnvId env) {
     switch (Terms.KindOf(t)) {
         case Kind::Ident: return Boxes.MakeLeaf(BoxKind::PatternVar, n.Payload);
 
-        // Only the arguments recurse, so in `f(x)` `f` resolves and `x` binds.
+        // Resolve the callee in `f(x)` while binding argument identifiers.
         case Kind::Apply: {
             const BoxId fun = Terms.KindOf(kids[0]) == Kind::Ident ? Eval(kids[0], env) : pat(kids[0]);
             std::vector<BoxId> args;
@@ -249,7 +243,7 @@ BoxId Evaluator::EvalInPattern(ValueId t, EnvId env) {
         case Kind::ModifLocalDef:
         case Kind::Modulation: return Fail(Code::EvalInvalidPattern, t, Terms.KindOf(t) == Kind::Modulation ? "a modulation" : "a local definition modifier");
 
-        // Everything else is opaque, so identifiers under it are not binders.
+        // Identifiers inside other expressions remain references.
         default: return Eval(t, env);
     }
 }
@@ -260,7 +254,7 @@ BoxId Evaluator::Iterate(IterKind kind, StrId var, int32_t n, ValueId body, EnvI
         const EnvId e = Envs.PushValue(env, var, BindKind::Term, iv);
         return pattern ? EvalInPattern(body, e) : Eval(body, e);
     };
-    // The 0->0 circuit, so `sum(i, 0, e)` is *not* 0 and `prod(i, 0, e)` not 1.
+    // Empty iterations return a 0-to-0 circuit, including sum and product.
     const auto empty = [&] {
         const BoxId zero = Boxes.MakeInt(0);
         const BoxId list = Boxes.Make(BoxKind::Par, {zero, zero});
@@ -282,7 +276,7 @@ BoxId Evaluator::Iterate(IterKind kind, StrId var, int32_t n, ValueId body, EnvI
 
     if (kind == IterKind::Sum || kind == IterKind::Prod) {
         const BoxId op = Boxes.MakeLeaf(BoxKind::Prim, uint32_t(kind == IterKind::Sum ? Prim::Add : Prim::Mul));
-        BoxId res = at(0); // unfolded, so `sum(i, 3, i)` stays a chain
+        BoxId res = at(0); // Preserve the sum chain.
         for (int32_t i = 1; i < n; ++i)
             res = Compose(
                 BoxKind::Seq, Compose(BoxKind::Par, res, at(i), subject), op, subject,
@@ -300,7 +294,7 @@ BoxId Evaluator::Modulate(ValueId modulator, ValueId body, EnvId env, ValueId su
     const StrId label = EvalLabel(Terms.Get(modulator).Payload, env, subject);
     const std::vector<std::string> path = TargetToPath(Terms.Str(label));
 
-    // An omitted circuit is `*`, with *two* inputs, so `["Wet" -> e]` adds an input.
+    // An omitted modulation circuit defaults to the two-input `*`.
     const std::vector<ValueId> entries = TermKids(modulator);
     const BoxId circuit = entries.empty() ? Boxes.MakePrim(Prim::Mul) : ToSymbolic(Eval(entries[0], env));
     if (Boxes.IsError(circuit)) return circuit;
@@ -316,7 +310,7 @@ BoxId Evaluator::Modulate(ValueId modulator, ValueId body, EnvId env, ValueId su
     const BoxId rewritten = Implant(evaluated, path, slot, ca.Ins, circuit, matched);
     if (!matched) Raise(Code::EvalNoModulationTarget, subject, std::string(Terms.Str(label)), Severity::Warning);
     if (ca.Ins != 2) return rewritten;
-    // A two-input circuit adds an input, bound to the slot at propagation.
+    // Bind the additional input of a two-input circuit during propagation.
     return Boxes.Make(BoxKind::Symbolic, {slot, rewritten});
 }
 
@@ -337,7 +331,6 @@ BoxId Evaluator::Implant(BoxId box, std::span<const std::string> path, BoxId slo
         case BoxKind::NumericWidget:
         case BoxKind::Bargraph: return widget(n.Payload);
         case BoxKind::Group: {
-            // The walk descends whether or not the group matched, so no group is pruned.
             std::vector<std::string> rest;
             const std::span<const std::string> inner = MatchGroup(LabelPath(Terms.Str(n.Payload)), path, rest) ? std::span<const std::string>(rest) : path;
             const BoxId body = Implant(kids[0], inner, slot, ins, circuit, matched);
@@ -382,7 +375,7 @@ BoxId Evaluator::ToSymbolic(BoxId b) {
                 out = Fail(Code::EvalNotAClosure, NoTerm);
                 break;
             }
-            // Applying to a slot is what normalises an unapplied definition.
+            // Apply to a symbolic slot to normalize an unapplied definition.
             const std::vector<ValueId> kids = TermKids(abstr);
             const StrId name = Terms.Get(kids[0]).Payload;
             const EnvId inner = SymbolicEnvironment(abstr, env);
@@ -409,7 +402,7 @@ BoxId Evaluator::ToSymbolic(BoxId b) {
             }
             if (!changed) break;
             out = Boxes.Rebuild(b, rebuilt);
-            // A composition whose children were closures is only checkable now.
+            // Check composition arity after normalizing closure children.
             if (Boxes.IsError(out) && !Boxes.IsError(b)) Raise(Code::EvalArityMismatch, NoTerm, std::string(BoxKindName(Boxes.KindOf(b))));
             break;
         }

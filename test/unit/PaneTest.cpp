@@ -1,4 +1,3 @@
-// The editor buffer and the published snapshot: diagnostic marking, cursor resolution.
 #include "editor/Workspace.h"
 #include "query/Snapshot.h"
 #include "syntax/Parser.h"
@@ -22,7 +21,6 @@ Snapshot Compile(Session &s, const std::string &path, const std::string &src) {
 } // namespace
 
 TEST_CASE("a diagnostic is marked at every occurrence of its value id") {
-    // Three spellings, three marks. One spelling used three times, one mark.
     Session s;
     const std::string src = "process = missing, missing, (1 : missing);\n";
     const Snapshot snap = Compile(s, "/p.dsp", src);
@@ -43,7 +41,7 @@ TEST_CASE("a diagnostic is marked at every occurrence of its value id") {
 }
 
 TEST_CASE("a lexer diagnostic falls back to its byte range") {
-    // The lexer raises before any term exists, so there is no subject to mark.
+    // Lexer diagnostics have source ranges without term subjects.
     Session s;
     const Snapshot snap = Compile(s, "/p.dsp", "process = 1; /* unterminated\n");
     const FileView *f = snap.File("/p.dsp");
@@ -93,14 +91,12 @@ TEST_CASE("the buffer applies an edit script as one undoable unit") {
     const ValueId x = t.MakeLeaf(Kind::Ident, t.InternStr("x"));
     const ValueId outer[] = {t.Child(v, 0), t.Make(Kind::Seq, {x, t.Child(v, 1)})};
 
-    // Through the workspace, since the history spans files while a buffer is one.
     Workspace ws;
     ws.Open("/p.dsp", src);
     ws.Find("/p.dsp")->SetCursor(uint32_t(src.find('b')));
     REQUIRE(ws.Edit("/p.dsp", ctx.Splice(seq, t.Make(Kind::Seq, outer))));
     const Buffer &b = *ws.Find("/p.dsp");
     CHECK(b.Text() == "process = a : x : b;");
-    // The cursor moved with the text rather than resetting.
     CHECK(b.Text().substr(b.Cursor, 1) == "b");
     CHECK(ws.UndoStack.size() == 1);
 
@@ -113,7 +109,7 @@ TEST_CASE("the buffer applies an edit script as one undoable unit") {
 
 TEST_CASE("a cursor inside a replaced region lands on its edge") {
     Buffer b("process = aaa : b;");
-    b.SetCursor(11); // inside `aaa`
+    b.SetCursor(11);
     EditScript script;
     script.push_back({10, 13, "z"});
     b.Apply(script);
@@ -131,7 +127,6 @@ TEST_CASE("the snapshot carries what the view reads, at one revision") {
     CHECK(!f->Tokens.empty());
     CHECK(!f->Refs.Refs.empty());
     CHECK(f->Refs.Refs[f->Refs.Root()].ValueId == f->Root);
-    // Highlighting reads this token vector rather than re-lexing, so it must tile.
     uint32_t at = 0;
     for (const Token &tok : f->Tokens) {
         if (tok.Kind == Tok::Eof) continue;

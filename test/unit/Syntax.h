@@ -15,7 +15,6 @@
 
 namespace faustlens::test {
 
-// A compact s-expression of the value graph.
 inline std::string Shape(const Terms &t, ValueId v) {
     const TermValue &n = t.Get(v);
     std::string out(KindName(t.KindOf(v)));
@@ -47,7 +46,7 @@ inline std::string Shape(const Terms &t, ValueId v) {
     return out + "]";
 }
 
-// The body of the first statement's first clause, which is what a `process = e;` test wants.
+// Return the first statement's first clause body.
 inline ValueId ClauseBody(const Terms &t, ValueId root) { return t.Children(t.Child(t.Child(root, 0), 0)).back(); }
 
 inline bool Accepts(std::string_view src) {
@@ -55,7 +54,7 @@ inline bool Accepts(std::string_view src) {
     return Parse(terms, src).Diags.empty();
 }
 
-// PutGet: `value(parse(print(t))) == value(t)`, compared as interned ids.
+// Check parse/print equality of interned surface values.
 inline void CheckPutGet(std::string_view src) {
     Terms terms;
     const ParseResult a = Parse(terms, src);
@@ -67,7 +66,6 @@ inline void CheckPutGet(std::string_view src) {
     CHECK(a.Root == b.Root);
 }
 
-// Every byte in exactly one token.
 inline void CheckTiling(std::string_view src) {
     uint32_t at = 0;
     for (const Token &t : Lex(src).Tokens) {

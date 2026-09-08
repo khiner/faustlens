@@ -1,4 +1,3 @@
-// Corpus checks for token coverage, printing, inferred retention, and identity edits.
 #include "property/Corpus.h"
 #include "property/Retentive.h"
 #include "syntax/Edit.h"
@@ -36,7 +35,7 @@ bool HoleFree(const Terms &t, ValueId root) {
 
 ValueId ReplaceAt(Terms &t, ValueId root, std::span<const uint32_t> path, size_t depth, ValueId replacement) {
     if (depth == path.size()) return replacement;
-    const TermValue n = t.Get(root); // by value: the recursion below grows `Values`
+    const TermValue n = t.Get(root); // Copy before recursive interning can grow Values.
     const Kind kind = t.KindOf(root);
     std::vector<ValueId> kids(t.Children(root).begin(), t.Children(root).end());
     kids[path[depth]] = ReplaceAt(t, kids[path[depth]], path, depth + 1, replacement);
@@ -81,7 +80,7 @@ TEST_CASE("token coverage over the whole corpus") {
         ++files;
     }
     MESSAGE("token coverage over ", files, " files");
-    CHECK(files == 693); // 341 tests + 296 examples + 56 libraries
+    CHECK(files == 693);
 }
 
 TEST_CASE("the corpus parses, and the pinned rejections are rejected") {
@@ -107,7 +106,7 @@ TEST_CASE("the corpus parses, and the pinned rejections are rejected") {
     CHECK(unexpected_rejections.empty());
     CHECK(unexpected_accepts.empty());
     MESSAGE("accepted ", accepted, ", pinned rejections ", rejected);
-    CHECK(accepted == 671); // 319 tests + 296 examples + 56 libraries
+    CHECK(accepted == 671);
     CHECK(rejected == 22);
 }
 
@@ -117,7 +116,7 @@ TEST_CASE("printer round trips over the whole corpus") {
     for (const CorpusFile &f : WholeCorpus()) {
         Terms terms;
         const ParseResult a = Parse(terms, f.Text);
-        // Hole-free only: a hole's bytes reparsed in isolation need not recover the same shape.
+        // Exclude recovery holes from isolated print/reparse checks because recovery depends on surrounding syntax.
         if (!a.Diags.empty() || !HoleFree(terms, a.Root)) continue;
         ++checked;
         const std::string printed = PrintTerm(terms, a.Root);
@@ -170,7 +169,7 @@ TEST_CASE("Retentiveness: a changed literal leaves every other node's bytes alon
                 it = rewrites.emplace(t.ValueId, std::move(made)).first;
             }
             const Rewrite &rw = it->second;
-            if (rw.Value == t.ValueId) continue; // no literal under it, or already 987654
+            if (rw.Value == t.ValueId) continue;
             const EditScript script = l.Ctx->Splice(i, rw.Value);
             ++sw.A;
             if (const char *why = BadScript(script, t)) {
@@ -237,7 +236,7 @@ TEST_CASE("Retentiveness: an inserted stage keeps the comments under it") {
 TEST_CASE("Retentiveness: rewriting to a value from outside the target stays inside it") {
     const Merged m = SweepFiles([](const CorpusFile &f, Loaded &l, Sweep &sw) {
         if (l.R.Refs.Refs.size() < 4) return;
-        // From the first statement, so it occurs only outside every target below.
+        // Choose text outside all edit targets from the first statement.
         const auto top = l.R.Refs.Children(0);
         if (top.empty()) return;
         const uint32_t boundary = l.R.Refs.Refs[top.front()].OuterEnd;
@@ -265,7 +264,6 @@ TEST_CASE("Retentiveness: rewriting to a value from outside the target stays ins
 }
 
 TEST_CASE("identity splices after a structural edit") {
-    // Reparse the edited document and verify that writing each unchanged subtree is a no-op.
     std::vector<std::string> failures;
     size_t files = 0;
     for (const CorpusFile &f : WholeCorpus()) {

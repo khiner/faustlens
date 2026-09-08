@@ -10,26 +10,22 @@ namespace {
 
 constexpr BoxId InFlight = 0xFFFFFFFEu;
 
-// Divergence bound: past any hand-written program and inside the stack.
+// Bound evaluation depth to limit stack use.
 constexpr uint32_t MaxEvalDepth = 2048;
 
-// A literal's lexeme may carry a sign, unlike the reference's separate production.
 int32_t ParseInt(std::string_view s) {
     bool neg = false;
     size_t i = 0;
     if (i < s.size() && (s[i] == '+' || s[i] == '-')) neg = s[i++] == '-';
     uint32_t r = 0;
     for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i) r = r * 10u + uint32_t(s[i] - '0');
-    // Negated in unsigned space: signed negation of `INT32_MIN` is undefined.
+    // Negate unsigned values to avoid signed INT32_MIN overflow.
     return int32_t(neg ? 0u - r : r);
 }
 
-// `from_chars` reads the view in place, so no copy, and it is locale-independent where
-// `strtod` would read a comma as the decimal point under some `LC_NUMERIC`. It stops at
-// the `f` suffix the lexer allows, and leaves zero where nothing converts.
+// Parse independently of locale, accepting the lexer's optional f suffix.
 double ParseReal(std::string_view s) {
-    // The sign is read here for the same reason as in `ParseInt`: it is part of the
-    // lexeme, and `from_chars` reads `-` but never `+`.
+    // Remove the lexeme's sign because from_chars rejects leading `+`.
     bool neg = false;
     if (!s.empty() && (s[0] == '+' || s[0] == '-')) {
         neg = s[0] == '-';
@@ -49,7 +45,7 @@ std::string Unquote(std::string_view s) {
 
 bool IsIdentChar(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
 
-// Merged by name across the *whole* list, since the parser groups only consecutive runs.
+// Merge same-name definitions across the list; the parser groups adjacent clauses only.
 template<class Admit> std::vector<std::pair<StrId, std::vector<ValueId>>> GroupClauses(const Terms &terms, std::span<const ValueId> stmts, Admit admit) {
     std::vector<std::pair<StrId, std::vector<ValueId>>> out;
     for (const ValueId s : stmts) {
@@ -73,7 +69,7 @@ void MetaSet::Add(std::string key, std::string value) {
 
 Evaluator::Evaluator(faustlens::Terms &t, faustlens::Boxes &b, faustlens::Envs &e)
     : Terms(t), Boxes(b), Envs(e), ProcessName(Terms.InternStr("process")), LetrecBody(Terms.InternStr(" LETRECBODY")) {
-    // Unwritable in the surface syntax, so `letrec` projections cannot collide with a user name.
+    // Use a name unavailable in source syntax to avoid letrec projection collisions.
 }
 
 void Evaluator::Raise(Code code, ValueId subject, std::string payload, Severity severity) {
@@ -92,7 +88,6 @@ void Evaluator::ClearMemo() {
     SymbolicEnvs.clear();
 }
 
-// Resolves against the nearest enclosing file, so a deeply nested `component` still reaches it.
 EnvId Evaluator::Target(EnvId env, std::string_view spec) const {
     const uint32_t file = Envs.ResolutionOf(env);
     if (file == NoResolution || !Resolve) return NilEnv;
@@ -108,7 +103,7 @@ BoxId Evaluator::Compose(BoxKind kind, BoxId a, BoxId b, ValueId subject, bool f
     const BoxId re = Boxes.Make(kind, 0, 0, 0, {a, b});
     if (kind != BoxKind::Seq || !fold) return re;
 
-    // `2, 3 : +` folds to `5`. Narrow on purpose: numbers in parallel into a wire or 1-2 arg prim.
+    // Fold numeric tuples composed with a wire or a primitive of one or two arguments.
     const BoxKind bk = Boxes.KindOf(b);
     const bool applicable =
         bk == BoxKind::Wire || (bk == BoxKind::Prim && PrimArity(Prim(Boxes.Get(b).Payload)) >= 1 && PrimArity(Prim(Boxes.Get(b).Payload)) <= 2);
@@ -154,7 +149,7 @@ double Evaluator::Eval2Double(ValueId t, EnvId env, ValueId subject, bool &ok) {
     return ok ? v->AsDouble() : 0.0;
 }
 
-// `%ident`, `%{ident}` and `%2ident` substitute the identifier as an integer, `printf` field width.
+// Substitute `%ident`, `%{ident}`, and `%2ident` as integers with optional field width.
 StrId Evaluator::EvalLabel(StrId raw, EnvId env, ValueId subject) {
     const std::string src = Unquote(Terms.Str(raw));
     if (src.find('%') == std::string::npos) return Terms.InternStr(src);
@@ -165,8 +160,7 @@ StrId Evaluator::EvalLabel(StrId raw, EnvId env, ValueId subject) {
         bool ok = false;
         const ValueId id = Terms.MakeLeaf(Kind::Ident, Terms.InternStr(ident));
         const int32_t n = Eval2Int(id, env, subject, ok);
-        // `printf`'s minimum field width, space padded, which `{:{}}` reproduces exactly.
-        // Capped so a `%99` in a label cannot widen the result without bound.
+        // Cap printf-style field widths to bound label length.
         int width = 0;
         std::from_chars(format.data(), format.data() + format.size(), width);
         dst += std::format("{:{}}", n, std::min(4, std::max(width, 0)));
@@ -212,7 +206,7 @@ ValueId Evaluator::DefinitionTerm(std::span<const ValueId> clauses, ValueId subj
     const auto params_of = [&](ValueId c) { return Terms.Children(c).size() - 1; };
     if (clauses.size() == 1) {
         const std::vector<ValueId> kids = TermKids(clauses[0]);
-        if (kids.size() == 1) return kids[0]; // `f = e;`
+        if (kids.size() == 1) return kids[0];
         // Anything but distinct plain identifiers is a pattern.
         bool standard = true;
         std::vector<StrId> seen;
@@ -232,7 +226,7 @@ ValueId Evaluator::DefinitionTerm(std::span<const ValueId> clauses, ValueId subj
 
     const size_t npat = params_of(clauses[0]);
     if (npat == 0) {
-        Raise(Code::EvalRedefinition, subject); // several variants, no patterns
+        Raise(Code::EvalRedefinition, subject);
         return clauses[0];
     }
     std::vector<ValueId> rules;
@@ -246,8 +240,7 @@ ValueId Evaluator::DefinitionTerm(std::span<const ValueId> clauses, ValueId subj
     return Terms.Make(Kind::Case, rules);
 }
 
-// `e letrec { 'x = ex; 'y = ey; where W }` becomes `e with {
-//   B = \(x, y).((ex, ey) with W) ~ bus(2); x = B : select(2,0); y = B : select(2,1); }`.
+// Lower letrec to a feedback lambda with named output projections.
 ValueId Evaluator::LetRecToWith(ValueId t) {
     const std::vector<ValueId> kids = TermKids(t);
     size_t rec_end = 1;
@@ -265,7 +258,6 @@ ValueId Evaluator::LetRecToWith(ValueId t) {
         return Terms.Make(Kind::With, plain);
     }
 
-    // `(e1, e2, …)`, with the `where` definitions wrapped around it.
     ValueId body = Terms.Child(kids[n], 0);
     for (size_t i = n; i-- > 1;) body = par(Terms.Child(kids[i], 0), body);
     if (rec_end < kids.size()) {
@@ -288,7 +280,7 @@ ValueId Evaluator::LetRecToWith(ValueId t) {
         defs.push_back(Terms.Make(Kind::Definition, 0, 0, LetrecBody, {clause}));
     }
     for (uint32_t i = 0; i < n; ++i) {
-        ValueId sel = i == 0 ? wire : cut; // `!,!,_,!,!`
+        ValueId sel = i == 0 ? wire : cut;
         for (uint32_t j = 1; j < n; ++j) sel = par(sel, j == i ? wire : cut);
         const ValueId clause = Terms.Make(Kind::Clause, {seq(body_name, sel)});
         defs.push_back(Terms.Make(Kind::Definition, 0, 0, Terms.Get(kids[1 + i]).Payload, {clause}));
@@ -314,7 +306,7 @@ std::vector<Binding> Evaluator::BindingsFromDefs(std::span<const ValueId> defs, 
 
 FileLayer
 Evaluator::BuildLayer(std::span<const ValueId> stmts, EnvId parent, StrId file, std::string_view file_key, bool is_root, std::span<const Binding> imported) {
-    // Every drop is reported, since a silently dropped definition reads as a compiler bug.
+    // Report every excluded definition.
     constexpr uint16_t BuildMode = Double;
     const auto admitted = [&](ValueId s) {
         const uint16_t v = Terms.Get(s).Variants;
@@ -365,7 +357,7 @@ Evaluator::BuildLayer(std::span<const ValueId> stmts, EnvId parent, StrId file, 
 BoxId Evaluator::Eval(ValueId t, EnvId env) {
     const uint64_t key = (uint64_t(t) << 32) | env;
     if (const auto it = Memo.find(key); it != Memo.end()) {
-        // The in-flight mark doubles as the loop detector: `foo = foo;` re-enters at the same key.
+        // An in-flight memo key detects evaluation cycles such as `foo = foo`.
         if (it->second == InFlight) return Fail(Code::EvalLoopDetected, t);
         return it->second;
     }
@@ -402,7 +394,7 @@ BoxId Evaluator::EvalBinding(const Binding &b, EnvId layer) {
 BoxId Evaluator::EvalIdent(StrId name, EnvId env, ValueId subject) {
     for (EnvId e = env; e != NilEnv; e = Envs.Parent(e)) {
         if (const Binding *b = Envs.LookupLocal(e, name)) {
-            const Binding copy = *b; // `EvalBinding` pushes layers, moving the pool
+            const Binding copy = *b; // Copy before EvalBinding grows the pool.
             return EvalBinding(copy, e);
         }
     }
@@ -415,7 +407,7 @@ BoxId Evaluator::EvalEntry(EnvId env, StrId name) {
 }
 
 BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
-    const TermValue n = Terms.Get(t); // by value: the rules below grow the arena
+    const TermValue n = Terms.Get(t); // Copy before node construction grows the arena.
     const std::vector<ValueId> kids = TermKids(t);
     const auto eval_in = [&](ValueId c, EnvId e) { return pattern ? EvalInPattern(c, e) : Eval(c, e); };
     const auto eval = [&](ValueId c) { return eval_in(c, env); };
@@ -424,7 +416,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
     switch (Terms.KindOf(t)) {
         case Kind::Int: return Boxes.MakeInt(ParseInt(Terms.Lexeme(t)));
         case Kind::Real: return Boxes.MakeReal(ParseReal(Terms.Lexeme(t)));
-        // `_` and `!` are box kinds, not prims: fold admits a wire, patterns treat them as opaque.
+        // Wires permit folding; cuts remain opaque to patterns.
         case Kind::Prim:
             if (n.Payload == uint32_t(Prim::Wire)) return Boxes.MakeLeaf(BoxKind::Wire);
             if (n.Payload == uint32_t(Prim::Cut)) return Boxes.MakeLeaf(BoxKind::Cut);
@@ -448,7 +440,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
             return Compose(BoxKind::Seq, Compose(BoxKind::Par, zero, x, t), Boxes.MakePrim(Prim::Sub), t);
         }
 
-        // The body is recursed, the definitions are not, so pattern identifiers in it still bind.
+        // Recurse into the body so its pattern identifiers bind.
         case Kind::With: {
             const std::vector<ValueId> defs(kids.begin() + 1, kids.end());
             return eval_in(kids[0], Envs.Push(env, BindingsFromDefs(defs, t, BindKind::Definition, NilEnv)));
@@ -456,7 +448,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
         case Kind::LetRec: return eval(LetRecToWith(t));
 
         case Kind::ModifLocalDef: {
-            // The replacements close over the current environment, not the captured one.
+            // Evaluate replacements in the current environment.
             const BoxId val = eval(kids[0]);
             if (Boxes.IsError(val)) return val;
             if (Boxes.KindOf(val) != BoxKind::Closure) return Fail(Code::EvalNotAClosure, t);
@@ -474,7 +466,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
             return Apply(eval(kids[0]), args, t);
         }
         case Kind::Access: {
-            // `.` resolves in the captured environment, which makes `environment{}` a value.
+            // Resolve access in the captured environment.
             const BoxId val = eval(kids[0]);
             if (Boxes.IsError(val)) return val;
             if (Boxes.KindOf(val) != BoxKind::Closure) return Fail(Code::EvalBadAccess, t);
@@ -510,7 +502,6 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
         }
 
         case Kind::Environment: {
-            // The layer sits on whatever was in scope, so nesting needs no rule.
             std::vector<Binding> imported;
             for (const ValueId s : kids) {
                 if (Terms.KindOf(s) != Kind::Import) continue;
@@ -525,7 +516,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
 
         case Kind::Component:
         case Kind::Library: {
-            // Both evaluate in the target file's environment, never the importer's.
+            // Evaluate in the target file's environment.
             const std::string spec = Unquote(Terms.Lexeme(t));
             const EnvId target = Target(env, spec);
             if (target == NilEnv) return Fail(Code::ResFileNotFound, t, spec);
@@ -534,7 +525,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
         }
 
         case Kind::Waveform: {
-            // A waveform's nature is syntactic: `{0., 1.}` real, `{0, 1}` int.
+            // Waveform nature follows literal spelling: `{0., 1.}` is real and `{0, 1}` is integer.
             std::vector<double> values;
             bool all_int = true;
             for (const ValueId c : kids) {
@@ -608,7 +599,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
             Signature sig;
             sig.Result = FType(Terms.Lexeme(kids[0]) == "int" ? 0 : 1);
             const uint32_t names = n.Form;
-            // `|`-separated names picked by build precision: at f64, `sinf|sin|sinl` is `sin`.
+            // Select pipe-separated foreign names by build precision, such as sin from sinf|sin|sinl at f64.
             const uint32_t pick = std::min(names, 2u) - 1;
             const StrId selected = Terms.Get(kids[1 + pick]).Payload;
             const auto total = uint32_t(kids.size());
@@ -624,7 +615,7 @@ BoxId Evaluator::RealEval(ValueId t, EnvId env, bool pattern) {
         case Kind::FVar:
             return Boxes.Make(Terms.KindOf(t) == Kind::FConst ? BoxKind::FConst : BoxKind::FVar, n.Form, n.Payload, Terms.Get(kids[0]).Payload, {});
 
-        // A `Hole` is already a syntax diagnostic, so it only poisons here.
+        // A Hole already has a syntax diagnostic.
         case Kind::Hole: return Boxes.Error;
 
         default: return Fail(Code::EvalNotApplicable, t, std::string(KindName(Terms.KindOf(t))));

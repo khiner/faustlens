@@ -189,7 +189,6 @@ constexpr std::array<Row, TokenKindCount> Rows = [] {
     return r;
 }();
 
-// A maximal NSID looked up whole, so only lowercase letters and digits can spell one.
 constexpr bool IsWord(std::string_view s) {
     if (s.empty() || s.front() < 'a' || s.front() > 'z') return false;
     for (const char c : s)
@@ -197,8 +196,6 @@ constexpr bool IsWord(std::string_view s) {
     return true;
 }
 
-// `dependencies`, `true` and their neighbours spell attributes inside `<listing`, and
-// are words nowhere else.
 constexpr bool IsListingOnly(Tok t) { return t >= Tok::LstTrue && t <= Tok::LstQ; }
 
 constexpr bool IsKeyword(size_t i) { return IsWord(Rows[i].Text) && !IsListingOnly(Tok(i)); }

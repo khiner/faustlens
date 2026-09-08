@@ -14,8 +14,7 @@ struct Context {
     const char *Declined = nullptr;
 };
 
-// Source ancestry supplies lexical scope. A function body is opened symbolically;
-// a selected call evaluates with its own arguments instead.
+// Return the selected occurrence's lexical environment with symbolic function parameters, or a refusal.
 Context ContextAt(Session &s, const FileView &f, RefId at) {
     if (at >= f.Refs.Refs.size()) return {NilEnv, "nothing is selected"};
     if (s.TermsOf(f.Path).Text != f.Text) return {NilEnv, "the source changed; wait for the current diagram"};

@@ -1,5 +1,4 @@
-// A memoized bottom-up rebuild from a root, the node function applied once per node and
-// never to its own output.
+// Apply each rewrite once per original node in a bottom-up rebuild.
 #pragma once
 
 #include "signal/Signal.h"
@@ -11,8 +10,7 @@
 
 namespace faustlens {
 
-// `Node` is `SigId(SigId original, std::span<const SigId> rebuilt_children)`, an id
-// since the arena reallocates as children build.
+// Node receives the original id and rebuilt child ids; arena growth invalidates node references.
 template<class Node> struct Rewriter {
     struct Carry {
         Signals &S;
@@ -29,10 +27,10 @@ template<class Node> struct Rewriter {
 
     SigId Go(SigId id) {
         if (const auto it = Done.find(id); it != Done.end()) return it->second;
-        // By value: building reallocates the arena out from under any span into it.
+        // Copy child ids before recursive construction can grow the arena.
         const std::vector<SigId> old(S.Children(id).begin(), S.Children(id).end());
 
-        // Provenance carried here rather than in each pass, covering everything a rule builds.
+        // Propagate source origins to all nodes created by the rewrite.
         const Carry carry(S, S.OriginOf(id));
 
         if (S.KindOf(id) == SigKind::Rec) {
@@ -55,7 +53,7 @@ template<class Node> struct Rewriter {
     }
 };
 
-// One memo shared across all roots.
+// Share the memo across roots.
 template<class Node> std::vector<SigId> Rewrite(Signals &s, std::span<const SigId> roots, Node node) {
     Rewriter<Node> r(s, std::move(node));
     std::vector<SigId> out;

@@ -1,5 +1,3 @@
-// Shared parts of the Retentiveness sweeps: an edit must retain the bytes of everything
-// it did not change, comments and formatting included.
 #pragma once
 
 #include "property/Corpus.h"
@@ -24,7 +22,7 @@ struct Loaded {
 
     explicit Loaded(const CorpusFile &);
 
-    // Where a generated sweep may put a stage. `waveform`'s list takes numbers only.
+    // Return valid stage insertion positions, excluding waveform numeric lists.
     bool AcceptsExpression(RefId) const;
 };
 
@@ -32,14 +30,13 @@ const char *BadScript(const EditScript &, const TermRef &target);
 
 bool BytesSurvive(std::string_view src, uint32_t begin, uint32_t end, const EditScript &);
 
-// `d` is owed *an* occurrence of its value inside the target, not *this* one.
+// Require a matching value occurrence within the target.
 bool Survives(const Loaded &, std::string_view src, const TermRef &d, const TermRef &target, const EditScript &);
 
-// First off-path ref inside `target` whose bytes the splice lost, or `NoRef`. Only
-// the rebuilt `path` and `dropped` may lose bytes.
+// Return the first ref losing required bytes, excluding the rebuilt path and dropped subtree.
 RefId LostBytes(const Loaded &, std::string_view src, RefId target, std::span<const uint32_t> path, RefId dropped, const EditScript &);
 
-// The confirming reparse is O(file), so it runs on a bounded number of refs per file.
+// Bound full-file reparsing to sampled refs.
 constexpr size_t ReparseBudget = 40;
 
 struct Sweep {
@@ -50,7 +47,7 @@ struct Sweep {
 
 bool Skipped(const CorpusFile &, Sweep &);
 
-// Comments in a replaced region must be re-emitted. `seen` counts those it passed over.
+// Count comments skipped while checking re-emission.
 bool CommentsSalvaged(const Loaded &, const CorpusFile &, const EditScript &, size_t &seen);
 
 struct Merged {
@@ -66,7 +63,7 @@ inline void Report(const Merged &m, const char *what) {
     CHECK(m.Failures.empty());
 }
 
-// Every corpus file on every core. `body(f, l, sw)` fills `sw`.
+// Run body for each corpus file across available cores.
 template<class Body> Merged SweepFiles(Body body) {
     return Merge(MapEach<Sweep>(WholeCorpus(), [&body](const CorpusFile &f) {
         Sweep sw;

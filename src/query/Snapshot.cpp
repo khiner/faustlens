@@ -45,8 +45,7 @@ std::vector<ValueId> ValuesAt(const FileView &f, uint32_t offset) {
 std::optional<uint32_t> OffsetOfRef(const FileView &f, RefId i) {
     if (i >= f.Refs.Refs.size()) return std::nullopt;
     const TermRef &r = f.Refs.Refs[i];
-    // The first byte no child covers. Children are in source order and disjoint,
-    // so one sweep finds it.
+    // Return the first byte outside child spans.
     uint32_t at = r.OuterBegin;
     for (const RefId c : f.Refs.Children(i)) {
         const TermRef &kid = f.Refs.Refs[c];
@@ -54,7 +53,6 @@ std::optional<uint32_t> OffsetOfRef(const FileView &f, RefId i) {
         at = std::max(at, kid.OuterEnd);
     }
     if (at < r.OuterEnd) return at;
-    // Children tile the span exactly. Unreachable for a leaf.
     return r.OuterBegin;
 }
 

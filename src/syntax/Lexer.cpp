@@ -11,7 +11,7 @@ constexpr bool IsLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && 
 constexpr bool IsIdBody(char c) { return IsLetter(c) || IsDigit(c) || c == '_'; }
 constexpr bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
-// Looked up on a whole maximal NSID, so `min` hits but `minimum` and `min::x` do not.
+// Match whole namespace identifiers to keep minimum and min::x distinct from min.
 Tok LookupKeyword(std::string_view word) {
     const std::span<const Spelling> table = Keywords();
     const auto it = std::ranges::lower_bound(table, word, {}, &Spelling::Text);
@@ -110,7 +110,7 @@ struct Lexer {
             return;
         }
         if (c == '<') {
-            // `<mdoc>` and FSTRING match the same six bytes, so `<mdoc>` is tested first.
+            // Test <mdoc> before the overlapping foreign-string syntax.
             if (Has("<mdoc>")) {
                 Push(Tok::BDoc, I + 6);
                 Modes.push_back(LexMode::Prose);
@@ -120,7 +120,6 @@ struct Lexer {
                 Push(Tok::FString, end);
                 return;
             }
-            // Body closers pop back to prose. Below FSTRING, which a `</` never starts.
             static constexpr Spelling Closers[] = {
                 {"</equation>", Tok::EEqn},
                 {"</diagram>", Tok::EDgm},
@@ -133,7 +132,7 @@ struct Lexer {
         }
         if (c == ':' && At(I + 1) == ':') {
             if (const uint32_t end = ScanNsid(I + 2); end != I + 2) {
-                Push(Tok::Ident, end); // a leading `::` is part of the identifier
+                Push(Tok::Ident, end);
                 return;
             }
         }
@@ -162,7 +161,7 @@ struct Lexer {
                 while (j < Src.size() && IsDigit(Src[j])) ++j;
             }
         }
-        // An exponent counts only whole: `3e` is Int `3` then the ident `e`.
+        // Require a complete exponent; `3e` is integer 3 followed by identifier e.
         if (At(j) == 'e') {
             uint32_t k = j + 1;
             if (At(k) == '-' || At(k) == '+') ++k;
@@ -184,7 +183,7 @@ struct Lexer {
         if (j == from) return from;
         while (At(j) == ':' && At(j + 1) == ':') {
             const uint32_t next = ScanId(j + 2);
-            if (next == j + 2) break; // a trailing `::` is not part of the NSID
+            if (next == j + 2) break;
             j = next;
         }
         return j;
@@ -193,13 +192,12 @@ struct Lexer {
     uint32_t ScanId(uint32_t from) const {
         uint32_t j = from;
         while (At(j) == '_') ++j;
-        if (!IsLetter(At(j))) return from; // `_` alone is WIRE, not an ID
+        if (!IsLetter(At(j))) return from;
         ++j;
         while (j < Src.size() && IsIdBody(Src[j])) ++j;
         return j;
     }
 
-    // `<letters>` or `<letters.letter>`, beating `<` as less-than so `<b>` is an FString.
     uint32_t ScanFString() const {
         uint32_t j = I + 1;
         while (j < Src.size() && IsLetter(Src[j])) ++j;
@@ -208,7 +206,6 @@ struct Lexer {
         return I;
     }
 
-    // Two-byte spellings come first, so the scan is maximal-munch.
     bool ScanOperator() {
         static constexpr Spelling Ops[] = {
             {"<:", Tok::Split},  {"+>", Tok::Mix}, {":>", Tok::Mix},   {"<<", Tok::Lsh},    {">>", Tok::Rsh},  {"<=", Tok::Le},    {">=", Tok::Ge},
@@ -225,7 +222,7 @@ struct Lexer {
         struct Tag {
             std::string_view Text;
             Tok Kind;
-            int8_t Mode; // -1 pop, 0 none, 1 push Default, 2 push Listing
+            int8_t Mode;
         };
         static constexpr Tag Tags[] = {
             {"<notice />", Tok::Notice, 0}, {"<notice/>", Tok::Notice, 0},     {"<listing", Tok::BLst, 2}, {"<equation>", Tok::BEqn, 1},
@@ -281,8 +278,7 @@ bool WouldFuse(std::string_view left, std::string_view right) {
     if (left.empty() || right.empty()) return false;
     if (IsSpace(left.back()) || IsSpace(right.front())) return false;
 
-    // Windowing `right` is safe: bytes past it cannot reopen a token closed before the
-    // seam.
+    // Limit right context after the token crossing the join has closed.
     constexpr size_t Window = 256;
     const size_t seam = left.size();
     std::string joined;

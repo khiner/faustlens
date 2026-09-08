@@ -89,7 +89,6 @@ TEST_CASE("a composition places its children by kind") {
     CHECK(seq->Root.Kids.size() == 2);
     CHECK(seq->Root.Kids[0].Bounds.Right() < seq->Root.Kids[1].Bounds.X);
 
-    // A `,` has no wires between its sides to need a gap, so lanes are left-aligned.
     const auto par = Lay("process = _ , _;\n");
     CHECK(par->Root.Kind == Kind::Par);
     CHECK(par->Root.Kids[0].Bounds.Bottom() < par->Root.Kids[1].Bounds.Y);
@@ -145,7 +144,7 @@ TEST_CASE("a term resolves to its enclosing chain") {
 }
 
 TEST_CASE("a wire meets a lane, never the gap between two of them") {
-    // The middle of a `,`'s bounds is the gap between its lanes.
+    // The center lies between lanes.
     const auto d = Lay("process = _, _ : *;\n");
     const Node &root = d->Root;
     REQUIRE(root.Kind == Kind::Seq);
@@ -153,7 +152,6 @@ TEST_CASE("a wire meets a lane, never the gap between two of them") {
     REQUIRE(par.Kind == Kind::Par);
 
     const std::vector<Link> w = Wires(root);
-    // Counts differ, so the wires meet at one bundle point.
     CHECK(w.size() == 3);
     CHECK(Touches(w, par.Kids[0].Bounds.Right(), MidY(par.Kids[0])));
     CHECK(Touches(w, par.Kids[1].Bounds.Right(), MidY(par.Kids[1])));
@@ -164,7 +162,7 @@ TEST_CASE("a wire meets a lane, never the gap between two of them") {
 }
 
 TEST_CASE("a `<:` fans to lanes, and does not reach past a stage into the next") {
-    // The wide side of this `<:` is a `:`, whose children are stages and not lanes.
+    // The split destination is sequential, with stage children.
     const auto d = Lay("process = _ <: _, _ : route(2, 2, 1, 1, 2, 2);\n");
     const Node &root = d->Root;
     REQUIRE(root.Kind == Kind::Split);
@@ -217,7 +215,7 @@ TEST_CASE("every wire stays inside the composition that drew it") {
             for (const Node &k : n.Kids) self(k, self);
         };
         check(root, check);
-        // A zero-length wire means an endpoint rule answered with one point twice.
+        // Reject coincident wire endpoints.
         for (const Link &l : AllWires(root)) {
             const bool degenerate = Near(l.X0, l.X1) && Near(l.Y0, l.Y1);
             CHECK_FALSE(degenerate);
@@ -234,7 +232,6 @@ TEST_CASE("a route is laid out around its channels, not around its text") {
 
     CHECK(r.Ports.size() == 5);
     CHECK(r.Wires == std::vector<std::pair<uint32_t, uint32_t>>{{1, 1}, {2, 3}});
-    // The label carries the counts. The entries are the wires.
     CHECK(r.Label == "route(2, 3)");
 
     const auto port = [&](bool input, uint32_t channel) {
@@ -252,7 +249,6 @@ TEST_CASE("a route is laid out around its channels, not around its text") {
         CHECK(p.Y > r.Bounds.Y);
         CHECK(p.Y < r.Bounds.Bottom());
     }
-    // One row per channel plus one for the label, which sits above the ports.
     CHECK(r.Bounds.H >= 4 * Metrics{}.LineHeight);
     for (const Port &p : r.Ports) CHECK(p.Y > r.Bounds.Y + Metrics{}.LineHeight);
 }
@@ -289,16 +285,14 @@ TEST_CASE("a port answers to a point near it, and the nearest one wins") {
 }
 
 TEST_CASE("a route the catalogue cannot rewire draws no ports") {
-    // The view must decline wherever the rewrite does, or a drag is always refused.
+    // Use the same validity rules for drawing and rewiring.
     const auto d = Lay("n = 2;\nprocess = route(n, n, 1, 1);\n");
     CHECK(d->Root.Ports.empty());
 
-    // An odd entry list pairs up nowhere.
     const auto odd = Lay("process = route(2, 2, 1, 1, 2);\n");
     CHECK(odd->Root.Wires.empty());
     CHECK(odd->Root.Ports.size() == 4);
 
-    // An out-of-range entry carries no signal, so it is not drawn.
     const auto wide = Lay("process = route(2, 2, 1, 1, 3, 1);\n");
     CHECK(wide->Root.Wires == std::vector<std::pair<uint32_t, uint32_t>>{{1, 1}});
 }

@@ -1,5 +1,4 @@
-// The audio device and the hand-off between instances. The callback neither
-// allocates nor frees.
+// The audio callback performs no allocation or deallocation.
 #pragma once
 
 #include "runtime/Migrate.h"
@@ -16,20 +15,20 @@ struct Interp;
 
 namespace audio {
 
-// A channel the source lacks is zeroed, and one the destination lacks is dropped.
+// Zero missing source channels and discard excess channels.
 void Deinterleave(const float *in, int32_t in_channels, int32_t frames, double *const *out, int32_t out_channels);
 void Interleave(const double *const *in, int32_t in_channels, int32_t frames, float *out, int32_t out_channels);
 
-// In place: `to` leaves holding the mix. `done` and `length` are frames.
+// Mix into to using frame counts done and length.
 void Crossfade(const double *const *from, int32_t from_channels, double *const *to, int32_t to_channels, int32_t frames, int64_t done, int64_t length);
 
-// Sets FTZ and DAZ on the calling thread: they are per-thread bits.
+// Enable FTZ and DAZ on the calling thread.
 void EnableFlushToZero();
 
 struct Host {
-    struct Device; // miniaudio's, kept out of this header
+    struct Device;
 
-    // Buffers allocated by `Swap`'s caller, since nothing resizes under audio.
+    // Allocate buffers before publishing to the audio thread.
     struct Voice {
         Interp *Dsp = nullptr;
         std::vector<std::vector<double>> InBuf, OutBuf;
@@ -39,11 +38,11 @@ struct Host {
     };
 
     static constexpr double FadeMilliseconds = 5.0;
-    // What one swap can displace, plus one, so a retire always has a slot.
+    // Reserve space for all voices displaced by one swap plus one pending retirement.
     static constexpr size_t RetiredSlots = 4;
 
     std::unique_ptr<Device> Device;
-    // Audio thread only, once running.
+    // Audio thread only while running.
     Voice *Current = nullptr, *Fading = nullptr;
     int64_t FadeDone = 0, FadeLength = 0;
     std::atomic<Voice *> Incoming{nullptr};
@@ -52,7 +51,7 @@ struct Host {
     double SampleRate = 0;
     bool Running = false;
     std::string DeviceName;
-    // A failed capture open, which `Start` survives: inputs are silence.
+    // Capture failures produce silent inputs.
     std::string Warning;
 
     Host();
@@ -60,17 +59,16 @@ struct Host {
     Host(const Host &) = delete;
     Host &operator=(const Host &) = delete;
 
-    // `dsp` must outlive this. A failed capture open falls back to silent inputs
-    // and is a `Warning`, not an error.
+    // The DSP must outlive the host.
+    // Capture failures produce silent inputs and a warning.
     std::expected<void, std::string> Start(Interp &dsp);
     void Stop();
 
-    // The caller keeps ownership until `Collect` returns the instance. False
-    // where there is no room: backpressure.
+    // Publish only while running with no pending swap and sufficient retirement capacity.
+    // Retain instance ownership until Collect returns it.
     bool Swap(Interp &next, const Interp *from = nullptr, const StateTransfer & = {});
 
-    // Instances the audio thread has finished with, freed off it. Call from any
-    // other thread, and before their Plans go.
+    // Collect completed instances off the audio thread before destroying their Plans.
     std::vector<Interp *> Collect();
 
     void Process(const float *in, float *out, uint32_t frames);

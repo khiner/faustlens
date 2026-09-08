@@ -8,7 +8,7 @@
 namespace faustlens::test {
 namespace {
 
-// The reference's operator names and priorities, plus `@`, which prints as an infix at 8.
+// Use reference operator precedence, including delay @ at level 8.
 struct InfixOp {
     std::string_view Name;
     int Priority;
@@ -32,7 +32,7 @@ struct Parser {
         return true;
     }
 
-    // Forces `SIG` to a list even at one output, where the printer wrote `(ID_29)`.
+    // Represent single-output SIG expressions as lists.
     bool ParseList(SigTerm &out, std::string &why) {
         SkipSpace();
         if (!Peek('(')) return Fail(why, "expected `(`");
@@ -66,8 +66,7 @@ struct Parser {
 
     static bool IdentChar(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
 
-    // Longest match, so `>=` wins over `>`. Only consulted after an operand, so a `-` here
-    // never opens a negative literal.
+    // Match operators longest-first after operands.
     const InfixOp *PeekInfix() const {
         if (At >= S.size()) return nullptr;
         const InfixOp *best = nullptr;
@@ -96,7 +95,7 @@ struct Parser {
 
     bool Postfix(SigTerm &out, std::string &why) {
         if (!Primary(out, why)) return false;
-        while (Peek('\'')) { // `x'`, a one-sample delay
+        while (Peek('\'')) {
             ++At;
             SigTerm node;
             node.Kind = SigTerm::Kind::Op;
@@ -125,7 +124,7 @@ struct Parser {
         }
         const std::string text(S.substr(begin, At - begin));
         if (text.empty()) return Fail(why, "expected a number");
-        // Int against real is by spelling: a real always has a `.` or an exponent.
+        // Determine real literals from decimal points or exponents.
         out = SigTerm{};
         if (real) {
             out.Kind = SigTerm::Kind::Real;
@@ -146,7 +145,7 @@ struct Parser {
         return true;
     }
 
-    // Everything up to and including the `)`. The opening bracket is already eaten.
+    // Read through the closing parenthesis after consuming the opening one.
     bool CommaList(std::vector<SigTerm> &args, std::string &why) {
         SkipSpace();
         if (!Peek(')')) {
@@ -162,7 +161,6 @@ struct Parser {
         return Eat(')') ? true : Fail(why, "expected `)`");
     }
 
-    // `(a, b, c)` is a list, `(x op y)` grouping.
     bool Group(SigTerm &out, std::string &why) {
         ++At;
         SigTerm list;
@@ -184,7 +182,7 @@ struct Parser {
         return CommaList(out.Args, why);
     }
 
-    // `letrec(W0 = (b0, b1))`. The body is a branch list even at one branch.
+    // Represent letrec bodies as branch lists, including singleton bodies.
     bool LetRec(SigTerm &out, std::string &why) {
         out = SigTerm{};
         out.Kind = SigTerm::Kind::Op;
@@ -307,7 +305,7 @@ std::expected<SigFile, std::string> ParseSig(std::string_view text) {
         const size_t n = std::strtoull(std::string(lhs.substr(3)).c_str(), nullptr, 10);
         SigTerm rhs;
         if (!p.ParseLine(rhs, sub)) return bad(sub);
-        // The dump is dense and in dependency order.
+        // Require dense ids in dependency order.
         if (n != out.Defs.size()) return bad(std::format("`ID_{}` out of sequence", n));
         out.Defs.push_back(std::move(rhs));
         return true;

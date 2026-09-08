@@ -1,4 +1,4 @@
-// An incremental recompile after an edit must equal a from-scratch compile, failures included.
+// Compare incremental and fresh compilation, including failures.
 #include "property/Corpus.h"
 #include "query/Query.h"
 #include "signal/Plan.h"
@@ -70,7 +70,7 @@ struct Rng {
     size_t Below(size_t n) { return n == 0 ? 0 : Next() % n; }
 };
 
-// Six kinds, three meant to leave the program alone and three meant to break it.
+// Generate both valid and invalid edits.
 std::string Edit(const std::string &text, Rng &r, std::string &what) {
     std::string out = text;
     switch (r.Below(6)) {
@@ -122,7 +122,7 @@ std::string Edit(const std::string &text, Rng &r, std::string &what) {
 struct Verdict {
     std::string Name;
     int Compared = 0;
-    // A sweep where every edit broke the file would agree vacuously, so both are reported.
+    // Require valid and invalid outcomes to avoid vacuous agreement on failures.
     int Lowered = 0, Moved = 0;
     std::string Why;
 };
@@ -140,13 +140,13 @@ Verdict Sweep(const fs::path &path) {
         return v;
     }
 
-    // The original first, so later compiles hit a warm memo.
+    // Warm the memo before applying edits.
     Session live;
     live.AddSearchPath(path.parent_path());
     live.SetBuffer(canonical, text);
     CompileIn(live, canonical);
 
-    // Seeded from the name, so a failure replays from it alone.
+    // Seed from the filename for reproducible failures.
     Rng rng{0x9E3779B97F4A7C15ull ^ std::hash<std::string>{}(v.Name)};
     uint64_t previous = 0;
     for (int step = 0; step < Edits; ++step) {
@@ -180,14 +180,14 @@ Verdict Sweep(const fs::path &path) {
 } // namespace
 
 TEST_CASE("incremental equivalence: an incremental recompile equals a compile from scratch") {
-    // The impulse programs: all 94 lower, so every step reaches the Plan. Examples cost minutes.
+    // Use the compiling impulse corpus so checks reach Plan lowering.
     const std::vector<fs::path> paths = DspPaths();
     REQUIRE_FALSE(paths.empty());
 
     const std::vector<Verdict> out = MapEach<Verdict>(paths, Sweep);
 
     int agreed = 0, compared = 0, lowered = 0, moved = 0;
-    std::map<std::string, std::string> census; // reason -> first file
+    std::map<std::string, std::string> census;
     for (const Verdict &v : out) {
         compared += v.Compared;
         lowered += v.Lowered;

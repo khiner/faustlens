@@ -1,10 +1,4 @@
-# Emits the embedded standard library translation unit.
-#
-# Walks LIB_DIR recursively rather than globbing *.lib at the top level: the
-# top-level libraries import by subdirectory path ("dx7/operator.lib",
-# "old/music.lib"), so a flat walk misses 13 of the 56 files. The table is
-# keyed by path relative to LIB_DIR and sorted, so the VFS overlay's bottom
-# layer can binary-search it.
+# Embed recursively imported libraries in relative-path order for binary lookup.
 
 if(NOT LIB_DIR OR NOT OUT)
     message(FATAL_ERROR "EmbedStdlib.cmake needs -DLIB_DIR= and -DOUT=")
@@ -13,8 +7,7 @@ endif()
 file(GLOB_RECURSE FILES RELATIVE "${LIB_DIR}" "${LIB_DIR}/*.lib")
 list(SORT FILES)
 
-# The embedded library and the reference oracle must come from the same commit,
-# so stamp the SHA the bytes below were read at.
+# Record the library revision for oracle comparison.
 execute_process(COMMAND git -C "${LIB_DIR}" rev-parse HEAD
                 OUTPUT_VARIABLE SHA OUTPUT_STRIP_TRAILING_WHITESPACE
                 ERROR_QUIET RESULT_VARIABLE GIT_RC)
@@ -31,9 +24,7 @@ set(INDEX 0)
 set(TABLE "")
 foreach(REL IN LISTS FILES)
     file(READ "${LIB_DIR}/${REL}" TEXT HEX)
-    # One \xNN escape per byte: the sources are UTF-8 with no guarantee about
-    # what a C++ raw-string delimiter would collide with, and a hex escape has
-    # no delimiter to collide.
+    # Use byte escapes to preserve UTF-8 without raw-string delimiter collisions.
     string(REGEX REPLACE "(..)" "\\\\x\\1" TEXT "${TEXT}")
     string(REGEX REPLACE "((\\\\x..){16})" "\\1\"\n    \"" TEXT "${TEXT}")
     string(APPEND BODY "const char f${INDEX}[] =\n    \"${TEXT}\";\n")

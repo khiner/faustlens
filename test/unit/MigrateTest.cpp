@@ -1,4 +1,3 @@
-// Each case is a pair of programs, one an edit of the other, and the claim is which key moved.
 #include "query/Query.h"
 #include "query/Snapshot.h"
 #include "signal/Plan.h"
@@ -38,7 +37,7 @@ Keys Compile(const std::string &source) {
     return k;
 }
 
-// State that carries audio across a block. Tables are recomputed and widgets key on their path.
+// Exclude recomputed tables and separately stored UI values.
 std::multiset<uint64_t> Carried(const Keys &k, bool shape) {
     std::multiset<uint64_t> out;
     for (const Field &f : k.Fields)
@@ -49,7 +48,6 @@ std::multiset<uint64_t> Carried(const Keys &k, bool shape) {
 } // namespace
 
 TEST_CASE("a compile is its own baseline") {
-    // Determinism first, or nothing below means anything.
     const std::string src = "process = (+ : *(0.5)) ~ _;";
     const Keys a = Compile(src), b = Compile(src);
     REQUIRE(a.Ok);
@@ -60,7 +58,7 @@ TEST_CASE("a compile is its own baseline") {
 }
 
 TEST_CASE("a gain edit inside a feedback network keeps the shape") {
-    // The content hash covers the whole loop body, so a constant edit moves `Hash`, not `Shape`.
+    // A loop constant changes content hash while preserving shape hash.
     const Keys before = Compile("process = (+ : *(0.5)) ~ _;");
     const Keys after = Compile("process = (+ : *(0.6)) ~ _;");
     REQUIRE(before.Ok);
@@ -79,7 +77,7 @@ TEST_CASE("a structural edit moves both keys") {
 }
 
 TEST_CASE("an edit elsewhere in the file leaves an untouched filter alone") {
-    // A plain intern hash fails here: ids below the edit moved, yet the first's hash survives.
+    // Preserve content identity across changed intern ids.
     const Keys before = Compile(
         "a = (+ : *(0.5)) ~ _;\n"
         "b = (+ : *(0.25)) ~ _;\n"
@@ -98,12 +96,11 @@ TEST_CASE("an edit elsewhere in the file leaves an untouched filter alone") {
     int survived = 0;
     for (const uint64_t h : from) survived += to.contains(h) ? 1 : 0;
     CHECK(survived == 1);
-    // Both survive the shape pass, the filters differing only in a constant.
     CHECK(Carried(before, true) == Carried(after, true));
 }
 
 TEST_CASE("a whole filter added beside one does not move the first's identity") {
-    // Both branches must read the same input, or the case is about the channel, not the edit.
+    // Use the same input on both branches to isolate the constant edit.
     const Keys before = Compile("process = (+ : *(0.5)) ~ _;");
     const Keys after = Compile("process = _ <: ((+ : *(0.5)) ~ _), ((+ : @(7) : *(0.25)) ~ _) :> _;");
     REQUIRE(before.Ok);
@@ -112,7 +109,7 @@ TEST_CASE("a whole filter added beside one does not move the first's identity") 
 }
 
 TEST_CASE("a delay line resized keeps its identity, which is what the length rule is for") {
-    // A line's owner is the signal whose history it keeps, not the `@`, so only `extent` moves.
+    // Delay extent changes independently of its producer's identity.
     const Keys before = Compile("process = _ @ 128;");
     const Keys after = Compile("process = _ @ 256;");
     REQUIRE(before.Ok);
@@ -144,7 +141,6 @@ TEST_CASE("a field traces back to where it is written") {
     const FileView *f = snap.File("/p.dsp");
     REQUIRE(f != nullptr);
 
-    // Each carried field lands on a distinct line, the property shape pairing rests on.
     std::set<size_t> lines;
     int traced = 0;
     for (const Field &fl : plan.Fields) {
@@ -152,7 +148,6 @@ TEST_CASE("a field traces back to where it is written") {
         REQUIRE(fl.Origin != NoTerm);
         const std::vector<Span> at = Marks(*f, fl.Origin);
         REQUIRE_FALSE(at.empty());
-        // A memo hit gives one field several locations, so take the first in byte order.
         uint32_t first = at[0].Begin;
         for (const Span &sp : at) first = std::min(first, sp.Begin);
         CHECK(first < src.size());
@@ -164,7 +159,7 @@ TEST_CASE("a field traces back to where it is written") {
 }
 
 TEST_CASE("a label is content, and its interning order is not") {
-    // Two arenas intern in different orders, so a raw payload would make a node differ from itself.
+    // Compare text payloads across differently ordered intern pools.
     const Keys before = Compile("process = hslider(\"gain\", 0, 0, 1, 0.01) * (_ @ 4);");
     const Keys after = Compile("process = hslider(\"gain\", 0, 0, 1, 0.01) * (_ @ 8) * hslider(\"other\", 1, 0, 1, 0.01);");
     REQUIRE(before.Ok);

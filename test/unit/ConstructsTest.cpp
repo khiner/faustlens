@@ -1,4 +1,3 @@
-// The constructs the corpus barely exercises: precision prefixes, `letrec`, `e[defs]`, modulation.
 #include "syntax/Parser.h"
 #include "syntax/Printer.h"
 #include "unit/Syntax.h"
@@ -118,7 +117,7 @@ TEST_CASE("a rec name is primed and takes no parameters") {
     Parsed const p("process = a letrec { 'x = x; };");
     const ValueId rec = p.Terms.Child(p.Body(), 1);
     CHECK(p.Terms.KindOf(rec) == Kind::RecDef);
-    CHECK(p.Terms.Lexeme(rec) == "x"); // the prime is syntax, not part of the name
+    CHECK(p.Terms.Lexeme(rec) == "x");
 }
 
 TEST_CASE("a `where` list is a deflist, so it holds no import") {
@@ -164,7 +163,6 @@ TEST_CASE("`[defs]` takes a deflist, empty included") {
     CHECK(Accepts("process = f[a(0) = 1; a(1) = 2;];"));
     CHECK(!Accepts("process = f[import(\"s.lib\");];"));
     CHECK(!Accepts("process = f[declare n \"v\";];"));
-    // An expression, so it stays on one line. Only statement lists break.
     Parsed const p("process = f[a = 1; b = 2;];");
     CHECK(p.Print() == "process = f[a = 1; b = 2;];");
 }
@@ -178,7 +176,7 @@ TEST_CASE("`[` in infix position is `[defs]` and in prefix position a modulation
 }
 
 TEST_CASE("a modulator's circuit is optional") {
-    // An omitted circuit means `*` at evaluation, so the absence is kept, not defaulted.
+    // Preserve an omitted modulation circuit in surface syntax.
     Parsed const p("process = [\"Wet\" -> e];");
     CHECK(p.BodyShape() == "Modulation[Modulator(\"Wet\") Ident(e)]");
     Parsed const q("process = [\"Wet\": *(2) -> e];");
@@ -190,29 +188,27 @@ TEST_CASE("a modulator's circuit is optional") {
 TEST_CASE("modulators are comma-separated and keep source order") {
     Parsed const p("process = [\"freq\": r, \"gain\", \"gate\": s -> e];");
     const auto kids = p.Terms.Children(p.Body());
-    REQUIRE(kids.size() == 4); // three entries, then the expression
+    REQUIRE(kids.size() == 4);
     CHECK(p.Terms.Lexeme(kids[0]) == "\"freq\"");
     CHECK(p.Terms.Lexeme(kids[1]) == "\"gain\"");
     CHECK(p.Terms.Lexeme(kids[2]) == "\"gate\"");
-    CHECK(p.Terms.Children(kids[1]).empty()); // the one with no circuit
+    CHECK(p.Terms.Children(kids[1]).empty());
     CHECK(p.Terms.KindOf(kids[3]) == Kind::Ident);
     CheckPutGet(p.Src);
 }
 
 TEST_CASE("a modulator's circuit is a level-2 position") {
-    // `,` separates entries rather than building a parallel composition.
     Parsed const p("process = [\"a\": (x,y) -> e];");
-    CHECK(p.Terms.Children(p.Body()).size() == 2); // one entry, one expression
+    CHECK(p.Terms.Children(p.Body()).size() == 2);
     CHECK(p.BodyShape() == "Modulation[Modulator(\"a\")[Par[Ident(x) Ident(y)]] Ident(e)]");
     CheckPutGet(p.Src);
-    // Without them it is two entries, the second with no string to name it.
+    // Parentheses keep the parallel circuit within one modulation entry.
     CHECK(!Accepts("process = [\"a\": x,y -> e];"));
     CheckPutGet("process = [\"a\" -> x,y];");
     CheckPutGet("process = [\"a\" -> x with { x = 1; }];");
 }
 
 TEST_CASE("the modulator separator is not the sequential composition operator") {
-    // This `:` separates a target path from its circuit, so `:`'s spacing rule misses it.
     Parsed const p("process = [\"freq\"   :   replace -> e];");
     CHECK(p.Print() == "process = [\"freq\": replace -> e];");
 }

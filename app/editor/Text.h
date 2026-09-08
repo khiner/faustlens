@@ -1,4 +1,3 @@
-// The text widget's draft commits through the same history as structural edits.
 #pragma once
 
 #include "editor/Workspace.h"

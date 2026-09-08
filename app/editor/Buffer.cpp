@@ -14,12 +14,12 @@ void Buffer::SetSelection(uint32_t cursor, uint32_t anchor) {
 uint32_t Buffer::Move(uint32_t offset, const EditScript &script) {
     int64_t delta = 0;
     for (const Replacement &r : script) {
-        if (r.Begin >= offset) break; // a script is disjoint and in source order
+        if (r.Begin >= offset) break;
         if (r.End <= offset) {
             delta += int64_t(r.Text.size()) - (r.End - r.Begin);
             continue;
         }
-        // Inside a replaced region: clamped rather than drifting into new text.
+        // Clamp positions inside replaced text to the replacement boundary.
         return uint32_t(int64_t(r.Begin) + delta + std::min<int64_t>(offset - r.Begin, int64_t(r.Text.size())));
     }
     return uint32_t(int64_t(offset) + delta);

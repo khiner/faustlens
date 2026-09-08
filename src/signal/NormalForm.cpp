@@ -10,20 +10,18 @@ namespace {
 
 bool IsGEZero(const Signals &s, SigId a) { return IsNum(s, a) && NumOf(s, a) >= 0; }
 
-// Absolute values across the int/real split, so `2` and `-2.0` match.
+// Compare absolute values across int and real nature.
 bool SameMagnitude(const Signals &s, SigId a, SigId b) {
     if (!IsNum(s, a) || !IsNum(s, b)) return false;
     return std::fabs(NumOf(s, a)) == std::fabs(NumOf(s, b));
 }
 
-// Through `SimpBinOp`, which folds exactly on two literals, integer division included.
 SigId AddNums(Signals &s, SigId a, SigId b) { return SimpBinOp(s, BinOpCode::Add, a, b); }
 SigId SubNums(Signals &s, SigId a, SigId b) { return SimpBinOp(s, BinOpCode::Sub, a, b); }
 SigId MulNums(Signals &s, SigId a, SigId b) { return SimpBinOp(s, BinOpCode::Mul, a, b); }
 SigId DivNums(Signals &s, SigId a, SigId b) { return SimpBinOp(s, BinOpCode::Div, a, b); }
 SigId MinusNum(Signals &s, SigId a) { return MulNums(s, s.MakeInt(-1), a); }
 
-// Everything here is built raw, the simplification rules having already run.
 SigId Mul(Signals &s, SigId x, SigId y) { return s.MakeBin(BinOpCode::Mul, x, y); }
 SigId Div(Signals &s, SigId x, SigId y) { return s.MakeBin(BinOpCode::Div, x, y); }
 SigId Add(Signals &s, SigId x, SigId y) { return s.MakeBin(BinOpCode::Add, x, y); }
@@ -44,7 +42,7 @@ int Order(const Signals &s, SigId a) {
     return o < 0 ? 0 : (o > 3 ? 3 : o);
 }
 
-// `k * x^n * y^m * ...`, factors ordered by `SigId`, the arena's creation order.
+// Store k*x^n*y^m with factors ordered by SigId.
 struct MTerm {
     Signals *Sigs;
     SigId Coef;
@@ -60,14 +58,14 @@ struct MTerm {
     bool IsNotZero() const { return !IsZeroNum(*Sigs, Coef); }
     bool IsNegative() const { return !IsGEZero(*Sigs, Coef); }
 
-    // A coefficient of one or minus one is free, which stops factoring a sign out forever.
     int Complexity() const {
+        // Treat coefficients +/-1 as zero cost to terminate sign factoring.
         int c = (IsOneNum(*Sigs, Coef) || IsMinusOne(*Sigs, Coef)) ? 0 : 1;
         for (const auto &[f, q] : Factors) c += (1 + Order(*Sigs, f)) * std::abs(q);
         return c;
     }
 
-    // Precondition: only terms of the same signature are ever combined.
+    // Requires equal signatures.
     void Combine(const MTerm &m, bool negate) {
         if (IsZeroNum(*Sigs, m.Coef)) {
         } else if (IsZeroNum(*Sigs, Coef)) {
@@ -90,7 +88,7 @@ struct MTerm {
         Cleanup();
     }
 
-    // Every factor of `n` is a factor here, to at least the same power and sign.
+    // Require every divisor factor with at least its exponent and matching sign.
     bool HasDivisor(const MTerm &n) const {
         if (n.Factors.empty()) return SameMagnitude(*Sigs, Coef, n.Coef);
         for (const auto &[f, v] : n.Factors) {
@@ -116,8 +114,8 @@ struct MTerm {
         return r;
     }
 
-    // One quotient per signal order, coefficient in order 0. `signature` drops it, so
-    // `2*x` and `3*x` share one `ATerm` entry.
+    // Store one quotient per signal order, with coefficients in order zero.
+    // Exclude coefficients from signatures so 2*x and 3*x share an entry.
     SigId Tree(bool signature = false, bool negative = false) const {
         Signals &s = *Sigs;
         if (Factors.empty() || IsZeroNum(s, Coef)) {
@@ -149,7 +147,6 @@ struct MTerm {
         return r == NoSig ? s.MakeInt(1) : r;
     }
 
-    // A zero divisor stays unfolded and visible.
     void Scale(SigId t, int sign) {
         SigId x;
         int32_t n;
@@ -181,7 +178,7 @@ struct MTerm {
     static void DivLeft(Signals &s, SigId &r, SigId x) { r = Div(s, r == NoSig ? s.MakeReal(1.0) : r, x); }
 };
 
-// Orienting by creation order keeps the sum association deterministic.
+// Order by creation id for deterministic sum association.
 SigId SimplifyingAdd(Signals &s, SigId x, SigId y) {
     if (IsNum(s, x) && IsNum(s, y)) return AddNums(s, x, y);
     if (IsZeroNum(s, x)) return y;
@@ -280,7 +277,7 @@ struct ATerm {
         return a;
     }
 
-    // Bucketing by signal order keeps a sample-rate subexpression out of a control-rate sum.
+    // Group by signal order to preserve control-rate subexpressions.
     SigId Tree() const {
         Signals &s = *Sigs;
         SigId p[4], n[4];
@@ -311,7 +308,6 @@ struct ATerm {
 SigId NormalizeAddTerm(Signals &s, SigId t) {
     ATerm a(s);
     a.AddTree(t);
-    // Pulling one divisor out can expose another.
     for (MTerm d = a.GreatestDivisor(); d.IsNotZero() && d.Complexity() > 0; d = a.GreatestDivisor()) a = a.Factorize(d);
     return a.Tree();
 }

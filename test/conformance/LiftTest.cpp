@@ -1,5 +1,4 @@
-// The law is that lift, print, parse, evaluate is the identity on Box, not PutGet: a
-// lifted `Int(-5)` parses back as a subtraction.
+// Check circuit equivalence after lift, print, parse, and evaluation.
 #include "eval/Lift.h"
 #include "conformance/BoxCompare.h"
 #include "conformance/Sweep.h"
@@ -37,7 +36,7 @@ TEST_CASE("the Box-to-Term lift: print it, read it back, and it is the same circ
     namespace fs = std::filesystem;
     size_t lifted = 0, declined = 0, round_tripped = 0;
     std::vector<std::string> failures;
-    std::map<std::string, size_t> declines; // grouped by cause, not by program
+    std::map<std::string, size_t> declines;
 
     for (const fs::path &p : DspPaths()) {
         Session s;
@@ -62,8 +61,7 @@ TEST_CASE("the Box-to-Term lift: print it, read it back, and it is the same circ
             failures.push_back(p.filename().string() + ": the lifted text does not compile");
             continue;
         }
-        // Isomorphism, not id equality: slot numbers and side-table indices are fresh per
-        // construction.
+        // Compare isomorphism across fresh slot and side-table ids.
         const BoxSide side{s.Boxes, s.Terms};
         if (const auto same = Isomorphic(side, box, side, again); !same) {
             failures.push_back(p.filename().string() + ": " + same.error() + "\n  " + text.substr(0, 300));
@@ -89,7 +87,6 @@ TEST_CASE("the lift takes the desugared spelling everywhere") {
              Case{"process = _';", "process = _ : mem;"},
              Case{"process = 0 - _;", "process = 0,_ : -;"},
              Case{"process = _ @ 3;", "process = _,3 : @;"},
-             // `^` is infix only, so a nullary power is spelled `pow`.
              Case{"process = _ ^ 2;", "process = _,2 : pow;"},
          }) {
         CAPTURE(c.Source);

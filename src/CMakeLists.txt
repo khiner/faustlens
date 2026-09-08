@@ -1,11 +1,3 @@
-# The compiler proper. Nothing here links an unbounded dependency, so the
-# conformance and property suites never pull in a window or an audio device.
-
-# --- Generated translation units -------------------------------------------
-# The embedded standard library and the third-party notice file, both keyed on
-# the faustlibraries checkout so the shipped library and the oracle provably
-# come from one commit.
-
 set(GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(STDLIB_CPP "${GEN_DIR}/embedded_stdlib.cpp")
 set(NOTICES "${CMAKE_BINARY_DIR}/THIRD-PARTY-NOTICES")
@@ -38,8 +30,6 @@ add_custom_command(
 
 add_custom_target(faustlens_notices ALL DEPENDS "${NOTICES}")
 
-# --- syntax: lexer, parser, Term, printer, splice --------------------------
-
 add_library(faustlens_syntax
     syntax/Token.cpp
     syntax/Lexer.cpp
@@ -52,15 +42,11 @@ add_library(faustlens_syntax
     syntax/Diagnostic.cpp)
 target_include_directories(faustlens_syntax PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# --- files: overlay VFS, import resolution, embedded stdlib ----------------
-
 add_library(faustlens_files
     files/Vfs.cpp
     "${STDLIB_CPP}")
 target_include_directories(faustlens_files PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(faustlens_files PUBLIC faustlens_syntax)
-
-# --- box, eval, query: the evaluator and the memoized query engine ---------
 
 add_library(faustlens_eval
     box/Box.cpp
@@ -75,8 +61,6 @@ add_library(faustlens_eval
 target_include_directories(faustlens_eval PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(faustlens_eval PUBLIC faustlens_syntax faustlens_files)
 
-# --- signal: propagation, the flat hash-consed DAG, analyses, Plan ---------
-
 add_library(faustlens_signal
     signal/Signal.cpp
     signal/Simplify.cpp
@@ -90,8 +74,6 @@ add_library(faustlens_signal
     signal/Plan.cpp)
 target_include_directories(faustlens_signal PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(faustlens_signal PUBLIC faustlens_eval)
-
-# --- runtime: the interpreter tier and the instance contract ---------------
 
 add_library(faustlens_runtime
     runtime/Registry.cpp

@@ -1,5 +1,4 @@
-// The local signal rewrites and the pass applying them. Not optional, and ordered after
-// promotion: `x*0` folds to the *real* zero.
+// Run simplification after promotion to preserve literal nature.
 #pragma once
 
 #include "signal/Signal.h"
@@ -10,15 +9,14 @@
 
 namespace faustlens {
 
-// Each returns what the rules leave behind, often not the node asked for.
+// Return the rewritten node id.
 SigId SimpBinOp(Signals &, BinOpCode, SigId, SigId);
 SigId SimpIntCast(Signals &, SigId);
 SigId SimpFloatCast(Signals &, SigId);
 SigId SimpSelect2(Signals &, SigId sel, SigId a, SigId b);
 SigId SimpControl(Signals &, SigId, SigId cond);
 
-// `s@0 -> s` unless `s` is a projection, `0@d -> 0`, `(k*s)@d -> k*(s@d)` and
-// `(s/k)@d -> (s@d)/k` for `k` under order 2, `(s@n)@m -> s@(n+m)`.
+// Simplify constant and nested delays while preserving current-sample projections.
 SigId SimpDelay(Signals &, SigId, SigId delay);
 SigId SimpDelay1(Signals &, SigId);
 
@@ -35,11 +33,10 @@ inline bool IsZeroNum(const Signals &s, SigId id) { return IsNum(s, id) && NumOf
 inline bool IsOneNum(const Signals &s, SigId id) { return IsNum(s, id) && NumOf(s, id) == 1; }
 inline bool IsMinusOne(const Signals &s, SigId id) { return IsNum(s, id) && NumOf(s, id) == -1; }
 
-// `add_normal_form` reaches only a binary operation no rule rewrote. `pow` normalizes
-// either way.
+// Apply optional additive normalization to unchanged binary nodes; always normalize pow.
 std::vector<SigId> Simplify(Signals &, std::span<const SigId> roots, bool add_normal_form);
 
-// Promote, simplify, promote, then clamp table accesses once sizes have folded.
+// Promote, simplify, promote, then clamp table accesses.
 std::vector<SigId> Normalize(Signals &, std::span<const SigId> roots, bool add_normal_form);
 
 } // namespace faustlens

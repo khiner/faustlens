@@ -14,7 +14,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlgpu3.h"
-#include "imgui_internal.h" // the docking builder, for the first-run layout only
+#include "imgui_internal.h"
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -36,12 +36,11 @@ namespace {
 struct InlineField {
     bool Open = false;
     bool Focus = false;
-    bool Armed = false; // has held focus, so losing it is a blur
+    bool Armed = false; // previously focused
     char Text[128] = {};
 };
 
-// `at` is a child-index path, not a value: two identically written routes are
-// one interned value.
+// A child-index path distinguishes identical routes sharing one interned value.
 struct PortDrag {
     bool Active = false;
     std::vector<uint32_t> At;
@@ -272,7 +271,6 @@ struct App {
     }
 };
 
-// Taken at the node's centre: a port sits *on* the edge.
 std::vector<uint32_t> PathToNode(const boxview::Node &root, const boxview::Node &n) {
     std::vector<uint32_t> path;
     boxview::Layout::HitPath(root, n.Bounds.X + n.Bounds.W / 2, n.Bounds.Y + n.Bounds.H / 2, path);
@@ -335,21 +333,20 @@ std::optional<uint32_t> SourcePane(App &app, const FileView *f, std::span<const 
     return clicked;
 }
 
-// Commit intents after both views have read the current selection.
+// Apply edits after both views read the current selection.
 struct Intent {
     std::optional<Edit> Edit;
     bool Undo = false, Redo = false;
 };
 
-// Edit keys route globally, the selection being shared, arrows to the focused window.
+// Route edits globally and arrow keys to the focused window.
 Intent HandleKeys(App &app, const FileView &f) {
     Intent in;
-    // Ahead of routing: while the field is up, a bare `M` is a character it wants.
+    // Reserve character keys for the active text field.
     if (app.Field.Open) return in;
 
     constexpr ImGuiInputFlags Global = ImGuiInputFlags_RouteGlobal;
-    // Never short-circuited: `Shortcut` registers the route as a side effect, so
-    // a call skipped by `||` lapses for the frame.
+    // Call Shortcut unconditionally to register each route every frame.
     const auto keys = app::ReadWorkspaceKeys();
     if (keys.Save) app.Save();
     if (keys.Undo || keys.Redo) {
@@ -385,7 +382,6 @@ Intent HandleKeys(App &app, const FileView &f) {
     return in;
 }
 
-// What `HandleKeys` binds, said out loud. Nothing checks that the two agree.
 void HelpPane(App &app) {
     ImGui::Begin("help");
     const auto row = [](const char *key, const char *what) {
@@ -472,8 +468,6 @@ void ControlPane(App &app) {
     if (!app.AudioError.empty()) ImGui::TextWrapped("%s", app.AudioError.c_str());
     if (!host.Warning.empty()) ImGui::TextWrapped("%s", host.Warning.c_str());
     if (app.Last.Compiled) ImGui::Text("%.1f ms to prepare%s", app.Last.Timings.Total, app.Last.Unchanged ? ", unchanged" : "");
-    // The channel mapping is positional, so a mismatched count is silence on one
-    // side or a dropped channel on the other.
     if (host.Running && (host.DeviceIn != dsp.Inputs() || host.DeviceOut != dsp.Outputs()))
         ImGui::Text("%d in %d out, device has %d and %d", dsp.Inputs(), dsp.Outputs(), host.DeviceIn, host.DeviceOut);
     for (const std::string &d : dsp.Diagnostics) ImGui::TextWrapped("%s", d.c_str());
@@ -486,14 +480,14 @@ void ControlPane(App &app) {
         else ImGui::TextWrapped("%s is declared in %s", app.Traced.Control.c_str(), what.c_str());
     }
     ImGui::Separator();
-    // One gesture is one undo entry: pushed mid-drag it records a stale value.
+    // Commit a control gesture after the drag ends.
     const controls::Report r = controls::Draw(art->Plan, art->Ui, *art->Dsp, app.Ws.Controls);
     if (r.Ended) app.Ws.CommitGesture(app.Ws.Controls);
     if (r.Traced) app.TraceBack(*r.Traced);
     ImGui::End();
 }
 
-// Built once per run: otherwise the diagram opens behind the source.
+// Build the initial layout once to keep the diagram visible.
 void BuildDefaultLayout(ImGuiID dock) {
     ImGui::DockBuilderRemoveNode(dock);
     ImGui::DockBuilderAddNode(dock, ImGuiDockNodeFlags_DockSpace);
@@ -535,7 +529,7 @@ int main(int argc, char **argv) {
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-    // No `imgui.ini`: it would land in whatever directory the app was launched from.
+    // Disable ini output in the launch directory.
     io.IniFilename = nullptr;
     ImGui::StyleColorsDark();
     ImGui::GetStyle().ScaleAllSizes(scale);
@@ -553,8 +547,7 @@ int main(int argc, char **argv) {
     bool laid_out = false;
     for (bool done = false; !done;) {
         app.PollForEdits();
-        // SDL3 delivers `SDL_EVENT_TEXT_INPUT` only while text input is active, which the
-        // ImGui backend keeps turning off.
+        // Keep SDL text input active for SDL_EVENT_TEXT_INPUT delivery.
         if (!SDL_TextInputActive(window)) SDL_StartTextInput(window);
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -576,32 +569,30 @@ int main(int argc, char **argv) {
         }
 
         app.Sync();
-        // Usually the same file: `f` is compiled and drawn, `src` is shown.
         const FileView *f = app.Snap().File(app.Path);
         const FileView *src = app.Snap().File(app.Focus);
         if (f && src) {
             boxview::Layout layout(app.Terms(), boxview::Metrics{});
             layout.Expansions = app.View->Expanded;
             const boxview::Node root = layout.Run(f->Refs, ProcessBodyRef(app.Terms(), *f));
-            // A byte offset resolves against the drawn tree, so re-resolve here.
             if (app.ResolveSelection) {
                 app.ResolveSelection = false;
                 app.Sel = boxview::SelectAt(*src, root, src == f ? ProcessBodyRef(app.Terms(), *f) : NoRef, app.Sel.Caret);
             }
 
             ImGui::Begin("diagram");
-            // Inside the window, since a key route is owned by one.
+            // Register shortcuts inside their owning window.
             Intent intent = HandleKeys(app, *src);
             if (!app.Refused.empty()) {
                 ImGui::TextUnformatted(app.Refused.c_str());
                 ImGui::Separator();
             }
-            // After the message above, or a refusal offsets every click by its height.
+            // Position hit regions after drawing the refusal message.
             const ImVec2 at = ImGui::GetCursorScreenPos();
             const ImVec2 m = ImGui::GetIO().MousePos;
             const float mx = m.x - at.x, my = m.y - at.y;
             if (app.Fresh(*f) && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                // A port is inside a stage, so it is asked first.
+                // Test ports before their enclosing stages.
                 const boxview::Layout::Endpoint end = boxview::Layout::PortAt(root, mx, my, boxview::PortReach);
                 std::vector<uint32_t> hit;
                 if (end) hit = PathToNode(root, *end.Node);
@@ -614,7 +605,7 @@ int main(int argc, char **argv) {
                     app.Reveal = true;
                 }
             }
-            // Not guarded by hover: a drag let go outside the window has ended.
+            // End drags released outside the window.
             if (app.Drag.Active && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                 const boxview::Layout::Endpoint end = boxview::Layout::PortAt(root, mx, my, boxview::PortReach);
                 if (end && end.Port->Input != app.Drag.Input && PathToNode(root, *end.Node) == app.Drag.At) {
@@ -626,7 +617,6 @@ int main(int argc, char **argv) {
             }
 
             const ValueId selected = app.Sel.Value();
-            // The occurrence, not the value: one box of many is where an edit lands.
             const boxview::Node *here =
                 selected == NoTerm || src != f ? nullptr : boxview::SelectedNode(*src, root, ProcessBodyRef(app.Terms(), *src), app.Sel);
             boxview::Draw(ImGui::GetWindowDrawList(), root, at.x, at.y, here);
@@ -644,7 +634,7 @@ int main(int argc, char **argv) {
                 app.Reveal = false;
             }
 
-            // Source-bound edits reject a snapshot made stale by typing in this frame.
+            // Reject structural edits if typing changed the source this frame.
             if (intent.Undo || intent.Redo) app.Undo(intent.Redo);
             else if (intent.Edit) app.ApplyEdit(*intent.Edit);
         } else {
@@ -677,7 +667,7 @@ int main(int argc, char **argv) {
         SDL_SubmitGPUCommandBuffer(cmd);
     }
 
-    // Before the window goes, while the instance it runs is still alive.
+    // Stop callbacks before destroying the window and DSP artifacts.
     app.Compiler.Stop();
     app.Live.Host.Stop();
 

@@ -15,7 +15,7 @@ std::filesystem::path ImpulseDir();
 
 std::vector<std::filesystem::path> PathsIn(const std::filesystem::path &dir, const char *extension);
 
-// Empty where unreadable. Not `ReadFile`, so a test with both namespaces open can call it.
+// Return empty for unreadable files.
 std::string ReadText(const std::filesystem::path &);
 
 inline std::string_view Trim(std::string_view s) {
@@ -25,7 +25,7 @@ inline std::string_view Trim(std::string_view s) {
     return s;
 }
 
-// Each `\n`-separated line untrimmed, a trailing empty chunk included. Stops where `body` does.
+// Visit untrimmed newline-separated segments, including a trailing empty segment, until body returns false.
 template<class Body> bool ForEachLine(std::string_view text, Body body) {
     for (size_t at = 0; at <= text.size();) {
         const size_t nl = text.find('\n', at);
@@ -38,27 +38,25 @@ template<class Body> bool ForEachLine(std::string_view text, Body body) {
 
 struct CorpusFile {
     std::filesystem::path Path;
-    std::string Relative; // relative to lib/faust
+    std::string Relative;
     std::string Text;
 };
 
-// 341 files, of which reference Faust accepts 319.
 std::vector<CorpusFile> TestsCorpus();
 std::vector<CorpusFile> ExamplesCorpus();
 std::vector<CorpusFile> LibrariesCorpus();
 
 std::vector<CorpusFile> WholeCorpus();
 
-// The 94 programs every sweep that needs a *compiling* corpus runs over.
 inline std::vector<std::filesystem::path> DspPaths() { return PathsIn(ImpulseDir() / "dsp", ".dsp"); }
 
-// The files reference Faust 2.85.9 rejects: an accept means the parser has drifted.
+// Return corpus files rejected by the pinned reference compiler.
 bool IsPinnedRejection(const std::string &relative);
 
-// `bug-wall.dsp`: generated, 9.5 MB, 687k commas, and quadratic for a per-ref sweep.
+// Exclude generated bug-wall.dsp from quadratic per-ref sweeps.
 bool IsGeneratedOutlier(const std::string &relative);
 
-// `pthread`s for the stack size: `std::thread` cannot portably beat macOS's 512 KB.
+// Run with an explicit pthread stack size for deep sanitizer checks.
 void RunPool(unsigned threads, const std::function<void()> &worker);
 
 template<class R, class T, class Body> std::vector<R> MapEach(const std::vector<T> &items, Body body) {

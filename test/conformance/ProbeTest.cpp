@@ -1,4 +1,4 @@
-// Scored against the rule each `norm*.dsp` states, where the `.sig` ratchets compare to the dump.
+// Compare against expected rules in norm*.dsp independently of reference dumps.
 #include "conformance/SigCompare.h"
 #include "conformance/Sweep.h"
 
@@ -21,17 +21,15 @@ namespace fs = std::filesystem;
 struct Probe {
     int Channel;
     const char *Rule;
-    const char *Expected; // the source's "Expected:" line, in `.sig` notation
+    const char *Expected;
 };
 
-// Three of the six delay probes expect an outcome the reference does not produce: the
-// order scale is read off by one.
+// Three delay probes use an order scale offset from the reference behavior.
 const Probe Norm3[] = {
     {0, "(k*s)' -> k*s'", R"(SIG = (hslider("1.1_c",2.0,1.0,10.0,1.0)*(IN[0]'));)"},
     {1, "(s/k)' -> s'/k", R"(SIG = ((IN[1]')/hslider("1.2_c",2.0,1.0,10.0,1.0));)"},
     {2, "(s@n)@m -> s@(n+m), n a literal", R"(SIG = (IN[2]@30);)"},
     {3, "(s@n)@m -> s@(n+m), n control-rate", R"(SIG = (IN[3]@(int(hslider("1.4_c1",10.0,1.0,100.0,1.0))+int(hslider("1.4_c2",20.0,1.0,100.0,1.0))));)"},
-    // The source writes `abs(s2)*10`, where the canonical product puts the coefficient first.
     {4, "(s@n)@m not simplified, n audio-rate", R"(SIG = ((IN[4]@int(10.0*abs(IN[5])))@int(hslider("1.5_c",20.0,1.0,100.0,1.0)));)"},
     {5, "s@0 -> s", R"(SIG = (IN[6]);)"},
     {6, "int(const) -> const", R"(SIG = (3);)"},
@@ -41,10 +39,8 @@ const Probe Norm3[] = {
     {10, "select2(c,x,x) -> x", R"(SIG = (IN[7]);)"},
 };
 
-// `4.4_x`, `5.4_x` and `5.5_x` start at 1 to define their divisions, and promotion makes
-// `x*0` the real zero. Eleven expectations the reference misses: operand order
-// (1, 11, 12, 34), a `pow` the product normalizer cannot see (28, 29), factoring off by
-// a stage (20, 24, 31, 33), a negative sum's sign kept outside (3).
+// Start division probes at index 1 and preserve promoted real zero.
+// Reference differences cover operand order, power visibility, factoring order, and negative-sum signs.
 const Probe Norm1[] = {
     {0, "x+x -> 2*x", R"(SIG = (2.0*hslider("1.1_x",0.0,-10.0,10.0,0.1));)"},
     {1, "x+y+x -> 2*x+y", R"(SIG = ((2.0*hslider("1.2_x",0.0,-10.0,10.0,0.1)+hslider("1.2_y",0.0,-10.0,10.0,0.1)));)"},
@@ -52,7 +48,7 @@ const Probe Norm1[] = {
     {3, "2x-5x -> -3x", R"(SIG = (-3.0*hslider("1.4_x",0.0,-10.0,10.0,0.1));)"},
     {4, "x+y-x -> y", R"(SIG = (hslider("1.5_y",0.0,-10.0,10.0,0.1));)"},
     {5, "2.5x+1.2x -> 3.7x", R"(SIG = (3.7*hslider("1.6_x",0.0,-10.0,10.0,0.1));)"},
-    // Pairs 6/7, 8/9, 10/11 are one expression written both ways, so failing together is order.
+    // Compare reversed expression pairs to identify association-order differences.
     {6, "x+y", R"(SIG = ((hslider("2.1_x",0.0,-10.0,10.0,0.1)+hslider("2.1_y",0.0,-10.0,10.0,0.1)));)"},
     {7, "y+x -> x+y", R"(SIG = ((hslider("2.1_x",0.0,-10.0,10.0,0.1)+hslider("2.1_y",0.0,-10.0,10.0,0.1)));)"},
     {8, "x*y", R"(SIG = (hslider("2.2_x",0.0,-10.0,10.0,0.1)*hslider("2.2_y",0.0,-10.0,10.0,0.1));)"},
@@ -87,8 +83,7 @@ const Probe Norm1[] = {
      R"(SIG = ((hslider("6.5_a",0.0,-10.0,10.0,0.1)+hslider("6.5_b",0.0,-10.0,10.0,0.1))*(hslider("6.5_x",0.0,-10.0,10.0,0.1)+hslider("6.5_y",0.0,-10.0,10.0,0.1)));)"},
 };
 
-// `norm2.dsp` states its ordering rule both ways, 2.2 and 4.3 disagreeing. The reference
-// builds from order 0 up, so 4.3 is right.
+// Use norm2.dsp rule 4.3, which matches reference construction from order zero upward.
 const Probe Norm2[] = {
     {0, "(c+s)-c -> s", R"(SIG = (IN[0]);)"},
     {1, "s+c+s -> c+2s", R"(SIG = ((hslider("c_add_2",0.0,-10.0,10.0,0.1)+2.0*IN[1]));)"},
@@ -102,7 +97,7 @@ const Probe Norm2[] = {
     {9, "s*c*s -> c*s^2", R"(SIG = (hslider("c_adv_6",1.0,-10.0,10.0,0.1)*pow(IN[9],2.0));)"},
 };
 
-// `math_simp.dsp` has no probe table: it states no expected forms, only `.fir` remarks.
+// math_simp.dsp provides FIR remarks without expected signal forms.
 
 SigFile Channel(const SigFile &f, int c) {
     SigFile one = f;
@@ -163,5 +158,5 @@ TEST_CASE("the normalization probes against their own documented rules") {
         census[Verdict::OursDiffers], " ours differ, ", census[Verdict::DidNotParse], " expectations did not parse"
     );
     CHECK(census[Verdict::DidNotParse] == 0);
-    CHECK(census[Verdict::Documented] >= 39); // a ratchet
+    CHECK(census[Verdict::Documented] >= 39);
 }

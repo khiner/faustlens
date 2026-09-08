@@ -61,7 +61,7 @@ TEST_CASE("the compiler publishes only the latest request with independent term 
     CHECK(latest->Snap.File("/worker.dsp")->Text == "process=79;");
     worker.Stop();
     CHECK(PrintTerm(first->Terms, file->Root) == printed);
-    // Looking up interned keys after the worker's Session has died catches dangling string_views.
+    // Detect dangling interned string views after worker destruction.
     for (uint32_t i = 0; i < first->Terms.Strings.Strings.size(); ++i) CHECK(first->Terms.Strings.Intern(first->Terms.Strings.At(i)) == i);
     first->Terms.Strings.Intern("only in the first UI snapshot");
     CHECK_FALSE(latest->Terms.Strings.Ids.contains("only in the first UI snapshot"));
@@ -151,7 +151,7 @@ TEST_CASE("coalesced requests preserve disk invalidation and opening a file pres
     CHECK(opened->Audio.Next->Hash != hash);
     REQUIRE(opened->Snap.File(library));
     CHECK(opened->Snap.File(library)->Text == "g=0.25;");
-    // Adding an unchanged library as an overlay changes Session stamps, not this selection's document epoch.
+    // Opening an unchanged overlay preserves the selection's document revision.
     request.Buffers[library] = std::make_shared<const std::string>("g=0.25;");
     request.ViewText = *request.Buffers[request.Root];
     request.Materialize = Innermost(*opened->Snap.File(request.Root), uint32_t(request.ViewText.rfind('g')));

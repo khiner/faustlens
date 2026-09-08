@@ -1,8 +1,7 @@
-// The flat, hash-consed DAG propagation produces from Box.
 #pragma once
 
 #include "Arena.h"
-#include "syntax/Term.h" // for `ValueId`
+#include "syntax/Term.h"
 
 #include <cstdint>
 #include <span>
@@ -34,11 +33,11 @@ enum class SigKind : uint8_t {
     Select2, // selector, then the two branches
     Select3,
 
-    WRTbl, // size, a `Gen` holding the contents [, windex, wsignal]
+    WRTbl, // size, generator [, write index, write signal]
     RDTbl, // table, index
     Gen,
 
-    // `Payload` is the interned label *path*, not the bare label.
+    // Payload stores the full interned label path.
     Button,
     Checkbox,
     VSlider,
@@ -57,20 +56,20 @@ enum class SigKind : uint8_t {
     Control, // x, condition
     Enable, // x, condition
 
-    // `Rec` owns N branch ids, `Proj` reads branch `Payload` of one.
+    // Rec stores branch ids; Proj reads branch Payload.
     Rec,
     Proj,
 
     Extended, // form: `Ext`
 
-    Error, // poison: a failed subgraph does not stop propagation
+    Error, // error propagated through the subgraph
 
     Count_
 };
 
 std::string_view SigKindName(SigKind);
 
-// The reference's `gBinOpTable` order, which `.sig` output depends on.
+// Preserve reference gBinOpTable order for .sig comparison.
 enum class BinOpCode : uint8_t { Add, Sub, Mul, Div, Rem, LeftShift, RightShift, LRightShift, GT, LT, GE, LE, EQ, NE, AND, OR, XOR, Count_ };
 
 std::string_view BinOpName(BinOpCode);
@@ -129,17 +128,15 @@ struct Signals : Arena<Signals, SigKind, SigId> {
 
     using Arena::Make;
     SigId Make(SigKind, uint8_t form, uint32_t payload, uint32_t aux, std::span<const SigId> children);
-    // Raw: no simplification rule runs. `SimpBinOp` is the folding entry point.
+    // Construct raw nodes; use SimpBinOp for folding.
     SigId MakeBin(BinOpCode op, SigId x, SigId y) { return Make(SigKind::BinOp, uint8_t(op), 0, 0, {x, y}); }
     bool IsInt(SigId s) const { return KindOf(s) == SigKind::Int; }
 
-    // Merkle over child *hashes*, comparable across arenas where `Hash` is not.
-    // `ShapeHash` also normalizes numeric literals away.
+    // Compare content hashes across arenas; ShapeHash excludes numeric payloads.
     uint64_t ContentHash(SigId) const;
     uint64_t ShapeHash(SigId) const;
 
-    // `OpenRec` reserves an id, `Proj` on it legal at once. `CloseRec` interns the filled
-    // group and may return a twin.
+    // Reserve a Rec id before constructing projections; CloseRec may return an existing group.
     SigId OpenRec();
     SigId CloseRec(SigId reserved, std::span<const SigId> branches);
 
@@ -149,15 +146,15 @@ struct Signals : Arena<Signals, SigKind, SigId> {
     // 0 literal, 1 `fconstant`, 2 control-rate reader, 3 anything reaching a sample.
     int Order(SigId) const;
 
-    // Not `Terms`': a label path is built during propagation and has no lexeme.
+    // Label paths are interned during propagation.
     uint32_t InternStr(std::string_view s) { return Strings.Intern(s); }
     std::string_view Str(uint32_t id) const { return Strings.At(id); }
 
-    // `self` hashes as a back edge rather than as its id, so a group hashes by shape.
+    // Hash self-references as canonical back edges.
     uint64_t HashOf(SigKind, uint8_t form, uint32_t payload, uint32_t aux, std::span<const SigId> children, SigId self) const;
 };
 
-// Each node reachable from `roots` once, in no order. `visit(id)` false prunes there.
+// Visit reachable nodes once; returning false prunes traversal at that node.
 template<class Visit> void Reachable(const Signals &s, std::span<const SigId> roots, Visit visit) {
     std::vector<uint8_t> seen(s.Size(), 0);
     std::vector<SigId> stack(roots.begin(), roots.end());

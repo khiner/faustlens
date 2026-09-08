@@ -20,13 +20,13 @@ double MaxValAbs(const Interval &x) { return std::abs(x.Lo) < std::abs(x.Hi) ? x
 int SignMinValAbs(const Interval &x) { return std::abs(x.Lo) < std::abs(x.Hi) ? 1 : -1; }
 int SignMaxValAbs(const Interval &x) { return std::abs(x.Lo) < std::abs(x.Hi) ? -1 : 1; }
 
-// The bound nearest zero and the sign of the step off it, zero if the interval straddles.
+// Return the endpoint nearest zero with its outward step sign, or (0, 1) if the interval contains zero.
 std::pair<double, int> NearZero(const Interval &x) {
     if (x.HasZero()) return {0.0, 1};
     return {MinValAbs(x), SignMinValAbs(x)};
 }
 
-// Returns `INT_MIN` when it cannot bound, and every caller tests for it.
+// Return INT_MIN when the bound cannot be determined.
 int ExactPrecisionUnary(double (*f)(double), long double x, long double u) {
     const double d = std::abs((f(double(x + u)) - f(double(x))));
     if (!(d > 0) || !std::isfinite(d)) return INT_MIN;
@@ -40,10 +40,10 @@ int Precision(double (*f)(double), long double x, long double u, int fallback) {
     return p == INT_MIN ? fallback : p;
 }
 
-// `inf * 0` is 0 here, not NaN.
+// Define infinity times zero as zero for interval arithmetic.
 double SpecialMult(double a, double b) { return (a == 0.0 || b == 0.0) ? 0.0 : a * b; }
 
-// Spelled out rather than cast: infinities and NaNs do reach here, and casting one is UB.
+// Handle infinity and NaN explicitly to avoid undefined casts.
 int ToInt(double v) {
     if (std::isnan(v)) return 0;
     if (v >= double(INT_MAX)) return INT_MAX;
@@ -51,7 +51,7 @@ int ToInt(double v) {
     return int(v);
 }
 
-// Deliberate two's complement wrap, without the signed overflow UB.
+// Wrap in two's complement without signed overflow.
 int WrapAdd(int a, int b) { return int(uint32_t(a) + uint32_t(b)); }
 
 int Twice(int a) { return WrapAdd(a, a); }
@@ -161,7 +161,7 @@ UItv OrU(const UItv &a, const UItv &b) {
     return {LoOr2(a, b), HiOr2(a, b)};
 }
 
-// Via De Morgan, as the reference defines them. Deriving directly would round differently.
+// Use reference De Morgan identities to preserve rounding.
 UItv AndU(const UItv &a, const UItv &b) { return NotU(OrU(NotU(a), NotU(b))); }
 UItv XorU(const UItv &a, const UItv &b) { return AndU(OrU(a, b), NotU(AndU(a, b))); }
 
@@ -270,7 +270,6 @@ Interval Intersection(const Interval &i, const Interval &j) {
     return {l, h, std::min(i.Lsb, j.Lsb)};
 }
 
-// 32-bit set width, and zero is exact.
 Interval Singleton(double x) {
     if (x == 0) return {0, 0, 0};
     return {x, x, WrapAdd(ToInt(std::floor(std::log2(std::abs(x)))), -32)};
@@ -295,7 +294,7 @@ Interval IntCast(const Interval &x) {
 
 Interval FloatCast(const Interval &x) { return {x.Lo, x.Hi, std::min(x.Lsb, -1)}; }
 
-// The integer path catches wraparound, and only when *both* operands claim integer lsb.
+// Check wrapping when both operands have integer resolution.
 Interval Add(const Interval &x, const Interval &y) {
     if (x.IsEmpty() || y.IsEmpty()) return Interval::Empty();
     const int lsb = std::min(x.Lsb, y.Lsb);
@@ -427,7 +426,7 @@ Interval Max(const Interval &x, const Interval &y) {
     return {std::max(x.Lo, y.Lo), std::max(x.Hi, y.Hi), std::min(x.Lsb, y.Lsb)};
 }
 
-// lsb -1 and not 0: the results are integral but still floats, and 0 would read as int.
+// Use lsb -1 to classify rounded results as real values.
 Interval Floor(const Interval &x) { return Rounded(std::floor, x, -1); }
 Interval Ceil(const Interval &x) { return Rounded(std::ceil, x, -1); }
 Interval Rint(const Interval &x) { return Rounded(std::rint, x, std::max(0, x.Lsb)); }
@@ -455,7 +454,7 @@ Interval Log(const Interval &x) {
     return {std::log(i.Lo), std::log(i.Hi), precision};
 }
 
-// Precision from the raw high bound before clamping, where `Log` intersects first.
+// Derive precision from the unclamped upper bound.
 Interval Log10(const Interval &x) {
     if (x.IsEmpty()) return Interval::Empty();
     const int precision = Precision(std::log10, x.Hi, -std::pow(2, x.Lsb), Taylor(x.Lsb - std::log2(std::abs(x.Hi)) - std::log2(std::numbers::ln10)));
@@ -636,7 +635,7 @@ Interval Asinh(const Interval &x) {
 }
 
 Interval Acosh(const Interval &x) {
-    const Interval i = Intersection(Interval{1, Inf}, x); // default lsb, unlike its neighbours
+    const Interval i = Intersection(Interval{1, Inf}, x); // preserve default lsb
     if (i.IsEmpty()) return Interval::Empty();
     const int precision = Precision(std::acosh, x.Hi, -std::pow(2, x.Lsb), Taylor(x.Lsb - std::log2(x.Hi * x.Hi - 1) / 2));
     return {std::acosh(i.Lo), std::acosh(i.Hi), precision};

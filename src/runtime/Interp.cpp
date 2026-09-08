@@ -1,6 +1,6 @@
 #include "runtime/Interp.h"
 
-#include "eval/Fold.h" // `ToInt`, the saturating conversion the folder settles
+#include "eval/Fold.h"
 
 #include <algorithm>
 #include <atomic>
@@ -12,14 +12,12 @@ namespace faustlens {
 
 namespace {
 
-// `Instr::op` is a byte so the pseudo-opcodes below can share the dispatch.
 constexpr uint8_t OpByte(Op o) { return uint8_t(o); }
 
-// Not an optimization: repeated multiplication differs from `std::pow` in the last bits.
+// Repeated multiplication preserves reference pow rounding.
 constexpr uint8_t IPow = OpByte(Op::Count_);
 
-// A UI-bound field crosses the thread boundary both ways, control in and bargraph out,
-// so both ends are atomic. Relaxed: nothing depends on when a control lands.
+// Use relaxed atomics for control and bargraph scalars shared with the UI thread.
 constexpr uint8_t LoadUi = OpByte(Op::Count_) + 1;
 constexpr uint8_t StoreUi = OpByte(Op::Count_) + 2;
 
@@ -27,7 +25,7 @@ constexpr std::memory_order Relaxed = std::memory_order_relaxed;
 
 std::atomic_ref<double> UiAt(Scalar &s) { return std::atomic_ref<double>(s.D); }
 
-// Integer arithmetic must wrap (`noise` is built on it), and `uint32_t` avoids the UB.
+// Use unsigned arithmetic for defined integer wrapping, required by noise.
 int32_t Wrap(uint32_t v) { return IntOf(v); }
 
 } // namespace
@@ -56,7 +54,7 @@ Interp::Interp(const faustlens::Plan &p, const UiNode &ui, const faustlens::Regi
         if (i.Dst != NoReg) InitWritesReg[i.Dst] = 1;
     }
 
-    // An unresolved symbol is a diagnostic and reads back zero rather than failing the compile.
+    // Read unresolved foreign symbols as zero and report a diagnostic.
     Symbol.assign(p.Foreign.size(), nullptr);
     for (size_t i = 0; i < p.Foreign.size(); ++i) {
         const ForeignDesc &d = p.Foreign[i];
@@ -87,9 +85,6 @@ Interp::Interp(const faustlens::Plan &p, const UiNode &ui, const faustlens::Regi
     Specialize();
 }
 
-// `pow` at a constant integer exponent, per the reference's `isIntPowArg`: an int
-// literal at eight or under, a real literal integral in `[0, 8]`. After all bands, a
-// literal and its `pow` landing in different ones.
 void Interp::Specialize() {
     std::vector<const Instr *> def(Plan.Regs, nullptr);
     for (const Code &c : Bands)
@@ -101,6 +96,7 @@ void Interp::Specialize() {
             if (Op(i.Op) != Op::Extended || Ext(i.Form) != Ext::Pow || i.ArgCount != 2) continue;
             const Instr *e = def[Plan.Operands[i.Args + 1]];
             if (!e) continue;
+            // Specialize pow after all bands using reference isIntPowArg rules: int exponents <= 8 or integral real exponents in [0, 8].
             int32_t k = 0;
             if (Op(e->Op) == Op::ConstInt) {
                 k = IntOf(e->Imm);
@@ -118,7 +114,7 @@ void Interp::Specialize() {
             i.ArgCount = 1;
         }
 
-    // Zones read and write `.d`, so an integer widget field stays on the ordinary path.
+    // Use atomic access only for real widget zones.
     for (Code &c : Bands)
         for (Instr &i : c.In) {
             const Op op = Op(i.Op);
@@ -131,7 +127,7 @@ void Interp::Specialize() {
 }
 
 void Interp::Prepare(Code &c, std::span<const Instr> src) {
-    // The band is copied, not viewed: `Code` outlives the Plan band it is prepared from.
+    // Copy instructions because prepared Code can outlive the Plan band.
     c.In.assign(src.begin(), src.end());
     c.Jump.assign(src.size(), 0);
     std::vector<uint32_t> open;
@@ -173,7 +169,7 @@ void Interp::ResetControls() {
 }
 
 void Interp::Clear() {
-    // Not what `constants` computed, hence the init-writes test on top of the kind test.
+    // Preserve fields written by the init band.
     for (uint32_t f = 0; f < Plan.Fields.size(); ++f) {
         const Field &fd = Plan.Fields[f];
         if (fd.Kind != FieldKind::Delay && fd.Kind != FieldKind::Perm) continue;
@@ -209,8 +205,7 @@ void Interp::SetControl(uint32_t label, double value) {
 double Interp::Control(uint32_t label) const {
     for (const Zone &z : Zones)
         if (z.Label == label && !z.Fields.empty())
-            // The `const` is the method's, not the storage's: the audio thread writes
-            // bargraphs here while we read.
+            // The audio thread can update bargraphs during this read.
             return UiAt(const_cast<Scalar &>(State[FieldAt[z.Fields[0]]])).load(Relaxed);
     return 0;
 }
@@ -234,7 +229,6 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
     const Instr *code = c.In.data();
     const size_t n = c.In.size();
 
-    // A register's nature is fixed by its writer, so reading the other nature converts.
     const auto D = [&](Reg r) { return RegNature[r] == Nature::Int ? double(R[r].I) : R[r].D; };
     const auto I = [&](Reg r) { return RegNature[r] == Nature::Int ? R[r].I : ToInt(R[r].D); };
     const auto Write = [&](const Instr &n, auto v) {
@@ -242,7 +236,7 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
         else if constexpr (std::is_integral_v<decltype(v)>) R[n.Dst].I = v;
         else R[n.Dst].I = ToInt(v);
     };
-    // The index is already proven in range. The clamp keeps a bug from becoming a memory bug.
+    // Clamp as a memory-safety check after interval validation.
     const auto Slot = [&](uint32_t field, uint32_t at) {
         const uint32_t extent = std::max<uint32_t>(1, Plan.Fields[field].Extent);
         return FieldAt[field] + std::min(at, extent - 1);
@@ -268,8 +262,7 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
                         case BinOpCode::Add: v = Wrap(uint32_t(x) + uint32_t(y)); break;
                         case BinOpCode::Sub: v = Wrap(uint32_t(x) - uint32_t(y)); break;
                         case BinOpCode::Mul: v = Wrap(uint32_t(x) * uint32_t(y)); break;
-                        // Corners C++ leaves undefined, answered as AArch64 does: div/rem by
-                        // zero or by `-1` at `INT_MIN`, and a shift count modulo the width.
+                        // Use AArch64 results for exceptional integer division and remainder, and reduce shift counts modulo the width.
                         case BinOpCode::Div: v = y == 0 ? 0 : (y == -1 ? Wrap(-uint32_t(x)) : x / y); break;
                         case BinOpCode::Rem: v = y == 0 ? x : (y == -1 ? 0 : x % y); break;
                         case BinOpCode::LeftShift: v = Wrap(uint32_t(x) << (uint32_t(y) & 31)); break;
@@ -301,7 +294,6 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
                         case BinOpCode::LE: R[i.Dst].I = x <= y; break;
                         case BinOpCode::EQ: R[i.Dst].I = x == y; break;
                         case BinOpCode::NE: R[i.Dst].I = x != y; break;
-                        // Promotion casts the bitwise codes to int, so they never arrive here.
                         default: R[i.Dst].I = 0; break;
                     }
                 }
@@ -398,7 +390,6 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
                 const Soundfile &sf = *Sound[i.Imm];
                 const uint32_t chan = std::min<uint32_t>(uint32_t(I(a[0])), uint32_t(sf.Channel.size()) - 1);
                 const uint32_t part = std::min<uint32_t>(uint32_t(I(a[1])), Soundfile::Parts - 1);
-                // The graph has already clamped `i` to the part's length.
                 const uint32_t at_sample = uint32_t(sf.Offset[part]) + uint32_t(I(a[2]));
                 R[i.Dst].D = sf.Channel[chan][std::min<size_t>(at_sample, sf.Owned[0].size() - 1)];
                 break;

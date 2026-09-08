@@ -1,4 +1,3 @@
-// State continuity across a live reload, compared against an instance that never reloaded.
 #include "Live.h"
 #include "query/Query.h"
 #include "runtime/Interp.h"
@@ -50,7 +49,7 @@ std::unique_ptr<Instance> Build(const std::string &src) {
     i->Plan = *std::move(plan);
     i->Ui = g.Ui("r");
 
-    // The ref tree is rebuilt on every reparse, so take the offsets before the old one goes.
+    // Capture source offsets before reparsing replaces refs.
     i->At = app::FieldOffsets(i->Plan, i->Session.TermsOf("/r.dsp").Refs);
 
     i->Dsp.emplace(i->Plan, i->Ui);
@@ -69,7 +68,7 @@ TEST_CASE("prepared audio transfers the state at the callback boundary and seria
     auto &host = live.Host;
     host.Chunk = 16;
     host.DeviceIn = host.DeviceOut = 1;
-    host.SampleRate = 1000; // five-frame fade, without a physical device
+    host.SampleRate = 1000; // five-frame fade
     host.Current = host.MakeVoice(*initial->Dsp).release();
     host.Running = true;
     float impulse[16] = {1}, output[16] = {};
@@ -79,7 +78,7 @@ TEST_CASE("prepared audio transfers the state at the callback boundary and seria
     auto prepared = app::Live::Build(s, "/r.dsp", live.Current, {}, 1000, live.Sound);
     REQUIRE(prepared.Next);
     const auto next = prepared.Next;
-    // State changes after preparation, before publication.
+    // Advance running state after preparation.
     host.Process(nullptr, output, 4);
     const double before = output[3];
     REQUIRE(live.Accept(prepared).Swapped);
@@ -90,7 +89,7 @@ TEST_CASE("prepared audio transfers the state at the callback boundary and seria
     CHECK(live.Accept(third).Deferred);
     CHECK(live.Current == next);
     host.Process(nullptr, output, 6);
-    // The sixth frame is entirely the new instance; a preparation-time copy would lag four samples.
+    // A preparation-time state copy would leave the sixth frame four samples behind.
     CHECK(output[5] == doctest::Approx(before * std::pow(0.8, 6)).epsilon(1e-6));
     CHECK(live.Collect().size() == 1);
     REQUIRE(live.Accept(third).Swapped);
@@ -130,7 +129,6 @@ TEST_CASE("a no-op edit is sample-identical across the reload") {
 }
 
 TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
-    // A `Rec` hash covers its whole body, so only the shape pass can match a constant edit.
     const std::unique_ptr<Instance> live = Build("process = (+ : *(0.9)) ~ _;");
     std::vector<double> warm;
     live->Run(64, 1.0, warm);
@@ -145,10 +143,8 @@ TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
 
     std::vector<double> tail;
     edited->Run(1, 0.0, tail);
-    // The tail continues at the new coefficient: one frame on from `level`.
     CHECK(tail[0] == doctest::Approx(level * 0.8));
 
-    // What it would have been without the pass.
     const std::unique_ptr<Instance> cold = Build("process = (+ : *(0.8)) ~ _;");
     std::vector<double> silence;
     cold->Run(1, 0.0, silence);
@@ -156,7 +152,7 @@ TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
 }
 
 TEST_CASE("a widget's state is not this pass's to carry") {
-    // An edit to a declared `init` must be heard, so carrying the old value would swallow it.
+    // Use the edited initial value when no persistent control value exists.
     const std::unique_ptr<Instance> live = Build(
         "gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
         "process = _ * gain;\n"
@@ -176,10 +172,9 @@ TEST_CASE("a widget's state is not this pass's to carry") {
 }
 
 TEST_CASE("a lengthened delay keeps the history it had") {
-    // The length comes off the edge, not the node, so identity holds when the line grows.
     const std::unique_ptr<Instance> live = Build("process = _ @ 8;");
     std::vector<double> warm;
-    live->Run(4, 1.0, warm); // the impulse is 4 frames back and 4 frames out
+    live->Run(4, 1.0, warm);
 
     const std::unique_ptr<Instance> longer = Build("process = _ @ 8;");
     const Migration same = Migrate(live->Plan, *live->Dsp, live->At, longer->Plan, *longer->Dsp, longer->At);
@@ -190,7 +185,7 @@ TEST_CASE("a lengthened delay keeps the history it had") {
     CHECK(m.Exact > 0);
     CHECK(m.Resized == 1);
 
-    // `@8` is a nine-slot copy line and `@64` a 128 ring, so the impulse lands at 4 and at 60.
+    // Test migration between nine-slot copy storage and a 128-slot ring.
     std::vector<double> kept;
     live->Run(8, 0.0, kept);
     CHECK(kept[4] == doctest::Approx(1.0));
@@ -251,10 +246,9 @@ TEST_CASE("an edit that does not change the compiled program skips the swap enti
         const app::Live::Result r = live.Reload(s, "/l.dsp");
         CHECK(r.Unchanged);
         CHECK_FALSE(r.Swapped);
-        CHECK(live.Current.get() == was); // not even rebuilt
+        CHECK(live.Current.get() == was);
     }
     SUBCASE("whitespace and comments are not the program") {
-        // The Plan hash leaves out `Field::origin`, or this would swap on a comment.
         s.SetBuffer(
             "/l.dsp",
             "// a note to self\n"
@@ -275,18 +269,15 @@ TEST_CASE("an edit that does not change the compiled program skips the swap enti
         const app::Live::Result r = live.Reload(s, "/l.dsp");
         CHECK_FALSE(r.Unchanged);
         CHECK(r.Compiled);
-        // With no device the instance is replaced in place, so the migration ran.
         CHECK(r.Migration.Shaped > 0);
     }
 }
 
 TEST_CASE("an edit to an imported file reaches the loop") {
-    // A library's parse is memoized against a `ChangedAt` only this session moves.
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "faustlens_import_reload";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     const std::filesystem::path lib = dir / "gain.lib", main = dir / "m.dsp";
-    // The resolution key is the canonical path, not what `temp_directory_path` hands out.
     const std::string lib_key = std::filesystem::weakly_canonical(lib).string();
     const auto write = [](const std::filesystem::path &p, const std::string &text) { std::ofstream(p) << text; };
     write(lib, "g = 0.5;\n");
@@ -312,7 +303,7 @@ TEST_CASE("an edit to an imported file reaches the loop") {
         CHECK(r.Compiled);
         CHECK_FALSE(r.Unchanged);
         CHECK(live.Current.get()->Hash != before);
-        CHECK(ReadFile(lib) == "g = 0.5;\n"); // the buffer did it, not the disk
+        CHECK(ReadFile(lib) == "g = 0.5;\n");
 
         s.ClearBuffer(lib_key);
         CHECK(live.Reload(s, main.string()).Compiled);

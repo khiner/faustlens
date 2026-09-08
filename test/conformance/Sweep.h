@@ -1,4 +1,3 @@
-// Shared corpus-sweep plumbing: the reference's dumps, the compile pipeline, the census.
 #pragma once
 
 #include "property/Corpus.h"
@@ -20,19 +19,18 @@
 
 namespace faustlens::test {
 
-// Where `regenerate_oracle.sh` left the reference's dumps.
 inline std::filesystem::path OracleDir() {
     if (const char *env = std::getenv("FAUSTLENS_ORACLE_DIR")) return env;
     return std::filesystem::path(FAUSTLENS_BUILD_DIR) / "oracle";
 }
 
-// The bases are separate structs so base-class order has both alive before `Graph` binds them.
+// Construct both base storage objects before Graph references them.
 struct ProgramState {
     Session Session;
     Signals Sigs;
 };
 struct Program : ProgramState, Graph {
-    // A corpus file when `source` is empty, else that source under `path`.
+    // Load the corpus file when source is empty; otherwise compile source under path.
     explicit Program(const std::filesystem::path &path, std::string source = {}, bool add_normal_form = true)
         : Graph(Session, Prepare(Session, path, std::move(source)), Sigs, add_normal_form) {}
 
@@ -60,7 +58,7 @@ struct Census {
     }
 };
 
-// Nothing for an absent dump, which no sweep counts, or one that did not parse, a divergence.
+// Return empty for missing or invalid dumps, counting parse failures as divergences.
 template<class File> using Parse = std::expected<File, std::string> (*)(std::string_view);
 
 template<class File> std::optional<File> ReadDump(const std::filesystem::path &dump, Parse<File> parse, Census &census, int &differed) {
@@ -100,7 +98,7 @@ inline std::string JoinCounts(const std::map<std::string, int> &counts, const ch
     return out;
 }
 
-// Both directions count: a pinned name that stopped appearing is a hole in the evidence.
+// Require both expected and observed names to match.
 inline void PinVocabulary(const char *what, const std::set<std::string> &seen, const std::set<std::string> &known) {
     INFO(what);
     std::vector<std::string> unknown;
@@ -111,8 +109,7 @@ inline void PinVocabulary(const char *what, const std::set<std::string> &seen, c
     CHECK(seen.size() == known.size());
 }
 
-// Programs whose sums associate differently from the reference's. `Feedback` means inside
-// a recursion, where the reordering accumulates.
+// Record association-order differences and whether they occur within feedback.
 struct Deferred {
     const char *Name;
     bool Feedback;

@@ -1,8 +1,6 @@
-// The storage a hash-consed graph needs: nodes by id, an interning table and one child
-// pool. Box and Signal are these, `Terms` is not.
 #pragma once
 
-#include "syntax/Term.h" // ValueId, NoTerm
+#include "syntax/Term.h"
 
 #include <algorithm>
 #include <bit>
@@ -14,25 +12,22 @@
 
 namespace faustlens {
 
-// A number rides in `Payload`, a double taking `Aux` for its high word.
 constexpr uint32_t BitsOf(int32_t v) { return std::bit_cast<uint32_t>(v); }
 constexpr int32_t IntOf(uint32_t bits) { return std::bit_cast<int32_t>(bits); }
 constexpr uint64_t BitsOf(double v) { return std::bit_cast<uint64_t>(v); }
 constexpr double RealOf(uint32_t lo, uint32_t hi) { return std::bit_cast<double>(lo | (uint64_t(hi) << 32)); }
 
-// `Kind` and `Form` discriminate, `Payload` and `Aux` are the per-kind words.
+// Numeric payloads use Payload, plus Aux for a double's high word.
 struct ArenaNode {
     uint8_t Kind = 0;
     uint8_t Form = 0;
     uint32_t Payload = 0;
     uint32_t Aux = 0;
-    uint32_t Children = 0; // offset into the child pool
+    uint32_t Children = 0;
     uint32_t ChildCount = 0;
 };
 
-// Interning is `Find` then `Commit`, not one call: what a miss costs is the derived
-// arena's business, Box inferring an arity there and possibly refusing. Every node
-// routes through `Derived::Make`.
+// Call Derived::Make for node construction; it validates cache misses before Commit.
 template<class Derived, class Kind, class Id> struct Arena {
     static constexpr Id NotFound = Id(-1);
 
@@ -40,11 +35,10 @@ template<class Derived, class Kind, class Id> struct Arena {
     std::vector<uint64_t> Hashes;
     std::vector<Id> ChildPool;
     std::unordered_map<uint64_t, std::vector<Id>> Buckets;
-    // Provenance beside the node, not in it: folding it in would split two occurrences of
-    // one expression and lose the free CSE. `OriginNow` is the cursor, first writer wins.
+    // Store each node's first source origin separately to preserve expression sharing.
     std::vector<ValueId> Origin;
     ValueId OriginNow = NoTerm;
-    // Poison, interned first by the derived constructor.
+    // Error node id initialized by the derived constructor.
     Id Error = NotFound;
 
     Arena() { Nodes.reserve(4096); }
@@ -54,12 +48,11 @@ template<class Derived, class Kind, class Id> struct Arena {
     Id Make(Kind k, uint8_t form, uint32_t payload, uint32_t aux, std::initializer_list<Id> children) {
         return Self().Make(k, form, payload, aux, std::span<const Id>(children.begin(), children.size()));
     }
-    // The common shape: a kind and its children, every other word zero.
     Id Make(Kind k, std::span<const Id> children) { return Self().Make(k, 0, 0, 0, children); }
     Id Make(Kind k, std::initializer_list<Id> children) { return Self().Make(k, 0, 0, 0, std::span<const Id>(children.begin(), children.size())); }
     Id MakeLeaf(Kind k, uint32_t payload = 0, uint32_t aux = 0) { return Self().Make(k, 0, payload, aux, std::span<const Id>{}); }
     Id Rebuild(Id id, std::span<const Id> children) {
-        const ArenaNode n = Nodes[id]; // by value: `Make` grows the arena
+        const ArenaNode n = Nodes[id]; // Copy before Make can reallocate.
         return Self().Make(Kind(n.Kind), n.Form, n.Payload, n.Aux, children);
     }
     Id Rebuild(Id id, std::initializer_list<Id> children) { return Rebuild(id, std::span<const Id>(children.begin(), children.size())); }
@@ -85,7 +78,6 @@ template<class Derived, class Kind, class Id> struct Arena {
     int32_t IntValue(Id id) const { return IntOf(Nodes[id].Payload); }
     double RealValue(Id id) const { return RealOf(Nodes[id].Payload, Nodes[id].Aux); }
 
-    // `NotFound` where nothing equal has been interned under `hash`.
     Id Find(uint64_t hash, const ArenaNode &proto, std::span<const Id> children) const {
         const auto at = Buckets.find(hash);
         if (at == Buckets.end()) return NotFound;
@@ -97,7 +89,6 @@ template<class Derived, class Kind, class Id> struct Arena {
         return NotFound;
     }
 
-    // Only a miss commits the children, so a hit leaves nothing to undo.
     Id Commit(ArenaNode n, uint64_t hash, std::span<const Id> children) {
         n.Children = uint32_t(ChildPool.size());
         n.ChildCount = uint32_t(children.size());

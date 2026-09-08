@@ -11,10 +11,9 @@
 namespace faustlens::boxview {
 namespace {
 
-// A leaf can be a whole `with` block, so a stage elides past this.
+// Limit labels for leaves such as entire `with` blocks.
 constexpr size_t MaxLabel = 32;
 
-// `<:` and `:>` lay out like `:`, differing only in the drawn fan.
 bool IsHorizontal(Kind k) { return k != Kind::Par; }
 
 std::string Label(const Terms &t, ValueId id) {
@@ -43,7 +42,6 @@ struct Point {
     float X = 0, Y = 0;
 };
 
-// Where wires meet one side of a node, one per lane reaching that edge.
 void Edge(const Node &n, bool left, std::vector<Point> &out) {
     if (n.Kids.size() == 2) switch (n.Kind) {
             case Kind::Par:
@@ -53,11 +51,10 @@ void Edge(const Node &n, bool left, std::vector<Point> &out) {
             case Kind::Seq:
             case Kind::Split:
             case Kind::Merge:
-                // The first stage owns the left edge and the last the right.
                 Edge(n.Kids[left ? 0 : 1], left, out);
                 return;
             case Kind::RecComp:
-                // `a ~ b` has `a`'s inputs and outputs, and `b` reaches neither.
+                // Only `a` connects to the external inputs and outputs of `a ~ b`.
                 Edge(n.Kids[0], left, out);
                 return;
             default: break;
@@ -92,8 +89,6 @@ std::vector<Link> Wires(const Node &n) {
     Connect(from, to, (a.Bounds.Right() + c.Bounds.X) / 2, out);
     if (n.Kind != Kind::RecComp) return out;
 
-    // The return path, in the reserved height below: one trunk whatever the
-    // lane counts.
     std::vector<Point> back_from, back_to;
     Edge(c, false, back_from);
     Edge(a, true, back_to);
@@ -133,11 +128,10 @@ Node Layout::Route(ValueId id, const Wiring &w) const {
     n.Label = std::format("route({}, {})", w.Ins, w.Outs);
 
     const uint32_t rows = std::max(w.Ins, w.Outs);
-    // The label gets a row of its own, or it strikes through the first wire.
+    // Reserve a label row above the wires.
     const float text = float(n.Label.size()) * Metrics.CharWidth + 2 * Metrics.Pad;
     n.Bounds = {0, 0, std::max(text, 2 * Metrics.StageGap), float(rows + 1) * Metrics.LineHeight + 2 * Metrics.Pad};
 
-    // Each port centred in its own share of the edge, so 2 against 8 fan out.
     const auto side = [&](bool input, uint32_t count) {
         const float top = Metrics.Pad + Metrics.LineHeight;
         const float span = n.Bounds.H - top - Metrics.Pad;
@@ -155,7 +149,7 @@ const Node &Layout::Measure(ValueId id, RefId ref) {
     Node out;
     const auto ex = ref == NoRef ? Expansions.end() : Expansions.find(ref);
     if (ex != Expansions.end() && ex->second != NoTerm && ex->second != id) {
-        // The evaluated form's layout under the source's term, so it collapses back.
+        // Retain the source term as the parent of its expanded layout.
         out = Measure(ex->second);
         out.Term = id;
         out.Kind = Terms.KindOf(id);
@@ -177,12 +171,11 @@ const Node &Layout::Measure(ValueId id, RefId ref) {
             Place(out.Kids[0], 0, (h - a.Bounds.H) / 2);
             Place(out.Kids[1], a.Bounds.W + Metrics.StageGap, (h - b.Bounds.H) / 2);
         } else {
-            // No wires run between lanes, so no gap.
             const float w = std::max(a.Bounds.W, b.Bounds.W);
             out.Bounds = {0, 0, w, a.Bounds.H + Metrics.LaneGap + b.Bounds.H};
             Place(out.Kids[1], 0, a.Bounds.H + Metrics.LaneGap);
         }
-        // `~`'s return path would otherwise escape the node's bounds.
+        // Reserve height for the feedback connection.
         if (kind == Kind::RecComp) out.Bounds.H += Metrics.Feedback;
     }
 
@@ -214,7 +207,6 @@ Node Layout::Run(const RefTree &refs, RefId root) {
 
 bool Layout::HitPath(const Node &n, float x, float y, std::vector<uint32_t> &path) {
     if (!n.Bounds.Contains(x, y)) return false;
-    // A composition's children never overlap, so the first hit is the only one.
     for (uint32_t i = 0; i < n.Kids.size(); ++i)
         if (HitPath(n.Kids[i], x, y, path)) {
             path.insert(path.begin(), i);
@@ -242,8 +234,7 @@ const Node *Layout::Find(const Node &n, ValueId term) {
 }
 
 Layout::Endpoint Layout::PortAt(const Node &n, float x, float y, float reach) {
-    // Nearest, not first: adjacent `route`s put an output and an input close
-    // enough that first-hit would depend on traversal order.
+    // Choose the nearest port to make adjacent routes independent of traversal order.
     Endpoint best;
     float nearest = reach * reach;
     const auto visit = [&](const Node &m, const auto &self) -> void {

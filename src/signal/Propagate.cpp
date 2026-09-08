@@ -78,11 +78,10 @@ template<typename T> uint32_t InternInto(std::vector<T> &table, const T &v) {
 uint32_t Propagator::PathId() { return InternInto(PathTable, Groups); }
 uint32_t Propagator::SlotEnvId() { return InternInto(SlotTable, Slots); }
 
-// Appends the widget's label to the enclosing groups, `../` popping one and `/` all.
-// The interned text is innermost first, the `UiItem`'s path the reverse.
+// Resolve label group paths and store interned text innermost first and UI paths outermost first.
 uint32_t Propagator::Widget(StrId label, UiKind kind, const Bounds *b) {
     UiItem w;
-    w.Path = Groups; // outermost first
+    w.Path = Groups;
     for (const PathSeg &seg : LabelToPath(Terms.Str(label))) {
         if (seg.Root()) w.Path.clear();
         else if (seg.Parent()) {
@@ -155,13 +154,12 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
         case BoxKind::Int: return one(Sigs.MakeInt(Boxes.IntValue(box)));
         case BoxKind::Real: return one(Sigs.MakeReal(Boxes.RealValue(box)));
 
-        // Two outputs: the size, and a signal cycling the contents.
         case BoxKind::Waveform: {
             const std::vector<double> &w = Boxes.WaveformAt(n.Aux);
             return {Sigs.MakeInt(int32_t(w.size())), Sigs.Make(SigKind::Waveform, n.Form, 0, Sigs.AddWaveform(w), {})};
         }
 
-        // The declared type rides on `Form`, which `MakeLeaf` fixes at 0.
+        // Preserve the declared type in Form.
         case BoxKind::FConst: return one(Sigs.Make(SigKind::FConst, n.Form, Sigs.InternStr(Terms.Str(n.Payload)), 0, {}));
         case BoxKind::FVar: return one(Sigs.Make(SigKind::FVar, n.Form, Sigs.InternStr(Terms.Str(n.Payload)), 0, {}));
 
@@ -190,21 +188,18 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             if (p == Prim::IntCast) return one(SimpIntCast(Sigs, in[0]));
             if (p == Prim::FloatCast) return one(SimpFloatCast(Sigs, in[0]));
             if (p == Prim::Select2) return one(Select2(in[0], in[1], in[2]));
-            // `select3` is not a node: it lowers to nested `select2`.
             if (p == Prim::Select3) {
                 const SigId is0 = Bin(BinOpCode::EQ, in[0], Sigs.MakeInt(0));
                 const SigId is1 = Bin(BinOpCode::EQ, in[0], Sigs.MakeInt(1));
                 return one(Select2(is0, Select2(is1, in[3], in[2]), in[1]));
             }
             if (p == Prim::Attach) return one(Sigs.Make(SigKind::Attach, in));
-            // `enable(X,Y)` is `control(X*Y, Y!=0)` and `control(X,Y)` is `control(X, Y!=0)`.
             if (p == Prim::Enable || p == Prim::Control) {
                 const SigId zero = Sigs.MakeReal(0.0);
                 const SigId cond = Bin(BinOpCode::NE, in[1], zero);
                 const SigId x = p == Prim::Enable ? Bin(BinOpCode::Mul, in[0], in[1]) : in[0];
                 return one(Sigs.Make(SigKind::Control, {x, cond}));
             }
-            // A writable table adds the write pair and pushes the read index by two.
             if (p == Prim::RdTable || p == Prim::RwTable) {
                 const bool rw = p == Prim::RwTable;
                 const SigId gen = Sigs.Make(SigKind::Gen, {in[1]});
@@ -212,14 +207,13 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
                 return one(Sigs.Make(SigKind::RDTbl, {tbl, rw ? in[4] : in[2]}));
             }
             if (const BinOpCode b = BinOpFor(p); b != BinOpCode::Count_) return one(Bin(b, in[0], in[1]));
-            // The one class propagation rewrites, even on non-literal arguments.
+            // Rewrite extended primitives during propagation, including nonconstant arguments.
             if (const Ext e = ExtFor(p); e != Ext::Count_) return one(SimpExtended(Sigs, e, in));
             if (p == Prim::Wire) return in;
             if (p == Prim::Cut) return {};
             return Fail(box, "no signal for this primitive");
         }
 
-        // `Form` is the declared *result* type: `int isnanf(float)` returns an int.
         case BoxKind::FFun: return one(Sigs.Make(SigKind::FFun, uint8_t(Boxes.SignatureAt(n.Aux).Result), Sigs.InternStr(Terms.Str(n.Payload)), n.Aux, in));
 
         case BoxKind::Button:
@@ -229,7 +223,7 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             return one(Sigs.MakeLeaf(check ? SigKind::Checkbox : SigKind::Button, path));
         }
 
-        // The bounds ride as *child signals* rather than a side table, all of them reals.
+        // Represent bound arguments as real-valued child signals.
         case BoxKind::NumericWidget: {
             static constexpr SigKind ByForm[] = {SigKind::VSlider, SigKind::HSlider, SigKind::NumEntry};
             if (n.Form > 2) return Fail(box, "unknown widget");
@@ -245,7 +239,7 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             return one(Sigs.Make(k, 0, path, 0, {Sigs.MakeReal(b.Min), Sigs.MakeReal(b.Max), in[0]}));
         }
 
-        // The read clamp `int(max(0, min(ridx, length-1)))`, built here to stay visible.
+        // Emit the read clamp here to preserve it in the signal graph.
         case BoxKind::Soundfile: {
             const uint32_t chans = n.Aux;
             const SigId sf = Sigs.MakeLeaf(SigKind::Soundfile, Widget(n.Payload, UiKind::Soundfile, nullptr), chans);
@@ -299,8 +293,7 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             return Propagate(kids[1], std::move(mixed));
         }
 
-        // The feedback path reads `Delay1(Proj(i, g))`, the outputs `Delay(Proj(i, g), 0)`,
-        // which puts a recursive output on the current sample.
+        // Delay recursive feedback by one sample and expose group outputs at the current sample.
         case BoxKind::Rec: {
             const int32_t out1 = Boxes.ArityOf(kids[0]).Outs;
             const int32_t in2 = Boxes.ArityOf(kids[1]).Ins;
@@ -313,7 +306,7 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             l1.insert(l1.end(), in.begin(), in.end());
             const std::vector<SigId> body = Propagate(kids[0], std::move(l1));
 
-            // Unlike the reference, a branch with no self-reference is still a projection.
+            // Keep projections for branches without self-reference.
             const SigId group = Sigs.CloseRec(g, body);
             std::vector<SigId> out(static_cast<size_t>(out1));
             for (int32_t p = 0; p < out1; ++p) out[p] = Delay(Sigs.Make(SigKind::Proj, 0, uint32_t(p), 0, {group}), Sigs.MakeInt(0));
@@ -330,7 +323,7 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             for (size_t i = 0; i + 1 < t.Pairs.size(); i += 2) {
                 const int32_t src = t.Pairs[i], dst = t.Pairs[i + 1];
                 if (dst <= 0 || dst > t.Outs || src <= 0 || src > t.Ins) continue;
-                // The first contribution replaces the zero, so a plain route holds no `+`.
+                // Replace the initial zero to avoid adding redundant sum nodes.
                 const SigId acc = out[dst - 1], add = in[src - 1];
                 out[dst - 1] = acc == zero ? add : add == zero ? acc : SimpBinOp(Sigs, BinOpCode::Add, acc, add);
             }

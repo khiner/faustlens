@@ -10,7 +10,6 @@
 namespace faustlens {
 namespace {
 
-// Inline fields trim surrounding whitespace but never accept comments or lexer errors.
 std::string_view Trim(std::string_view text) {
     const auto begin = text.find_first_not_of(" \t\r\n\v\f");
     if (begin == std::string_view::npos) return {};
@@ -24,14 +23,13 @@ Tok SoleToken(std::string_view text) {
     return t.Begin == 0 && t.End == text.size() && !IsTrivia(t.Kind) ? t.Kind : Tok::Eof;
 }
 
-// A signed literal is one leaf only inside a `waveform`. Elsewhere `-` is a `BinOp`.
+// Signed literals are single leaves only inside waveform syntax.
 Tok SoleNumber(std::string_view text, bool signed_ok) {
     if (signed_ok && (text.starts_with('-') || text.starts_with('+'))) text.remove_prefix(1);
     const Tok t = SoleToken(text);
     return t == Tok::Int || t == Tok::Float ? t : Tok::Eof;
 }
 
-// What an expression position rejects.
 constexpr uint64_t StatementKinds = KindMask({
     Kind::Program,
     Kind::Import,
@@ -53,14 +51,14 @@ constexpr uint64_t StatementKinds = KindMask({
     Kind::MdocNotice,
 });
 
-// The value of an `Int` leaf in plain decimal. Any other spelling answers false.
+// Read an Int leaf in plain decimal only.
 bool DecimalInt(const Terms &t, ValueId v, uint32_t *out) {
     if (t.KindOf(v) != Kind::Int) return false;
     const std::string_view s = t.Lexeme(v);
     return std::from_chars(s.data(), s.data() + s.size(), *out).ec == std::errc();
 }
 
-// Every `Par` below `v`, not just the right spine a comma list forms.
+// Visit Par nodes throughout the subtree.
 void FlattenPar(const Terms &t, ValueId v, std::vector<ValueId> &out) {
     if (t.KindOf(v) != Kind::Par) {
         out.push_back(v);
@@ -168,7 +166,7 @@ Edit EditContext::Retext(RefId sel, std::string_view text) {
     }
     if (IsLabelled(kind)) {
         if (SoleToken(text) != Tok::String) return {NoRef, NoTerm, "a label is a quoted string"};
-        // Copied out first: the intern below can grow the table and dangle the span.
+        // Copy before interning can reallocate the table.
         const TermValue node = Terms.Get(self);
         const auto span = Terms.Children(self);
         const std::vector<ValueId> kids(span.begin(), span.end());
@@ -221,7 +219,7 @@ Edit EditContext::Rewire(RefId route, uint32_t in, uint32_t out, bool connect) {
     const auto refs = Refs.Children(route);
     std::vector<ValueId> kids{ValueOf(refs[0]), ValueOf(refs[1])};
     std::vector<SourceLink> links{{{0}, refs[0]}, {{1}, refs[1]}};
-    // No entries is `route(n,m)`, distinct from an empty list.
+    // Preserve route(n,m) for absent entries.
     if (!chain.empty()) {
         auto folded = FoldLinked(*this, Kind::Par, 0, std::move(chain));
         kids.push_back(folded.Value);
@@ -243,12 +241,12 @@ Wiring RouteWiring(const Terms &t, ValueId v) {
 
     std::vector<ValueId> entries;
     FlattenPar(t, kids[2], entries);
-    // The rewires refuse an odd list, so drawing half would offer a drag always declined.
+    // Exclude odd entry lists because rewiring requires complete pairs.
     if (entries.size() % 2 != 0) return w;
     for (size_t i = 0; i + 1 < entries.size(); i += 2) {
         uint32_t a = 0, b = 0;
         if (!DecimalInt(t, entries[i], &a) || !DecimalInt(t, entries[i + 1], &b)) continue;
-        // An out-of-range pair is legal and routes nothing, so do not draw it.
+        // Exclude out-of-range pairs, which route no signal.
         if (a == 0 || b == 0 || a > w.Ins || b > w.Outs) continue;
         w.Pairs.emplace_back(a, b);
     }

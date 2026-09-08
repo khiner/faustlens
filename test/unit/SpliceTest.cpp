@@ -38,7 +38,6 @@ TEST_CASE("links distinguish a swap and a copy even when all values are equal") 
 
 namespace {
 
-// `a : b` rewritten to `a : x : b`, rebuilt so the replaced region is the connective.
 ValueId InsertStage(File &f, RefId seq) {
     const ValueId v = f.R.Refs.Refs[seq].ValueId;
     const ValueId x = f.Terms.MakeLeaf(Kind::Ident, f.Terms.InternStr("x"));
@@ -61,7 +60,7 @@ TEST_CASE("`a : b` becomes `a : x : b`, worked through") {
     File f("process = a : b;");
     const RefId seq = f.RefFor("a : b");
     const ValueId outer = InsertStage(f, seq);
-    CHECK(f.ScriptFor(seq, outer).size() == 1); // " : " replaced by " : x : "
+    CHECK(f.ScriptFor(seq, outer).size() == 1);
     CHECK(f.SpliceTo(seq, outer) == "process = a : x : b;");
 }
 
@@ -85,7 +84,6 @@ TEST_CASE("comment salvage keeps a comment on the side it was written on") {
 }
 
 TEST_CASE("comment salvage, the cases the corpus does not reach") {
-    // The corpus reaches these shapes too rarely to cover them, so they are hand-written.
     SUBCASE("a line comment brings its own newline, or it swallows what follows") {
         File f("process = a // about a\n : b;");
         const RefId seq = f.RefFor("a // about a\n : b");
@@ -97,7 +95,6 @@ TEST_CASE("comment salvage, the cases the corpus does not reach") {
         CHECK(f.SpliceTo(seq, InsertStage(f, seq)) == "process = a /*one*/ : x : /*two*/ b;");
     }
     SUBCASE("a comment inside a deleted stage is salvaged rather than dropped") {
-        // `a : b : c` -> `a : c`, deleting the stage the comment was written on.
         File f("process = a : /*about b*/ b : c;");
         const RefId seq = f.RefFor("a : /*about b*/ b : c");
         const ValueId v = f.R.Refs.Refs[seq].ValueId;
@@ -154,7 +151,7 @@ TEST_CASE("the script stays inside the target span") {
 }
 
 TEST_CASE("an identity edit on a ref carrying an outer span reprints nothing") {
-    // Bounding by `span` rather than `outer_span` would add parentheses on a no-op.
+    // Retain outer spans to preserve parentheses on identity edits.
     File f("process = (a : b) : c;");
     for (RefId i = 0; i < f.R.Refs.Refs.size(); ++i) {
         const TermRef &t = f.R.Refs.Refs[i];
@@ -170,7 +167,7 @@ TEST_CASE("a seam that would fuse tokens gets a space") {
     const std::string out = f.SpliceTo(access, f.R.Refs.Refs[access].ValueId);
     CHECK(out == f.Src);
 
-    // Reprinting the connective puts `3` beside `.name`, which would lex as `3.`.
+    // Prevent token fusion between 3 and .name.
     File g("process = 3.5 . name;");
     const RefId a2 = g.RefFor("3.5 . name");
     const ValueId three = g.Terms.MakeLeaf(Kind::Int, g.Terms.InternStr("3"));

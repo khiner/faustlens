@@ -1,9 +1,4 @@
-# Emits THIRD-PARTY-NOTICES for the embedded standard library.
-#
-# The obligation is discharged for the files that state terms: everything in
-# licenses/, every `declare license` line, the pinned SHA and the upstream URL.
-# The files that state nothing are recorded as stating nothing, which is the
-# accurate thing to say about them.
+# Include declared licenses, license files, and upstream revision in THIRD-PARTY-NOTICES.
 
 if(NOT LIB_DIR OR NOT OUT)
     message(FATAL_ERROR "ThirdPartyNotices.cmake needs -DLIB_DIR= and -DOUT=")

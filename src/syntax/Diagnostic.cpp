@@ -38,7 +38,6 @@ constexpr std::array<std::string_view, size_t(Code::Count_)> Names = {
     "info/precision-filtered",
 };
 
-// A deterministic order across runs.
 bool DiagnosticLess(const Diagnostic &a, const Diagnostic &b) { return std::tie(a.File, a.Begin, a.Code) < std::tie(b.File, b.Begin, b.Code); }
 
 } // namespace
@@ -50,7 +49,6 @@ void SortAndDedupe(std::vector<Diagnostic> &ds) {
     const auto same = [](const Diagnostic &a, const Diagnostic &b) {
         return a.Code == b.Code && a.Subject == b.Subject && a.Payload == b.Payload && a.Begin == b.Begin && a.File == b.File;
     };
-    // `ranges::unique` hands back the whole tail to drop, so there is no `end()` to repeat.
     const auto duplicates = std::ranges::unique(ds, same);
     ds.erase(duplicates.begin(), duplicates.end());
 }

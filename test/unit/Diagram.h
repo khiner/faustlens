@@ -12,13 +12,12 @@
 
 namespace faustlens::test {
 
-// Every node, parents before children.
 template<typename F> void Walk(const boxview::Node &n, const F &f) {
     f(n);
     for (const boxview::Node &k : n.Kids) Walk(k, f);
 }
 
-// Every corpus `process` body laid out. A pattern-defined or absent `process` is skipped.
+// Visit corpus diagrams with a plain process definition.
 template<typename F> void ForEachDiagram(const F &fn) {
     for (const std::filesystem::path &p : DspPaths()) {
         Session s;

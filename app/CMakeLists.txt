@@ -1,5 +1,4 @@
-# The application layer owns editing, publication, and audio hosting.
-# Layout and Workspace remain testable without ImGui or a window.
+# Build editing, layout, and audio hosting without window dependencies.
 add_library(faustlens_app
     editor/Buffer.cpp
     editor/Text.cpp

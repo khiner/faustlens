@@ -1,5 +1,4 @@
-// Selection plus a key, over the edit catalogue. An edit binds to the source its links
-// were computed against.
+// Edits require the source bytes used to compute their links.
 #pragma once
 
 #include "boxview/Select.h"
@@ -14,8 +13,7 @@
 
 namespace faustlens::app {
 
-// Keyed on the character each connective owns alone: `<` only begins `<:`, `>` only
-// ends `:>`, where `:` would have to wait.
+// Use a distinct key for each connective: `<` for `<:` and `>` for `:>`.
 enum class Key : uint8_t {
     None,
     Sequence,
@@ -28,29 +26,25 @@ enum class Key : uint8_t {
 
 Key KeyForChar(unsigned codepoint);
 
-// One table, so the help and the keymap cannot disagree.
 struct Connective {
     char Char;
     Key Edit;
 };
 std::span<const Connective> Connectives();
 
-// What one key press produces, as text: `a : _` for `:`.
+// Return the replacement text for a composition key, such as `a : _` for `:`.
 std::string ComposeExample(Terms &, Key);
 
-// A new stage goes after the selection.
 Edit EditFor(Terms &, const FileView &, const boxview::Selection &, Key);
 
-// The lexeme, so a label keeps its quotes, empty where no edit may change it. Scoped to
-// the caret's node.
+// Return the editable lexeme at the caret, including quotes, or an empty string.
 std::string_view TextOf(const Terms &, const FileView &, const boxview::Selection &);
 Edit EditForText(Terms &, const FileView &, const boxview::Selection &, std::string_view);
 
-// `in` and `out` are 1-based source channels, either way round. Toggles: connect
-// where the pair is absent, disconnect where present.
+// Toggle a connection between 1-based source channels, supplied in either order.
 Edit RewireDrag(Terms &, const FileView &, const boxview::Selection &route, uint32_t in, uint32_t out);
 
-// Commit one structural edit through Workspace. Refs must still address the buffer's bytes.
+// Commit one Workspace edit if the buffer still matches the source refs.
 bool Apply(const Terms &, Workspace &, const FileView &, const Edit &);
 
 } // namespace faustlens::app

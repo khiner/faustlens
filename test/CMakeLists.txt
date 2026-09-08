@@ -3,8 +3,6 @@ target_include_directories(doctest INTERFACE "${CMAKE_SOURCE_DIR}/lib/doctest/do
 
 set(FAUST_DIR "${CMAKE_SOURCE_DIR}/lib/faust")
 
-# --- unit and property suites ----------------------------------------------
-
 add_executable(faustlens_tests
     main.cpp
     unit/LexerTest.cpp
@@ -61,7 +59,7 @@ target_include_directories(faustlens_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
 target_compile_definitions(faustlens_tests PRIVATE
     FAUSTLENS_FAUST_DIR="${FAUST_DIR}"
     FAUSTLENS_BUILD_DIR="${CMAKE_BINARY_DIR}"
-    # The soundfile decoder tests want an audio file of known shape, and miniaudio ships one.
+    # Use the miniaudio test asset for soundfile decoding checks.
     FAUSTLENS_MINIAUDIO_DIR="${CMAKE_SOURCE_DIR}/lib/miniaudio")
 
 add_test(NAME unit COMMAND faustlens_tests)
@@ -71,10 +69,6 @@ if(FAUSTLENS_GUI)
     target_link_libraries(faustlens_widget_tests PRIVATE faustlens_app imgui doctest)
     add_test(NAME widget COMMAND faustlens_widget_tests)
 endif()
-
-# --- differential acceptance oracle against tree-sitter-faust ---------------
-# An independently written grammar, so accept/reject parity over the corpora
-# catches a lexer or layering mistake our own suites cannot see.
 
 set(TS_DIR "${CMAKE_SOURCE_DIR}/lib/tree-sitter")
 set(TSF_DIR "${CMAKE_SOURCE_DIR}/lib/tree-sitter-faust")

@@ -44,7 +44,6 @@ TEST_CASE("lexer tiles the file") {
 }
 
 TEST_CASE("numbers follow the reference's maximal munch") {
-    // `{DIGIT}+` is INT, every other numeric rule is FLOAT.
     CHECK(Kinds("3") == std::vector{Tok::Int});
     CHECK(Kinds("3f") == std::vector{Tok::Float});
     CHECK(Kinds("3.") == std::vector{Tok::Float});
@@ -54,14 +53,13 @@ TEST_CASE("numbers follow the reference's maximal munch") {
     CHECK(Kinds("3.name") == std::vector{Tok::Float, Tok::Ident});
     CHECK(Kinds("3e") == std::vector{Tok::Int, Tok::Ident});
     CHECK(Kinds("3E5") == std::vector{Tok::Int, Tok::Ident});
-    // No lexer rule matches a signed number. `ADD INT` is a parser production.
+    // Parse signs separately from numeric tokens.
     CHECK(Kinds("-3") == std::vector{Tok::Sub, Tok::Int});
 }
 
 TEST_CASE("identifiers, keywords and namespaces") {
     CHECK(Kinds("os::osc") == std::vector{Tok::Ident});
     CHECK(Kinds("::foo") == std::vector{Tok::Ident});
-    // Longest match then earliest rule: `min` is a keyword, `minimum` is not.
     CHECK(Kinds("min") == std::vector{Tok::Min});
     CHECK(Kinds("minimum") == std::vector{Tok::Ident});
     CHECK(Kinds("min::x") == std::vector{Tok::Ident});
@@ -81,7 +79,7 @@ TEST_CASE("operator spellings") {
 }
 
 TEST_CASE("FSTRING beats LT, exactly as in the reference") {
-    // `"<"{LETTER}*">"` outruns `<` in faustlexer.l. Reproduced for acceptance parity.
+    // Match reference faustlexer.l foreign-string precedence over less-than.
     CHECK(Kinds("<math.h>") == std::vector{Tok::FString});
     CHECK(Kinds("a<b>c") == std::vector{Tok::Ident, Tok::FString, Tok::Ident});
     CHECK(Kinds("a<b)c") == std::vector{Tok::Ident, Tok::Lt, Tok::Ident, Tok::RPar, Tok::Ident});
@@ -116,11 +114,11 @@ TEST_CASE("listing mode has the whitespace token flex lacks") {
 }
 
 TEST_CASE("seams that would fuse tokens") {
-    CHECK(WouldFuse("3", ".name")); // the float `3.`
+    CHECK(WouldFuse("3", ".name"));
     CHECK(WouldFuse("/", "* x"));
     CHECK(WouldFuse("<", ":"));
     CHECK(WouldFuse("a", "b"));
-    CHECK(WouldFuse("<", "b>")); // an FSTRING
+    CHECK(WouldFuse("<", "b>"));
     CHECK(!WouldFuse("3", " .name"));
     CHECK(!WouldFuse("a", ":b"));
     CHECK(!WouldFuse("a", "(b)"));

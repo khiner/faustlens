@@ -8,7 +8,7 @@
 namespace faustlens {
 namespace {
 
-// Descent order is the ref tree's pre-order, so the k-th call belongs to ref k.
+// Match printer traversal to refs in preorder.
 struct CtxCollector : Sink {
     const RefTree &Refs;
     std::vector<Ctx> Out;
@@ -16,7 +16,7 @@ struct CtxCollector : Sink {
     explicit CtxCollector(const RefTree &r) : Refs(r) {}
     void Print(std::string_view) override {}
     void Enter(ValueId, const Ctx &ctx) override { Out.push_back(ctx); }
-    // A node the source parenthesized starts fresh, or an identity edit re-derives parens.
+    // Use top-level precedence inside retained parentheses to preserve identity splices.
     bool AlreadyGrouped(ValueId) override {
         if (Out.empty() || Out.size() > Refs.Refs.size()) return false;
         const TermRef &t = Refs.Refs[Out.size() - 1];
@@ -74,8 +74,7 @@ struct SpliceSink : Sink {
             Keep(ref.OuterBegin, ref.OuterEnd);
             return true;
         }
-        // An expression's operators can expose commas below the root. Reusing those
-        // bytes in an argument must restore the expression grammar around the whole fragment.
+        // Wrap retained expressions used as arguments when commas occur below their root.
         const bool grammar_changes = Destination.Level == Level::Argument && Sc.Ctxs[r].Level == Level::Expression && RowOf(Sc.Terms, v).Level != 0;
         if (needs_parens || grammar_changes) Print("(");
         Keep(ref.SpanBegin, ref.SpanEnd);
@@ -99,8 +98,7 @@ struct SpliceSink : Sink {
         return std::move(Script);
     }
 
-    // The first ref for `v` in the target span at or after the cursor, else the first in
-    // it. Refs are not consumed.
+    // Return the first matching ref at or after the cursor, or the first within the target.
     RefId Claim(ValueId v) const {
         if (Explicit) {
             for (const SourceLink &link : Links) {
@@ -112,9 +110,7 @@ struct SpliceSink : Sink {
         }
         const std::vector<RefId> *list = Sc.Claims(v);
         if (list == nullptr) return NoRef;
-        // Both bounds inclusive: an ancestor can share the target's start offset, and the
-        // target's own ref must qualify.
-        // One projection rather than two comparators whose argument orders mirror each other.
+        // Include both bounds so ancestors sharing the target start and the target itself qualify.
         const auto outer_begin = [this](RefId r) { return Refs.Refs[r].OuterBegin; };
         const auto begin = std::ranges::lower_bound(*list, Target.OuterBegin, {}, outer_begin);
         const auto end = std::ranges::upper_bound(begin, list->end(), Target.OuterEnd, {}, outer_begin);
@@ -129,23 +125,22 @@ struct SpliceSink : Sink {
     }
 
     void RetainSpan(uint32_t begin, uint32_t end) {
-        if (begin >= Cursor) { // keeps its place
+        if (begin >= Cursor) {
             Flush(begin);
             Cursor = end;
-        } else { // the node moved, or this is a second occurrence
+        } else {
             Append(S.substr(begin, end - begin));
         }
     }
 
-    // `Pending` begins at `Anchor`, a token boundary, as `AppendUnfused` needs.
     void Append(std::string_view text) { AppendUnfused(Pending, Anchor, text); }
 
-    // A seam's left context: the file's bytes back to the last token boundary.
+    // Include left context from the final source token boundary.
     std::string_view FileLeftOf(uint32_t at) const {
         if (at == 0) return {};
         const TokenVector &toks = Sc.Tokens;
         const auto it = std::ranges::lower_bound(toks, at, {}, &Token::End);
-        if (it == toks.end() || it->End != at) return {}; // not a token boundary
+        if (it == toks.end() || it->End != at) return {};
         return S.substr(it->Begin, at - it->Begin);
     }
 
@@ -153,7 +148,7 @@ struct SpliceSink : Sink {
         const std::string_view original = S.substr(Cursor, upto - Cursor);
         if (original != Pending) {
             std::string text = Salvage(Pending, Cursor, upto);
-            // With an empty replacement, check the file's two sides against each other.
+            // Check newly adjacent source tokens after an empty replacement.
             if (WouldFuse(FileLeftOf(Cursor), text.empty() ? S.substr(upto) : text)) text.insert(text.begin(), ' ');
             if (!text.empty() && WouldFuse(text, S.substr(upto))) text += ' ';
             Script.push_back({Cursor, upto, std::move(text)});
@@ -163,10 +158,9 @@ struct SpliceSink : Sink {
         Cursor = upto;
     }
 
-    // Retention skips comments between two retained spans, so re-emit them around the text.
+    // Preserve comments in gaps between retained spans.
     std::string Salvage(std::string_view text, uint32_t begin, uint32_t end) const {
         const TokenVector &tokens = Sc.Tokens;
-        // The first token reaching past `begin`, which `<=` on a lower bound was spelling.
         const auto first = std::ranges::upper_bound(tokens, begin, {}, &Token::End);
 
         uint32_t pivot = end;
@@ -178,15 +172,14 @@ struct SpliceSink : Sink {
         std::string before, after;
         for (auto it = first; it != tokens.end() && it->Begin < end; ++it) {
             if (!IsComment(it->Kind)) continue;
-            // A moved or copied region carries its own comments. Salvage only comments
-            // which no retained fragment will emit, regardless of emission order.
+            // Exclude every retained region from comment salvage, including regions emitted later.
             const auto kept = std::ranges::upper_bound(Retained, it->Begin, {}, &std::pair<uint32_t, uint32_t>::first);
             if (kept != Retained.begin() && std::prev(kept)->second >= it->End) continue;
             const std::string_view comment = S.substr(it->Begin, it->End - it->Begin);
             if (it->Begin < pivot) {
                 before += ' ';
                 before.append(comment);
-                // A line comment swallows the rest of its line.
+                // Preserve a newline after a line comment.
                 if (it->Kind == Tok::LineComment) before += '\n';
             } else {
                 after.append(comment);
@@ -233,7 +226,7 @@ const std::vector<RefId> *SpliceContext::Claims(ValueId v) const {
 Ctx SpliceContext::At(RefId target) const {
     Ctx ctx = target < Ctxs.size() ? Ctxs[target] : Ctx{};
     const uint32_t at = Refs.Refs[target].OuterBegin;
-    // A backward scan would go quadratic on a file with very long lines.
+    // Scan forward to keep long-line processing linear.
     const auto line = std::upper_bound(LineStarts.begin(), LineStarts.end(), at) - 1;
     ctx.Indent = at - *line;
     return ctx;

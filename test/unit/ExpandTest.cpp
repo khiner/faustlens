@@ -121,7 +121,6 @@ TEST_CASE("expansion is in place: the node stays, its children are the evaluated
     opened.Expansions = {{ref, e.Value}};
     const boxview::Node after = opened.Run(p.F().Refs, ProcessBodyRef(p.S.Terms, p.F()));
 
-    // Still drawn under its own term, so selection and linking are unchanged.
     const boxview::Node *node = boxview::Layout::Find(after, stage);
     REQUIRE(node != nullptr);
     CHECK_FALSE(node->Evaluated);
@@ -132,7 +131,7 @@ TEST_CASE("expansion is in place: the node stays, its children are the evaluated
 }
 
 TEST_CASE("an expansion is recomputed, because the environment is what changed") {
-    // The drawn value does not move when its definitions do, so a value-keyed cache would stale.
+    // A dependency edit preserves the selected value id but changes its evaluation.
     Fixture p("/recompute.dsp", "gain = 2; process = _ * gain;");
     const ValueId body = p.Body();
     CHECK(PrintTerm(p.S.Terms, p.ExpandBody().Value) == "_,2 : *");
@@ -156,8 +155,7 @@ TEST_CASE("materialize rewrites the source to what the node evaluates to") {
     const Edit e = p.Materialize("_ * gain");
     REQUIRE(e.Target != NoRef);
     const EditScript script = p.Script(e);
-    // The parentheses are needed: the desugared `:` sits at the level of the `:` holding it,
-    // on the side right-associativity disfavours.
+    // Parenthesize sequential composition on the nonassociative side.
     CHECK(ApplyScript(p.Src, script) == "gain = 2;\nprocess = (_,2 : *) : foo;\nfoo = _;\n");
     for (const Replacement &r : script) {
         CHECK(r.Begin >= p.F().Refs.Refs[e.Target].OuterBegin);

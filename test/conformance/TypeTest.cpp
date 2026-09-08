@@ -1,6 +1,4 @@
-// The `.type` reader, and the comparison projected from it: nature, variability and the
-// interval's bounds. Computability, vectorability, boolean and lsb are not computed
-// here, so they are not compared.
+// Compare the supported projection of reference types: nature, variability, and bounds.
 #include "signal/Type.h"
 #include "conformance/Sweep.h"
 #include "conformance/TypeParse.h"
@@ -43,7 +41,7 @@ char VariabilityChar(Variability v) {
     return '?';
 }
 
-// A tuplet prints no nature, so it is skipped while its members are not.
+// Compare tuplet members because tuplets have no printed nature.
 std::set<std::string> TheirPairs(const TypeFile &f) {
     std::set<std::string> pairs;
     for (const TypeEntry &t : f.Types)
@@ -53,8 +51,7 @@ std::set<std::string> TheirPairs(const TypeFile &f) {
     return pairs;
 }
 
-// Only the nodes the dump has an entry for: the reference's printer skips a table's
-// generator subgraph, and `Rec` prints no nature.
+// Exclude table generators and Rec nodes absent from typed dump entries.
 void WalkOurs(const Signals &s, std::span<const SigId> roots, const std::function<void(SigId)> &f) {
     Reachable(s, roots, [&](SigId id) {
         if (s.KindOf(id) != SigKind::Rec) f(id);
@@ -70,7 +67,7 @@ std::set<std::string> OurPairs(const Signals &s, std::span<const SigId> roots) {
     return pairs;
 }
 
-// The dump prints bounds at default `ostream` precision, `[0, nexttoward(100, 0)]` as `0,100`.
+// Match default ostream bound precision, which prints nexttoward(100, 0) as 100.
 std::string Bound(double v) {
     if (std::isnan(v)) return "nan";
     std::ostringstream ss;
@@ -141,24 +138,24 @@ TEST_CASE("the `.type` reader is total over the reference corpus") {
     CHECK(failures.empty());
     CHECK(files == 94);
 
-    // A two-letter header is a tuplet, and `?` is a dimension the reference left undetermined.
+    // Interpret two-letter headers as tuplets and ? as an undetermined dimension.
     const std::set<std::string> known = {
         "BE",    "SE",
-        "SI", // tuplets
+        "SI",
         "NBEV?", "NBEVN", "NBIVN", "NKCVN", "NKIV?", "NKIVN",
-        "NSCS?", //
+        "NSCS?",
         "NSCSN", "NSCVN", "NSES?", "NSESN", "NSEV?", "NSEVN",
-        "NSIS?", //
+        "NSIS?",
         "NSISN", "RBCVN", "RBESN", "RBEV?", "RBEVN", "RKCVN",
-        "RKIV?", //
+        "RKIV?",
         "RKIVN", "RSCSN", "RSCVN", "RSES?", "RSESN", "RSEV?",
-        "RSEVN", //
+        "RSEVN",
         "RSIS?", "RSISN", "RSIVN",
     };
     PinVocabulary("header", codes, known);
 }
 
-// A weak ratchet: few distinct pairs corpus-wide. Tuplets are excluded, our graph has no list node.
+// Compare distinct nature/variability pairs, excluding tuplet wrappers.
 TEST_CASE("`(nature, variability)` pairs agree per program") {
     int agreed = 0, differed = 0;
     std::set<std::string> ours_all, theirs_all;
@@ -194,7 +191,7 @@ TEST_CASE("`(nature, variability)` pairs agree per program") {
     CHECK(agreed == 94);
 }
 
-// The reference holds entries for its signal-list spine and `sigOutput` wrapper, which we lack.
+// Account for reference signal-list and output-wrapper entries.
 TEST_CASE("`.type` bounds agree per program") {
     int agreed = 0, differed = 0, values = 0;
     size_t theirs_total = 0, matched = 0;
@@ -209,7 +206,7 @@ TEST_CASE("`.type` bounds agree per program") {
             matched += std::min(n, it == mine.end() ? 0 : it->second);
         }
 
-        // Which triples occur asks about the rules, how many of each about the graph's shape.
+        // Separate rule coverage from graph multiplicity.
         bool same_values = mine.size() == yours.size();
         for (const auto &[q, n] : mine)
             if (!yours.contains(q)) same_values = false;
@@ -220,7 +217,7 @@ TEST_CASE("`.type` bounds agree per program") {
             return;
         }
         ++differed;
-        // One witness apiece, so the census names a rule and not a program.
+        // Report one program per distinct type difference.
         std::string missing, extra;
         for (const auto &[q, n] : yours) {
             const auto it = mine.find(q);
@@ -241,5 +238,5 @@ TEST_CASE("`.type` bounds agree per program") {
 
     CHECK(agreed + differed == 94);
     CHECK(values == 94);
-    // Reported and not checked: it counts nodes, we have fewer, and better faithfulness lowers it.
+    // Report unmatched node counts without asserting equality across different graph structures.
 }

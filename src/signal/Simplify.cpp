@@ -53,12 +53,12 @@ bool Holds(const Signals &s, Ntrl n, SigId id) {
     }
 }
 
-// Already known to be 0 or 1, which is what makes `1 & b -> b` sound.
+// Require boolean operands for identities such as 1 & b = b.
 bool IsBool(const Signals &s, SigId id) { return s.KindOf(id) == SigKind::BinOp && IsComparison(BinOpCode(s.Get(id).Form)); }
 
 bool BothInt(const Signals &s, SigId a, SigId b) { return IsIntNode(s, a) && IsIntNode(s, b); }
 
-// `/` keeps an integer where exact, which the recursive standard library needs.
+// Preserve exact integer division for recursive standard-library definitions.
 SigId Compute(Signals &s, BinOpCode op, SigId x, SigId y) {
     const bool ints = BothInt(s, x, y);
     const double a = NumOf(s, x), b = NumOf(s, y);
@@ -67,7 +67,7 @@ SigId Compute(Signals &s, BinOpCode op, SigId x, SigId y) {
         case BinOpCode::Sub: return ints ? s.MakeInt(s.IntValue(x) - s.IntValue(y)) : s.MakeReal(a - b);
         case BinOpCode::Mul: return ints ? s.MakeInt(s.IntValue(x) * s.IntValue(y)) : s.MakeReal(a * b);
         case BinOpCode::Div: {
-            if (b == 0) return NoSig; // decline rather than invent an infinity
+            if (b == 0) return NoSig; // preserve division by zero
             if (!ints) return s.MakeReal(a / b);
             const int32_t q = s.IntValue(x) / s.IntValue(y);
             return double(q) == a / b ? s.MakeInt(q) : s.MakeReal(a / b);
@@ -102,8 +102,7 @@ bool IsNum(const Signals &s, SigId id) {
 
 bool IsBinOp(const Signals &s, SigId id, BinOpCode op) { return s.KindOf(id) == SigKind::BinOp && BinOpCode(s.Get(id).Form) == op; }
 
-// Every rewrite ends in `Raw`, never a recursive `SimpBinOp`. The reference takes
-// no fixpoint, so one pass leaves `-1*(-1*x)` standing.
+// Apply one rewrite per node to match the reference, preserving expressions such as -1*(-1*x).
 SigId SimpBinOp(Signals &s, BinOpCode op, SigId x, SigId y) {
     if (IsNum(s, x) && IsNum(s, y)) {
         const SigId v = Compute(s, op, x, y);
@@ -183,13 +182,13 @@ SigId SimpControl(Signals &s, SigId x, SigId cond) {
 
 SigId SimpDelay(Signals &s, SigId x, SigId d) {
     if (IsZeroNum(s, d)) {
-        // A group's `@0` is what puts a recursive output on the current sample.
+        // Preserve @0 on projections to expose the current recursive output.
         if (s.KindOf(x) == SigKind::Proj) return s.Make(SigKind::Delay, {x, d});
         return x;
     }
     if (IsZeroNum(s, x)) return x;
 
-    // Only where the operand staying put is constant, or it would be read at the wrong time.
+    // Move only constants across delays to preserve sample timing.
     if (s.KindOf(x) == SigKind::BinOp) {
         const BinOpCode b = BinOpCode(s.Get(x).Form);
         const SigId u = s.Child(x, 0), v = s.Child(x, 1);
@@ -201,7 +200,7 @@ SigId SimpDelay(Signals &s, SigId x, SigId d) {
         }
     }
 
-    // The sum puts the outer delay first, not the order the rule suggests.
+    // Preserve outer-delay-first addition order.
     if (s.KindOf(x) == SigKind::Delay && s.Order(s.Child(x, 1)) < 2) return SimpDelay(s, s.Child(x, 0), SimpBinOp(s, BinOpCode::Add, d, s.Child(x, 1)));
 
     return s.Make(SigKind::Delay, {x, d});
@@ -210,7 +209,7 @@ SigId SimpDelay(Signals &s, SigId x, SigId d) {
 SigId SimpDelay1(Signals &s, SigId x) { return SimpDelay(s, x, s.MakeInt(1)); }
 
 SigId SimpExtended(Signals &s, Ext e, std::span<const SigId> args) {
-    // At the signal layer, so these reach `.sig`. The codegen layer's rewrites do not.
+    // Apply signal-level rules before .sig comparison.
     if (e == Ext::Pow && args.size() == 2 && IsNum(s, args[1]) && !IsNum(s, args[0])) {
         const double x = NumOf(s, args[1]);
         if (x == 0.0) return s.MakeReal(1.0);
@@ -264,7 +263,7 @@ SigId SimpExtended(Signals &s, Ext e, std::span<const SigId> args) {
 
 namespace {
 
-// Comparing shape builds nothing, where interning a node to compare would leave one abandoned.
+// Compare structure without interning unused nodes.
 bool Rewrote(const Signals &s, SigId r, uint8_t form, SigId x, SigId y) {
     if (s.KindOf(r) != SigKind::BinOp || s.Get(r).Form != form) return true;
     return s.Get(r).ChildCount != 2 || s.Child(r, 0) != x || s.Child(r, 1) != y;
@@ -274,7 +273,7 @@ bool Rewrote(const Signals &s, SigId r, uint8_t form, SigId x, SigId y) {
 
 std::vector<SigId> Simplify(Signals &s, std::span<const SigId> roots, bool add_normal_form) {
     return Rewrite(s, roots, [&s, add_normal_form](SigId id, std::span<const SigId> k) {
-        const SigNode n = s.Get(id); // by value, see `Rewriter::Go`
+        const SigNode n = s.Get(id); // Copy before rewriting grows the arena.
         switch (s.KindOf(id)) {
             case SigKind::BinOp: {
                 const SigId r = SimpBinOp(s, BinOpCode(n.Form), k[0], k[1]);
@@ -290,7 +289,7 @@ std::vector<SigId> Simplify(Signals &s, std::span<const SigId> roots, bool add_n
             case SigKind::Extended: {
                 const Ext e = Ext(n.Form);
                 const SigId r = SimpExtended(s, e, k);
-                // Not behind the option, which is how `x^-2` becomes `1.0/x^2`.
+                // Always normalize pow, including x^-2 to 1.0/x^2.
                 return e == Ext::Pow ? NormalizeAddTerm(s, r) : r;
             }
             default: return s.Rebuild(id, k);

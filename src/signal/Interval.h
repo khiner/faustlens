@@ -1,6 +1,5 @@
-// The interval domain, from the reference's `compiler/interval/`: a tighter bound
-// loses parity as surely as a looser one. Defaults to `[lowest(), max()]`. `lsb` is
-// fixed-point resolution, `>= 0` meaning integer.
+// Match reference compiler/interval bounds and resolution.
+// Nonnegative lsb denotes integer resolution.
 #pragma once
 
 #include <cstdint>
@@ -27,7 +26,7 @@ struct Interval {
     bool HasZero() const { return Has(0.0); }
 };
 
-// Bounds only, no lsb.
+// Compare bounds only.
 bool operator==(const Interval &a, const Interval &b);
 
 Interval Reunion(const Interval &, const Interval &);
@@ -38,7 +37,7 @@ namespace ivl {
 
 Interval IntNum(int64_t);
 Interval RealNum(double);
-// Reads only `lo`'s low end and `hi`'s high end.
+// Use the lower bound of lo and upper bound of hi.
 Interval Slider(const Interval &lo, const Interval &hi, const Interval &step);
 
 Interval IntCast(const Interval &);
@@ -90,7 +89,7 @@ Interval Tanh(const Interval &);
 Interval Asinh(const Interval &);
 Interval Acosh(const Interval &);
 Interval Atanh(const Interval &);
-// A stub in the reference: always the default interval.
+// Return the default interval, matching the reference stub.
 Interval Remainder(const Interval &);
 
 } // namespace ivl

@@ -1,5 +1,4 @@
-// Foreign symbols: (name, signature) to a native pointer, plus the runtime symbols
-// `fSamplingFreq` and `count` the instance answers.
+// Map foreign names and signatures to native pointers, with instance-provided fSamplingFreq and count.
 #pragma once
 
 #include "signal/Plan.h"
@@ -25,7 +24,7 @@ struct Symbol {
     enum class Runtime : uint8_t { None, SampleRate, BlockSize };
     Runtime Provides = Runtime::None;
 
-    // `addr` is the address of a `fconstant`'s or `fvariable`'s value, read rather than called.
+    // Read constant and variable values through Addr.
     void *Fn = nullptr;
     const void *Addr = nullptr;
 };
@@ -39,12 +38,12 @@ struct Registry {
     void AddVariable(const std::string &name, Nature result, const void *addr);
     void AddRuntime(const std::string &name, ForeignKind, Nature result, Symbol::Runtime);
 
-    // Null where nothing answers, which poisons the subgraph rather than failing the compile.
+    // Return null for an unresolved symbol.
     const Symbol *Find(const ForeignDesc &) const;
 };
 
-// Thunk shapes cover arity zero to two over `int`/`double`, so check `CanCall` first.
-// A `Runtime` symbol is the instance's to answer.
+// Check CanCall before invoking a scalar thunk of up to two arguments.
+// Resolve Runtime symbols through the instance.
 bool CanCall(const Symbol &);
 Scalar Call(const Symbol &, std::span<const Scalar> args);
 

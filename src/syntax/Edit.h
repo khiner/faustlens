@@ -1,4 +1,3 @@
-// Term rewrites and correspondence to the source occurrences they preserve.
 #pragma once
 
 #include "syntax/Term.h"
@@ -18,24 +17,22 @@ struct SourceLink {
 struct Edit {
     RefId Target = NoRef;
     ValueId Value = NoTerm;
-    // Why, where `Target` is `NoRef`. Shown to the user as-is.
+    // User-facing refusal reason when Target is NoRef.
     const char *Declined = nullptr;
     std::vector<SourceLink> Links;
 
     explicit operator bool() const { return Target != NoRef; }
 };
 
-// Which side of the selection the new stage goes on.
 enum class Side : uint8_t { Before, After };
 
 bool IsComposition(Kind);
 
 bool IsExpression(Kind);
 
-// A label is a payload rather than a child, so a retext targets the widget itself.
+// Retext labels through their containing widget node.
 constexpr bool IsLabelled(Kind k) { return k >= Kind::Button && k <= Kind::SoundfileBox; }
 
-// Built once per parse.
 struct EditContext {
     Terms &Terms;
     const RefTree &Refs;
@@ -43,24 +40,21 @@ struct EditContext {
 
     EditContext(faustlens::Terms &, const RefTree &);
 
-    // The parent link the ref tree does not store.
     RefId Parent(RefId r) const { return r < ParentOf.size() ? ParentOf[r] : NoRef; }
 
-    // The selection and `stage` (default `_`) under a new connective. Built at the parent
-    // where that avoids parens.
+    // Combine the selection and stage under a connective, using the parent to avoid redundant grouping.
     Edit Compose(RefId sel, Kind comp, uint8_t form, Side, ValueId stage = NoTerm);
 
-    // The composition holding the selection becomes its sibling.
+    // Replace the containing composition with the selection's sibling.
     Edit Delete(RefId sel);
 
-    // `text` is the source spelling, quotes included. The kind follows the bytes.
+    // Interpret text as source spelling, including quotes.
     Edit Retext(RefId sel, std::string_view text);
 
-    // One (input, output) pair added or removed, both 1-based as in the source.
+    // Add or remove one pair of 1-based source channels.
     Edit Connect(RefId route, uint32_t in, uint32_t out) { return Rewire(route, in, out, true); }
     Edit Disconnect(RefId route, uint32_t in, uint32_t out) { return Rewire(route, in, out, false); }
 
-    // The route's entries as the flat channel list they denote.
     std::vector<ValueId> Entries(RefId route) const;
 
     ValueId ValueOf(RefId r) const { return Refs.Refs[r].ValueId; }
@@ -69,8 +63,7 @@ struct EditContext {
     std::vector<RefId> EntryRefs(RefId route) const;
 };
 
-// A route's channel counts and (input, output) pairs, all 1-based. What the rewires
-// refuse is zeroed or dropped here too.
+// Return valid 1-based route channels and pairs, excluding entries that cannot be rewired.
 struct Wiring {
     uint32_t Ins = 0, Outs = 0;
     std::vector<std::pair<uint32_t, uint32_t>> Pairs;

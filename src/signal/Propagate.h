@@ -1,4 +1,3 @@
-// Walks Box threading input signals through the composition operators, producing Signal.
 #pragma once
 
 #include "box/Box.h"
@@ -16,13 +15,12 @@ namespace faustlens {
 
 enum class UiKind : uint8_t { Button, Checkbox, VSlider, HSlider, NumEntry, VBargraph, HBargraph, Soundfile };
 
-// Not recoverable from the graph: the interned path drops orientation, `v:Reverb/Wet`
-// and `h:Reverb/Wet` being one string. `path` is outermost first.
+// Preserve group orientation separately from the interned label path; path segments are outermost first.
 struct UiItem {
     std::vector<PathSeg> Path;
     UiKind Kind = UiKind::Button;
     double Init = 0, Min = 0, Max = 0, Step = 0;
-    // The widget node's `Payload`. The identity, since normalization moves `SigId`s.
+    // Widget payload identity survives signal normalization.
     uint32_t Label = 0;
 };
 
@@ -32,20 +30,18 @@ struct Propagator {
     Signals &Sigs;
     std::vector<Diagnostic> Diags;
 
-    // A stack: `Symbolic` binds one slot around its body and nothing outlives it.
+    // Scope each symbolic slot binding to its body.
     std::vector<std::pair<BoxId, SigId>> Slots;
-    // Outermost first.
     std::vector<PathSeg> Groups;
     std::vector<UiItem> Ui;
 
     Propagator(const faustlens::Boxes &b, const faustlens::Terms &t, Signals &s) : Boxes(b), Terms(t), Sigs(s) {}
 
-    // `inputs` is a channel count, not a signal.
     std::vector<SigId> Run(BoxId box, int32_t inputs);
 
     struct MemoKey {
         BoxId Box = 0;
-        // Interned: the slot environment is keyed by its *bindings*, not its depth.
+        // Intern slot environments by bindings.
         uint32_t Slots = 0;
         uint32_t Path = 0;
         std::vector<SigId> In;
@@ -62,7 +58,7 @@ struct Propagator {
     uint32_t PathId();
     uint32_t SlotEnvId();
 
-    // Fold only where *every* argument is a literal, `Select2` never. Rest to `Simplify`.
+    // Fold literal-only arguments except Select2; apply other rules in Simplify.
     SigId Bin(BinOpCode, SigId, SigId);
     SigId Delay(SigId, SigId);
     SigId Delay1(SigId);

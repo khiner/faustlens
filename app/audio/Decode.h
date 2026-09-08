@@ -1,5 +1,4 @@
-// `ma_decoder` behind the soundfile reader, with a per-URL cache of successful
-// and failed decodes alike, outliving any one instance.
+// Cache successful and failed decodes by URL across instances.
 #pragma once
 
 #include "runtime/Soundfile.h"
@@ -21,7 +20,7 @@ struct Decoder : SoundfileReader {
     std::vector<std::filesystem::path> Search;
     std::map<std::string, Entry> Cache;
 
-    // Tried for a relative URL, after the URL is tried as written.
+    // Search directories for relative URLs after trying the URL as written.
     void AddSearchPath(std::filesystem::path);
 
     bool Read(const std::string &url, uint32_t part, std::vector<std::vector<double>> &channels, int32_t &rate) override;

@@ -1,4 +1,3 @@
-// Compile, migrate, hand off. No artifact means no swap, and the last good one plays on.
 #pragma once
 
 #include "audio/Decode.h"
@@ -18,21 +17,20 @@
 
 namespace faustlens::app {
 
-// `dsp` holds refs into the rest, so the bundle lives and dies together.
+// The DSP references the other artifact members.
 struct Artifact {
     Signals Sigs;
     Plan Plan;
     UiNode Ui;
     uint64_t Hash = 0;
-    // Where each field is written, taken while the ref tree that answers it lives.
+    // Source offsets captured before the ref tree is replaced.
     std::vector<uint32_t> At;
-    // Of the program being *heard*, not the one on screen.
+    // Metadata for the running program.
     std::vector<Diagnostic> Diags;
     std::unique_ptr<Interp> Dsp;
 };
 
-// One offset per field in field order: the earliest byte in `refs` it came out of, or
-// `Nowhere`. Valid while the Plan's compile is.
+// Return the earliest source offset per Plan field, or `Nowhere`.
 std::vector<uint32_t> FieldOffsets(const Plan &, const RefTree &refs);
 
 struct Live {
@@ -45,9 +43,9 @@ struct Live {
     struct Result {
         bool Compiled = false;
         bool Swapped = false;
-        bool Unchanged = false; // the same Plan, so no swap
-        bool Deferred = false; // retry publication after the pending audio swap is taken
-        std::string Why; // why not: the compile failed, or the host refused the swap
+        bool Unchanged = false; // equal Plan hash
+        bool Deferred = false; // pending audio swap
+        std::string Why; // compile or swap failure
         Migration Migration;
         Timings Timings;
     };
@@ -59,27 +57,26 @@ struct Live {
         Result Status;
     };
 
-    // Worker thread: compile and initialize, without reading running DSP state.
+    // Compile and initialize on the worker without reading running DSP state.
     static Prepared
     Build(Session &, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &, double sample_rate, audio::Decoder &);
-    // Host-owning thread: publish a prepared instance. Leaves a deferred instance intact.
+    // Publish on the host-owning thread, retaining deferred instances for retry.
     Result Accept(Prepared &, const controls::Values & = {});
 
-    // Compiles `process` of `path`, migrating running state into the new
-    // instance. Does not open a device: the caller starts the host.
+    // Compile and migrate `process` from `path`; the caller starts the audio device.
     Result Reload(Session &, const std::string &path, const controls::Values &controls = {});
 
     double SampleRate() const;
 
-    // Host-owning thread, once a frame. Return artifacts to the worker for destruction.
+    // Collect on the host-owning thread and return artifacts to the worker for destruction.
     std::vector<std::shared_ptr<Artifact>> Collect();
 
     audio::Decoder Sound;
-    // Latest accepted artifact; the callback may still be finishing its predecessor.
+    // Latest accepted artifact; the callback may still use its predecessor.
     std::shared_ptr<Artifact> Current;
-    // Handed to the host and not yet collected, so still read by the audio thread.
+    // Artifacts retained until the audio thread releases their voices.
     std::vector<std::shared_ptr<Artifact>> Retiring;
-    audio::Host Host; // destroyed first, stopping callbacks before their artifacts
+    audio::Host Host; // Destroyed first to stop callbacks before artifacts.
 };
 
 } // namespace faustlens::app

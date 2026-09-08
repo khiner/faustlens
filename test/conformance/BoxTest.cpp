@@ -1,5 +1,4 @@
-// `.box` is ordinary Faust source, so it and the original `.dsp` both go through our
-// evaluator and the check is isomorphism.
+// Evaluate reference .box source and compare graph isomorphism with the original program.
 #include "conformance/BoxCompare.h"
 #include "conformance/Sweep.h"
 #include "query/Query.h"
@@ -22,9 +21,7 @@ BoxId Compile(Session &s, const fs::path &file) {
     return s.Process(fs::weakly_canonical(file).string());
 }
 
-// Both differ by one `float(N)` folded on one side and not the other, in opposite
-// directions. `tester.box` holds both `(65536 : float)` and `65536.0`, so it is not a
-// property of the expression.
+// Allow the documented float(N) folding differences, including mixed spellings within tester.box.
 bool IsPinnedDifference(const std::string &name) { return name == "reverb_designer" || name == "zita_rev1"; }
 
 } // namespace
@@ -55,7 +52,6 @@ TEST_CASE("`.box` isomorphism over the reference corpus") {
             continue;
         }
 
-        // Checked for the pinned programs too: their residue is in the graph, not the header.
         if (const auto declares = SameDeclares(ours.Metadata, theirs.Metadata); !declares) {
             failures.push_back(name + ": " + declares.error());
             continue;
@@ -64,7 +60,6 @@ TEST_CASE("`.box` isomorphism over the reference corpus") {
         const BoxSide left{ours.Boxes, ours.Terms}, right{theirs.Boxes, theirs.Terms};
         const auto same = Isomorphic(left, a, right, b);
         if (IsPinnedDifference(name)) {
-            // Agreement is news too: the open thread closed.
             if (same) failures.push_back(name + ": pinned difference no longer differs");
             else pins.push_back(name + ": " + same.error());
             ++pinned;

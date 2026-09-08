@@ -1,6 +1,3 @@
-// Reproduces the reference's harness: two compared sections at 44100 Hz, an impulse on
-// every input and buttons (not checkboxes) at 1 in the first block. The 2e-06 tolerance
-// comes from its `%8.6f` printing.
 #include "conformance/Sweep.h"
 #include "property/Corpus.h"
 #include "runtime/Interp.h"
@@ -29,12 +26,13 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr int32_t Block = 64, Section = 15000;
+// Allow reference %8.6f output rounding.
 constexpr double Tolerance = 2e-06;
 
-// `bs` reads the block size, so only the reference's `rand()` reproduces section two. Skip it.
+// Skip randomized-block comparison for bs because it depends on the reference rand sequence.
 bool ReadsBlockSize(const std::string &name) { return name == "bs"; }
 
-// The regenerated `table.ir` is miscompiled, its fill loop needing signed `int` overflow to wrap.
+// The regenerated table.ir requires wrapping signed arithmetic in its fill loop.
 bool PinnedToShipped(const std::string &name) { return name == "table"; }
 
 struct HarnessSound : SoundfileReader {
@@ -49,7 +47,7 @@ struct HarnessSound : SoundfileReader {
     }
 };
 
-// Round-tripped, because reading the printed text back is what the comparison sees.
+// Round-trip printed samples before comparison.
 bool Print(double v, double &out) {
     if (std::isnan(v) || std::isinf(v)) return false;
     char buf[32];
@@ -60,12 +58,12 @@ bool Print(double v, double &out) {
 
 struct Response {
     int32_t Inputs = 0, Outputs = 0;
-    std::vector<double> Rows; // `outputs` values per frame, two sections' worth
+    std::vector<double> Rows;
     int32_t Frames = 0;
     bool Aborted = false;
 };
 
-// `split` runs each block as two `compute` calls, at the midpoint where the reference randomizes.
+// Split compute calls at the reference harness's randomized midpoint.
 void RunSection(Interp &dsp, std::span<const uint32_t> buttons, bool split, Response &r) {
     const int32_t nin = dsp.Inputs(), nout = dsp.Outputs();
     std::vector<std::vector<double>> in(std::max(nin, 1), std::vector<double>(Block, 0.0));
@@ -143,7 +141,7 @@ Reference ReadReference(const fs::path &p, int32_t want_rows) {
 
 struct Verdict {
     std::string Name;
-    std::string Why; // empty where it matched
+    std::string Why;
     std::string Note;
     std::string Example;
     bool Compared = false;
@@ -197,7 +195,7 @@ Verdict Measure(const fs::path &path) {
     r.Outputs = plan.Outputs;
     const std::vector<uint32_t> buttons = dsp.ControlsOfKind(UiKind::Button);
     RunSection(dsp, buttons, false, r);
-    // The harness makes a new dsp per section, so the second starts from `init`.
+    // Initialize a fresh DSP for each reference section.
     if (!r.Aborted) {
         Interp again(plan, ui);
         again.LoadSoundfiles(&sound);
@@ -267,6 +265,5 @@ TEST_CASE("impulse responses: the interpreter against the reference's `.ir`") {
     census.Report();
     for (const std::string &n : notes) MESSAGE("  ", n);
 
-    // Everything on `AssociationOrder` matches too, `freeverb` and `zita_rev1` included.
     CHECK(matched == 94);
 }

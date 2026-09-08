@@ -11,12 +11,9 @@
 namespace faustlens {
 namespace {
 
-// The shortest spelling that reads back as itself and still lexes as a `Float`. Empty for `inf`
-// and `nan`, which have no `Float` spelling at all: written out they lex as identifiers.
+// Return the shortest round-tripping Float spelling, or empty for infinity and NaN.
 std::string RealText(double v) {
     if (!std::isfinite(v)) return {};
-    // `std::format` is the shortest round-tripping spelling by construction, so there is
-    // nothing to search and nothing to read back.
     std::string s = std::format("{}", v);
     if (s.find_first_of(".eE") == std::string::npos) s += ".0";
     return s;
@@ -56,7 +53,6 @@ struct Lifter {
         return text.empty() ? NoTerm : Terms.MakeLeaf(Kind::Real, Terms.InternStr(text));
     }
 
-    // Copied out first, since `Terms::Make` grows the pool a held span would point into.
     bool Kids(BoxId b, std::vector<ValueId> &out) {
         const auto span = Boxes.Children(b);
         const std::vector<BoxId> kids(span.begin(), span.end());
@@ -97,7 +93,7 @@ ValueId Lifter::Build(BoxId b) {
         case BoxKind::Wire: return Terms.MakePrim(Prim::Wire);
         case BoxKind::Cut: return Terms.MakePrim(Prim::Cut);
         case BoxKind::Prim: {
-            // `^` is infix only, so the nullary spelling must be `pow`.
+            // Use pow for nullary power because ^ is infix-only.
             const auto p = Prim(n.Payload);
             const auto form = uint8_t(p == Prim::Pow ? PowSpelling::Fun : PowSpelling::Caret);
             return Terms.Make(Kind::Prim, form, 0, n.Payload, {});
@@ -141,7 +137,6 @@ ValueId Lifter::Build(BoxId b) {
         case BoxKind::Waveform: {
             const std::vector<double> values = Boxes.WaveformAt(n.Aux);
             for (const double d : values) {
-                // `Form` is whether the samples were all integral, which picks the nature.
                 const ValueId v = n.Form == 0 ? Int(int32_t(d)) : Real(d);
                 if (v == NoTerm) return Decline(b, "a sample the grammar cannot write");
                 kids.push_back(v);
@@ -151,11 +146,11 @@ ValueId Lifter::Build(BoxId b) {
 
         case BoxKind::FConst:
         case BoxKind::FVar:
-            // `Aux` is the include file's string id here, not a signature index.
+            // Aux identifies the include filename here.
             kids.push_back(Str(Terms.Str(n.Aux)));
             return Terms.Make(kind == BoxKind::FConst ? Kind::FConst : Kind::FVar, n.Form, 0, n.Payload, kids);
         case BoxKind::FFun: {
-            // The *selected* name only: build precision resolved the four-name spelling.
+            // Preserve the foreign name selected by build precision.
             const Signature &sig = Boxes.SignatureAt(n.Aux);
             static constexpr std::string_view Types[] = {"int", "float", "any"};
             kids.push_back(Str(Types[size_t(sig.Result)]));

@@ -16,12 +16,11 @@ using namespace faustlens::test;
 
 namespace {
 
-// `in` and `want` are per channel, and the frame count is `want[0].size()`.
+// Store inputs and expected samples per channel.
 struct Probe {
     const char *Clause;
     const char *Source;
     std::vector<std::vector<double>> In, Want;
-    // A substring the diagnostic must contain, where the rule rejects the program.
     const char *Reject = nullptr;
 };
 
@@ -39,8 +38,7 @@ const std::vector<Probe> &Probes() {
         {"integer arithmetic wraps rather than saturating", "process = int(_) * int(_);", {{100000}, {100000}}, {{1410065408}}},
 
         {"`int(x)` truncates toward zero, never rounds", "process = int(_);", {{2.7, -2.7, 2.5, -0.5}}, {{2, -2, 2, 0}}},
-        // The reference leaves this undefined and its backends disagree, so we define it as
-        // its `-cir` rewrite does. Expect a divergence.
+        // Use the reference -cir float-to-int rewrite for cases where backends disagree.
         {"float-to-int out of range saturates and NaN converts to zero", "process = int(_);", {{1e18, -1e18, Nan}}, {{2147483647, -2147483648, 0}}},
 
         {"`:>` sums: output bus b takes inputs b, b + n, b + 2n, ...", "process = _,_,_,_ :> _,_;", {{1}, {2}, {10}, {20}}, {{11}, {22}}},
@@ -70,7 +68,7 @@ const std::vector<Probe> &Probes() {
     return probes;
 }
 
-// Exact: every expectation is a number the rule names, not one an accumulation approaches.
+// Use exact expectations specified by each semantic rule.
 bool Same(double got, double want) {
     if (std::isnan(want)) return std::isnan(got);
     return got == want;
@@ -98,7 +96,6 @@ std::string Run(const Probe &p, std::vector<std::vector<double>> &got) {
     for (std::vector<double> &c : in) ip.push_back(c.data());
     op.reserve(got.size());
     for (std::vector<double> &c : got) op.push_back(c.data());
-    // One `compute` for the whole probe -- the `.ir` runner covers block boundaries.
     dsp.Compute(frames, ip.data(), op.data());
     return "";
 }

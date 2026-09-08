@@ -45,7 +45,7 @@ TEST_CASE("editing a library file invalidates exactly its dependents") {
 }
 
 TEST_CASE("the early cutoff fires on an edit that re-derives the same terms") {
-    // Cutoff equality is the value component alone. Ref spans and tokens shift on any edit.
+    // Compare term values for early cutoff despite changed spans and tokens.
     Session s = Workspace();
     REQUIRE(Shape(s, s.Process("/main.dsp")) == "Int(2)");
     const uint32_t before = s.Recomputes(QueryKind::FileEnv, "/main.dsp");
@@ -59,7 +59,6 @@ TEST_CASE("the early cutoff fires on an edit that re-derives the same terms") {
 }
 
 TEST_CASE("a failed resolution is retried when something could have changed") {
-    // Caching the failure permanently is the bug this guards.
     Session s;
     s.SetBuffer("/main.dsp", "import(\"/late.lib\");\nprocess = later;\n");
     const BoxId first = s.Process("/main.dsp");
@@ -71,7 +70,7 @@ TEST_CASE("a failed resolution is retried when something could have changed") {
 }
 
 TEST_CASE("an import cycle is a diagnostic, and its result is never cached") {
-    // A cycle's result depends on which file was queried first, so it stays volatile.
+    // Import-cycle results depend on query entry order.
     for (const std::pair<const char *, const char *> entry : {std::pair{"/a.lib", "a"}, std::pair{"/b.lib", "b"}}) {
         CAPTURE(entry.first);
         Session s;
@@ -86,7 +85,7 @@ TEST_CASE("an import cycle is a diagnostic, and its result is never cached") {
 TEST_CASE("an unsaved buffer shadows the file it would be saved to") {
     Session s;
     s.SetBuffer("/main.dsp", "import(\"stdfaust.lib\");\nprocess = 1;\n");
-    CHECK(!s.Boxes.IsError(s.Process("/main.dsp"))); // resolves to the embedded copy
+    CHECK(!s.Boxes.IsError(s.Process("/main.dsp")));
     s.SetBuffer("stdfaust.lib", "shadowed = 1;\n");
     CHECK(!s.Boxes.IsError(s.Process("/main.dsp")));
 }

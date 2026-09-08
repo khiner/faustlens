@@ -20,7 +20,6 @@ void Inside(ImDrawList *dl, const Node &n, float ox, float oy, const Palette &pa
 
 bool DrawNode(ImDrawList *dl, const Node &n, float ox, float oy, const Node *selected, const Palette &pal) {
     const Rect &b = n.Bounds;
-    // Node identity for the box an edit lands on, value equality for the rest.
     const bool is_selected = &n == selected;
     const bool is_occurrence = selected != nullptr && !is_selected && n.Term == selected->Term;
 
@@ -30,7 +29,6 @@ bool DrawNode(ImDrawList *dl, const Node &n, float ox, float oy, const Node *sel
         const unsigned edge = is_selected ? pal.Selected : is_occurrence ? pal.Occurrence : pal.Outline;
         dl->AddRect(tl, br, edge, 3, 0, is_selected ? 2.0f : 1.0f);
         const ImVec2 size = ImGui::CalcTextSize(n.Label.c_str());
-        // A `route`'s label sits at the top, since the middle holds its wires.
         const float ty = n.Ports.empty() ? tl.y + (b.H - size.y) / 2 : tl.y + 2;
         dl->AddText({tl.x + (b.W - size.x) / 2, ty}, pal.Text, n.Label.c_str());
         Inside(dl, n, ox, oy, pal);
@@ -42,7 +40,6 @@ bool DrawNode(ImDrawList *dl, const Node &n, float ox, float oy, const Node *sel
     bool encloses = is_selected;
     for (const Node &k : n.Kids) encloses |= DrawNode(dl, k, ox, oy, selected, pal);
 
-    // Outlined only on the selection path, so no nested frames otherwise.
     if (encloses || is_occurrence) {
         dl->AddRect(
             {ox + b.X - 2, oy + b.Y - 2}, {ox + b.Right() + 2, oy + b.Bottom() + 2},

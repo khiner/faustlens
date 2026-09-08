@@ -6,7 +6,7 @@
 namespace faustlens {
 namespace {
 
-// Fixed, for reproducible builds.
+// Use a fixed seed for reproducibility.
 constexpr uint64_t Seed = 0x9E3779B97F4A7C15ull;
 
 constexpr std::array<std::string_view, size_t(Kind::Count_)> KindNames = {
@@ -105,13 +105,13 @@ Prim PrimForToken(Tok t) { return TokenPrim[size_t(t)]; }
 
 Terms::Terms() {
     Values.reserve(4096);
-    InternStr(""); // id 0 is the empty lexeme, so payload 0 reads as "none"
+    InternStr(""); // Reserve id zero for the empty lexeme.
 }
 
 ValueId Terms::Make(Kind kind, uint8_t form, uint16_t variants, uint32_t payload, std::span<const ValueId> children) {
     uint64_t h = Mix(Seed, (uint64_t(kind) << 32) | (uint64_t(form) << 24) | variants);
     h = Mix(h, payload);
-    // Merkle: over child hashes, so a value covers its whole subtree.
+    // Hash child content to identify the full subtree.
     for (const ValueId c : children) h = Mix(h, Hashes[c]);
 
     auto &bucket = Buckets[h];
@@ -121,7 +121,6 @@ ValueId Terms::Make(Kind kind, uint8_t form, uint16_t variants, uint32_t payload
         if (std::equal(children.begin(), children.end(), ChildPool.begin() + v.Children)) return id;
     }
 
-    // Only a miss commits the children, so a hit leaves nothing to undo.
     const auto offset = uint32_t(ChildPool.size());
     ChildPool.insert(ChildPool.end(), children.begin(), children.end());
 
@@ -134,7 +133,6 @@ ValueId Terms::Make(Kind kind, uint8_t form, uint16_t variants, uint32_t payload
 
 namespace {
 
-// The empty visitor inlines away, keeping `Innermost` allocation-free.
 template<class Visit> RefId Descend(const RefTree &t, uint32_t offset, Visit visit) {
     if (t.Refs.empty()) return NoRef;
     if (offset < t.Refs[0].OuterBegin || offset >= t.Refs[0].OuterEnd) return NoRef;
@@ -142,7 +140,7 @@ template<class Visit> RefId Descend(const RefTree &t, uint32_t offset, Visit vis
     for (;;) {
         visit(cur);
         const auto kids = t.Children(cur);
-        // Spans are disjoint: the candidate is the last child starting at or before `offset`.
+        // Disjoint child spans permit lookup by the last start offset at or before offset.
         const auto it = std::upper_bound(kids.begin(), kids.end(), offset, [&t](uint32_t off, RefId r) { return off < t.Refs[r].OuterBegin; });
         if (it == kids.begin()) return cur;
         const RefId kid = *(it - 1);

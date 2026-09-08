@@ -1,5 +1,4 @@
-// A `Signals` arena against the reference's `.sig` dump, by isomorphism: the two agree on shape
-// and leaves but never on numbering.
+// Compare signal graph structure and leaves across independent node numbering.
 #pragma once
 
 #include "conformance/SigParse.h"
@@ -12,7 +11,7 @@
 
 namespace faustlens::test {
 
-// Unexpected names the first disagreement and its path, `diverged` our node there.
+// Return the first mismatched path and set diverged to its graph node.
 std::expected<void, std::string> SigIsomorphic(const Signals &, std::span<const SigId> ours, const SigFile &theirs, SigId *diverged = nullptr);
 
 std::string PrintSig(const Signals &, SigId, int max_depth = 3);

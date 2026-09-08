@@ -1,5 +1,4 @@
-// Text/diagram linking. A byte names a chain of values, the diagram draws only some,
-// so a click resolves against what is drawn.
+// Resolve source positions against the occurrences present in the diagram.
 #pragma once
 
 #include "boxview/Layout.h"
@@ -11,36 +10,35 @@
 
 namespace faustlens::boxview {
 
-// Nothing here outlives the revision it was resolved against.
+// Valid only for the source revision used to resolve it.
 struct Selection {
     struct Stage {
         ValueId Value;
         RefId Ref;
         bool operator==(const Stage &) const = default;
     };
-    std::vector<Stage> Chain; // innermost first, only source occurrences the view draws
+    std::vector<Stage> Chain; // drawn source occurrences, innermost first
     size_t Index = 0;
-    // Carries the selection across a reparse, so it must name the *selected*
-    // stage. A descendant makes it drift inward.
+    // Use the selected stage's byte offset to preserve selection across reparses.
     uint32_t Caret = 0;
 
     bool Empty() const { return Chain.empty(); }
     ValueId Value() const { return Index < Chain.size() ? Chain[Index].Value : NoTerm; }
 };
 
-// A click in the text. The caret is the reader's byte, kept exactly.
+// Preserve the exact byte offset of a text click.
 Selection SelectAt(const FileView &, const Node &root, RefId body, uint32_t at);
 
-// A click on a stage, by `Layout::HitPath`'s path. Not a value: `_` interns once.
+// Select a drawn occurrence by child-index path.
 Selection SelectPath(const FileView &, const Node &root, RefId body, std::span<const uint32_t> path);
 
 void SelectOut(Selection &, const FileView &);
 void SelectIn(Selection &, const FileView &);
 
-// The selected source occurrence, validated against this snapshot.
+// Return the selected ref if valid in this snapshot.
 RefId SelectedRef(const FileView &, const Selection &);
 
-// The drawn occurrence, where `Value()` is only the value.
+// Return the selected drawn occurrence.
 const Node *SelectedNode(const FileView &, const Node &root, RefId body, const Selection &);
 
 } // namespace faustlens::boxview

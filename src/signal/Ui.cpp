@@ -10,15 +10,15 @@ namespace faustlens {
 
 namespace {
 
-// Separate from `UiNode`: insertion order is not emission order, so the tree sorts once.
+// Sort groups after construction to separate insertion and emission order.
 struct Folder {
     uint8_t Orient = 0;
     std::string Raw;
-    // A group already present is entered, where a widget is always added.
-    std::vector<std::pair<std::string, size_t>> Order; // raw label -> index
+    // Reuse groups and append widgets.
+    std::vector<std::pair<std::string, size_t>> Order;
     std::vector<Folder> Groups;
     std::vector<const UiItem *> Widgets;
-    std::vector<bool> IsGroup; // parallel to `order`
+    std::vector<bool> IsGroup;
 };
 
 Folder *Descend(Folder &f, const PathSeg &seg) {
@@ -61,7 +61,7 @@ UiNode Finish(const Folder &f, bool root, std::string_view root_name) {
             entries.push_back({f.Order[i].first, std::move(c)});
         }
     }
-    // Byte order on the raw label, orientation dropped, so groups and widgets sort as one.
+    // Sort groups and widgets by raw label bytes, excluding orientation.
     std::ranges::stable_sort(entries, [](const Entry &a, const Entry &b) { return a.Key < b.Key; });
     for (Entry &e : entries) n.Children.push_back(std::move(e.Node));
     return n;
@@ -69,7 +69,7 @@ UiNode Finish(const Folder &f, bool root, std::string_view root_name) {
 
 } // namespace
 
-// A second pass, so the bargraph counter follows the emission order `Finish` settles.
+// Assign bargraph counters after determining emission order.
 static void NameTheUnnamed(UiNode &n, int &h, int &v) {
     if (n.Label.empty()) {
         if (n.IsGroup) n.Label = "0x00";
@@ -96,7 +96,7 @@ UiNode BuildUiTree(std::span<const UiItem> items, std::string_view root_name, co
         if (it == keep.end()) continue;
         Folder *f = &root;
         for (size_t i = 0; i + 1 < w.Path.size(); ++i) f = Descend(*f, w.Path[i]);
-        // One entry per widget node, counted from the graph: one box met twice is one node.
+        // Count distinct widget nodes in the graph.
         int already = 0;
         for (size_t i = 0; i < f->Order.size(); ++i)
             if (!f->IsGroup[i] && f->Widgets[f->Order[i].second]->Label == w.Label) ++already;
@@ -107,7 +107,7 @@ UiNode BuildUiTree(std::span<const UiItem> items, std::string_view root_name, co
         }
     }
 
-    // The fake root drops out where one folder encloses everything, else it takes the name.
+    // Use the sole enclosing group as root, otherwise use the program name.
     UiNode out = (root.Order.size() == 1 && root.IsGroup[0]) ? Finish(root.Groups[root.Order[0].second], true, root_name) : Finish(root, true, root_name);
     int h = 0, v = 0;
     NameTheUnnamed(out, h, v);
@@ -123,14 +123,14 @@ std::string RootLabel(const MetaSet &meta) {
 
 namespace {
 
-// The path a host addresses a widget by: root, each group, then its own, all cleaned.
+// Build the host path from cleaned root, group, and widget labels.
 void Walk(const UiNode &n, const std::string &prefix, std::map<std::string, std::pair<int, int>> &seen) {
     const std::string path = prefix + "/" + n.Label;
     if (n.IsGroup) {
         for (const UiNode &c : n.Children) Walk(c, path, seen);
         return;
     }
-    // A `soundfile` holds no value a host writes or reads.
+    // Soundfiles have no scalar control field.
     if (n.Kind == UiKind::Soundfile) return;
     const bool bargraph = n.Kind == UiKind::VBargraph || n.Kind == UiKind::HBargraph;
     auto &[inputs, bargraphs] = seen[path];
@@ -140,14 +140,14 @@ void Walk(const UiNode &n, const std::string &prefix, std::map<std::string, std:
 } // namespace
 
 std::vector<Diagnostic> CheckPaths(const UiNode &tree) {
-    std::map<std::string, std::pair<int, int>> seen; // path -> {inputs, bargraphs}
+    std::map<std::string, std::pair<int, int>> seen;
     for (const UiNode &c : tree.Children) Walk(c, "/" + tree.Label, seen);
 
     std::vector<Diagnostic> out;
     for (const auto &[path, counts] : seen) {
         const auto [inputs, bargraphs] = counts;
         Diagnostic d;
-        // No subject: naming either term marks every occurrence, where the path marks one.
+        // Report the path directly to identify one occurrence of a shared term.
         if (inputs > 1) {
             d.Severity = Severity::Error;
             d.Code = Code::PropDuplicatePath;

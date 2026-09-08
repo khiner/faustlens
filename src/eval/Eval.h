@@ -1,4 +1,4 @@
-// Term to Box: a memoized traversal keyed on `(value id, env id)`, never touching the VFS.
+// Evaluate Term to Box with memo keys (value id, environment id).
 #pragma once
 
 #include "box/Box.h"
@@ -17,21 +17,20 @@
 
 namespace faustlens {
 
-// `Closure`'s form. An environment closure cannot be applied.
+// Environment closures cannot be applied.
 inline constexpr uint8_t TermClosure = 0, EnvClosure = 1;
 
 struct MetaSet {
     std::vector<std::pair<std::string, std::string>> Entries;
 
-    // Ignores a repeat of a pair it already holds.
     void Add(std::string key, std::string value);
 };
 
-// A file's flat binding list: its own definitions merged with every imported one.
+// File definitions merged with imported definitions.
 struct FileLayer {
     EnvId Env = NilEnv;
     std::vector<Binding> Bindings;
-    // On the layer, not the evaluator's set, which memoization leaves empty on a recompile.
+    // Store declaration metadata on the interned layer for reuse after memo hits.
     MetaSet Meta;
 };
 
@@ -45,19 +44,18 @@ struct Evaluator {
     Evaluator(faustlens::Terms &, faustlens::Boxes &, faustlens::Envs &);
 
     BoxId Eval(ValueId, EnvId);
-    // Closures and pattern matchers become symbolic boxes: propagation normal form.
+    // Normalize closures and pattern matchers to symbolic circuits.
     BoxId ToSymbolic(BoxId);
-    // The lexical body context used when normalizing a unary lambda symbolically.
+    // Lexical body context for symbolic lambda normalization.
     EnvId SymbolicEnvironment(ValueId lambda, EnvId);
-    // `process` is a name, not a keyword.
     BoxId EvalEntry(EnvId, StrId name);
 
     FileLayer BuildLayer(std::span<const ValueId> stmts, EnvId parent, StrId file, std::string_view file_key, bool is_root, std::span<const Binding> imported);
 
-    // Resolves (importer, spec) to a file env. A hook, not a map: resolution must be lazy.
+    // Resolve (importer, spec) lazily to a file environment.
     using Resolver = std::function<EnvId(std::string_view importer, std::string_view spec)>;
 
-    // Call whenever any file environment moved.
+    // Call after any file environment changes.
     void ClearMemo();
 
     std::unordered_map<uint64_t, BoxId> Memo;
@@ -67,11 +65,11 @@ struct Evaluator {
     Resolver Resolve;
     std::vector<std::vector<std::pair<std::string, std::string>>> MetaGroups;
     uint32_t Depth = 0;
-    ValueId SubjectNow = NoTerm; // the term a diagnostic raised deeper down names
+    ValueId SubjectNow = NoTerm; // source term for nested diagnostics
 
     StrId ProcessName = 0, LetrecBody = 0;
 
-    // Copied out: `Make` and `Push` grow the pools, so a span held across a construction dangles.
+    // Copy children before Make or Push can reallocate their pools.
     std::vector<ValueId> TermKids(ValueId t) const {
         const auto k = Terms.Children(t);
         return {k.begin(), k.end()};
@@ -82,18 +80,17 @@ struct Evaluator {
     }
 
     BoxId RealEval(ValueId, EnvId, bool pattern);
-    // A bare identifier in a pattern is a binder, not a reference, but not everywhere:
-    // an application's callee still resolves.
+    // Bind identifiers in pattern arguments and resolve application callees.
     BoxId EvalInPattern(ValueId, EnvId);
     BoxId EvalIdent(StrId, EnvId, ValueId subject);
     BoxId EvalBinding(const Binding &, EnvId layer);
 
-    // `fold` (numeric-tuple simplification) belongs only to a `:` the source or a desugaring wrote.
+    // Enable numeric-tuple folding only for source or desugared sequential composition.
     BoxId Compose(BoxKind, BoxId a, BoxId b, ValueId subject, bool fold = true);
     BoxId Apply(BoxId fun, std::span<const BoxId> args, ValueId subject);
 
     BoxId EvalCase(ValueId rules, EnvId);
-    // One argument against every live rule, narrowed state carried as a partial application.
+    // Match one argument against all remaining rules.
     BoxId MatchArgument(BoxId pm, BoxId arg, ValueId subject);
     bool MatchPattern(BoxId pattern, BoxId arg, EnvId &rule_env);
 
@@ -109,7 +106,6 @@ struct Evaluator {
     StrId EvalLabel(StrId raw, EnvId, ValueId subject);
 
     std::vector<Binding> BindingsFromDefs(std::span<const ValueId> defs, ValueId subject, BindKind, EnvId closure_env);
-    // A definition's four shapes: bare body, abstraction, one-rule `case`, or `case` over clauses.
     ValueId DefinitionTerm(std::span<const ValueId> clauses, ValueId subject);
     ValueId LetRecToWith(ValueId);
     ValueId NestLambda(std::span<const ValueId> params, ValueId body);

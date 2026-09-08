@@ -24,10 +24,10 @@ constexpr std::array<std::string_view, size_t(Ext::Count_)> ExtNames = {
     "log10", "max",  "min",   "pow",  "remainder", "rint", "round", "sin",   "sinh", "sqrt", "tan",  "tanh", "assertbounds", "lowest", "highest",
 };
 
-// A self-reference Hashes as this, so a group Hashes by shape and not by its id.
+// Hash recursive self-references with a canonical marker.
 constexpr uint64_t SelfMarker = 0xD1B54A32D192ED03ull;
 
-// Its own seed, so a node's Merkle hash and its intern hash are never equal.
+// Separate content and interning hash seeds.
 constexpr uint64_t MerkleSeed = 0xB5026F5AA96619E9ull;
 
 } // namespace
@@ -43,7 +43,7 @@ uint64_t Signals::HashOf(SigKind k, uint8_t form, uint32_t payload, uint32_t aux
     h = Mix(h, form);
     h = Mix(h, payload);
     h = Mix(h, aux);
-    // Child **ids**, not child Hashes, so this agrees with `Arena::Find`.
+    // Hash child ids to match Arena::Find equality.
     for (const SigId c : children) h = Mix(h, c == self ? SelfMarker : c);
     return h;
 }
@@ -57,7 +57,7 @@ SigId Signals::Make(SigKind k, uint8_t form, uint32_t payload, uint32_t aux, std
     return Commit(proto, h, children);
 }
 
-// Not interned: a `Rec` with no branches yet would equal every other open group.
+// Reserve incomplete recursive groups without interning them.
 SigId Signals::OpenRec() {
     const SigId id = SigId(Nodes.size());
     Nodes.push_back({uint8_t(SigKind::Rec), 0, 0, /*aux=*/1, 0, 0}); // "still open"
@@ -69,7 +69,7 @@ SigId Signals::OpenRec() {
 SigId Signals::CloseRec(SigId reserved, std::span<const SigId> branches) {
     const uint64_t hash = HashOf(SigKind::Rec, 0, 0, 0, branches, reserved);
 
-    // Same branch *ids* only. Structural equality merges groups the reference keeps apart.
+    // Merge groups with identical branch ids to preserve reference group identity.
     std::vector<SigId> &bucket = Buckets[hash];
     for (const SigId id : bucket) {
         const SigNode &m = Nodes[id];
@@ -96,10 +96,9 @@ SigId Signals::CloseRec(SigId reserved, std::span<const SigId> branches) {
 
 namespace {
 
-// A node reaching a back edge Hashes and memoizes per enclosing-group context, anything
-// free of every open group in the arena cache.
+// Memoize nodes reaching back edges per enclosing-group context and context-free nodes in the arena cache.
 struct Merkler {
-    // `ref` is the shallowest open group reached, `Free` for none, and picks the cache.
+    // Track the shallowest referenced open group, or Free.
     struct Hashed {
         uint64_t H = 0;
         size_t Ref = Free;
@@ -110,7 +109,7 @@ struct Merkler {
     const bool Shape;
     std::vector<uint64_t> &Global;
     std::vector<uint8_t> &Have;
-    std::vector<SigId> Open; // innermost last
+    std::vector<SigId> Open;
     std::vector<std::unordered_map<SigId, Hashed>> Local;
 
     uint64_t Bytes(uint64_t h, std::string_view text) const {
@@ -119,7 +118,7 @@ struct Merkler {
         return h;
     }
 
-    // An already-open group Hashes as how far up it is rather than as itself.
+    // Hash open-group references by binder depth.
     bool BackEdge(SigId c, Hashed &out) const {
         for (size_t i = Open.size(); i-- > 0;)
             if (Open[i] == c) {
@@ -154,7 +153,7 @@ struct Merkler {
         Hashed h;
         if (Look(id, h)) return h;
         if (S.KindOf(id) == SigKind::Rec) {
-            // Its own pass, with itself open, so the answer ignores the caller.
+            // Compute group hashes with their own binding context.
             const size_t mine = Open.size();
             Open.push_back(id);
             Local.emplace_back();
@@ -176,16 +175,14 @@ struct Merkler {
         uint64_t h = Mix(MerkleSeed, n.Kind);
         h = Mix(h, n.Form);
         if (k == SigKind::Waveform) {
-            // `Aux` indexes this arena's waveform table, so hash the samples.
+            // Hash waveform samples from the side table.
             for (const double v : S.WaveformAt(n.Aux)) h = Mix(h, BitsOf(v));
         } else if (IsLabelled(k) || k == SigKind::FConst || k == SigKind::FVar || k == SigKind::FFun) {
-            // The name, not the id: interning order is this arena's. An `FFun`'s `Aux`
-            // indexes another arena, a `Soundfile`'s is a channel count.
+            // Hash interned text by content; FFun Aux refers to Boxes and Soundfile Aux stores a channel count.
             h = Bytes(h, S.Str(n.Payload));
             if (k == SigKind::Soundfile) h = Mix(h, n.Aux);
         } else if (!Shape || (k != SigKind::Int && k != SigKind::Real)) {
-            // All of the shape normalization. The *kind* stays, so `0.5` and `0.6` share
-            // a shape where `0.5` and `1` do not.
+            // Normalize numeric payloads while preserving integer versus real kinds.
             h = Mix(h, n.Payload);
             h = Mix(h, n.Aux);
         }
@@ -221,7 +218,7 @@ uint64_t Signals::ShapeHash(SigId id) const {
 int Signals::Order(SigId id) const {
     if (Orders.size() < Nodes.size()) Orders.resize(Nodes.size(), -1);
     if (Orders[id] >= 0) return Orders[id];
-    Orders[id] = 3; // the answer for a cycle through a recursive group
+    Orders[id] = 3;
     int r;
     const SigNode &n = Nodes[id];
     const auto kids = Children(id);
@@ -244,7 +241,7 @@ int Signals::Order(SigId id) const {
         case SigKind::SoundfileRate: r = 2; break;
         case SigKind::VBargraph:
         case SigKind::HBargraph: r = maxkid(2); break;
-        // Flat 3 however built: `rdtable` at a constant index is still audio order.
+        // Table reads have sample order even at constant indices.
         case SigKind::Waveform:
         case SigKind::Input:
         case SigKind::Delay1:
@@ -257,7 +254,7 @@ int Signals::Order(SigId id) const {
         case SigKind::RDTbl:
         case SigKind::WRTbl:
         case SigKind::SoundfileBuffer: r = 3; break;
-        // The attached signal alone. The second argument is kept alive, not used.
+        // Use the first operand's order with a minimum of one for attach.
         case SigKind::Attach: r = std::max(1, Order(Child(id, 0))); break;
         case SigKind::FFun: r = kids.empty() ? 3 : maxkid(1); break;
         default: r = maxkid(0); break;

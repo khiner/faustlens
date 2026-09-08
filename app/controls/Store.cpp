@@ -32,12 +32,12 @@ void Apply(const Values &store, const Plan &p, const UiNode &tree, Interp &dsp) 
         const std::string_view path = p.Label(n.WidgetLabel);
         if (path.empty()) return true;
         const auto it = store.find(path);
-        // A class mismatch counts as nothing stored, not as nothing to write.
+        // Use the initial value when the stored control class differs.
         if (it == store.end() || it->second.As != as) {
             dsp.SetControl(n.WidgetLabel, n.Init);
             return true;
         }
-        // `checkbox` carries no `min`/`max`, so `Quantize` would clamp it to 0.
+        // Checkboxes lack bounds, so Quantize would clamp them to zero.
         dsp.SetControl(n.WidgetLabel, as == Restorable::Toggle ? (it->second.V != 0 ? 1.0 : 0.0) : Quantize(n, it->second.V));
         return true;
     });

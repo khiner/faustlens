@@ -1,5 +1,4 @@
-// One immutable snapshot per compile drain, rendered by the UI and up to one compile
-// behind the buffer. Only permanent ids, so a view over boxes copies out a render list.
+// Published source data and refs remain valid until their snapshot is replaced.
 #pragma once
 
 #include "query/Query.h"
@@ -32,34 +31,31 @@ struct Snapshot {
     const FileView *File(std::string_view path) const;
 };
 
-// Every byte range naming this value. A value written in three places has three.
+// Return every source range for this value.
 std::vector<Span> Marks(const RefTree &, ValueId);
 std::vector<Span> Marks(const FileView &, ValueId);
 
-// Every occurrence of the subject, or the diagnostic's own byte range if it has
-// no subject.
+// Return subject occurrences, or the diagnostic's explicit range when it has no subject.
 std::vector<Span> Marks(const FileView &, const Diagnostic &);
 
-// The innermost ref whose span contains `offset`. `O(depth)`.
+// Return the innermost ref containing offset.
 RefId Innermost(const FileView &, uint32_t offset);
 
-// `NoTerm` where the offset is outside the root span.
+// Return NoTerm when offset is outside the root span.
 ValueId ValueAt(const FileView &, uint32_t offset);
 
-// Innermost first, for a view that draws only some kinds.
+// Return ancestors innermost first.
 std::vector<ValueId> ValuesAt(const FileView &, uint32_t offset);
 
-// Anchor a selection with this rather than `OffsetOf`, which can land the caret
-// on an occurrence the reader never pointed at.
+// Return a byte anchor for this source occurrence.
 std::optional<uint32_t> OffsetOfRef(const FileView &, RefId);
 
-// Satisfies `ValueAt(f, *OffsetOf(f, v)) == v`. For a composition, never its
-// first byte, which it shares with its first child.
+// Return an offset satisfying ValueAt(f, offset) == v, outside child spans.
 std::optional<uint32_t> OffsetOf(const FileView &, ValueId);
 
-// `NoTerm` where the file defines `process` by a pattern or not at all.
+// Return NoTerm for missing or pattern-defined process.
 ValueId ProcessBody(const Terms &, ValueId program);
-// Only the ref resolves to a particular occurrence.
+// Return the specific process body occurrence.
 RefId ProcessBodyRef(const Terms &, const FileView &);
 
 Snapshot Publish(Session &, const std::vector<std::string> &open_paths);

@@ -8,7 +8,7 @@
 namespace faustlens {
 namespace {
 
-// Postfix and suffix operators chain, so only an operand from below needs parens.
+// Parenthesize lower-precedence operands of postfix and suffix operators.
 constexpr uint8_t PostfixFloor = 12;
 constexpr uint8_t SuffixFloor = 1;
 
@@ -20,7 +20,6 @@ uint8_t MinPrecFor(const OpRow &parent, Side side) {
         case OpShape::Suffix: return SuffixFloor;
         case OpShape::Infix: break;
     }
-    // Parenthesize at equal precedence on the side associativity disfavours.
     const bool disfavoured = (side == Side::Left) ? parent.Assoc == Assoc::Right : parent.Assoc == Assoc::Left;
     return uint8_t(parent.Level + (disfavoured ? 1 : 0));
 }
@@ -45,7 +44,7 @@ struct Printer {
         const bool parens = NeedsParens(T, v, ctx);
         const bool grouped = parens || Sink.AlreadyGrouped(v);
         if (Sink.Retain(v, parens)) return;
-        // Backstop for edit-built terms. Truncating fails a round-trip check loudly.
+        // Bound recursion for terms constructed by edits.
         if (Depth >= MaxTermDepth) return;
         ++Depth;
         if (parens) Sink.Print("(");
@@ -57,7 +56,6 @@ struct Printer {
     void P(std::string_view s) { Sink.Print(s); }
     void Lexeme(ValueId v) { P(T.Lexeme(v)); }
 
-    // Normalizes order and repetition, which the bitmask has already lost.
     void Variants(uint16_t variants) {
         if (variants & Single) P("singleprecision ");
         if (variants & Double) P("doubleprecision ");
@@ -72,7 +70,6 @@ struct Printer {
     Ctx Operand(ValueId v, Side side, const Ctx &ctx) const { return {MinPrecFor(RowOf(T, v), side), ctx.Level, ctx.Indent, 0}; }
     static Ctx Fresh(Level level, uint32_t indent) { return {0, level, indent, 0}; }
 
-    // No space after the comma, which is how the corpus overwhelmingly writes it.
     void CommaList(std::span<const ValueId> kids, const Ctx &ctx) {
         for (size_t i = 0; i < kids.size(); ++i) {
             if (i > 0) P(",");
@@ -128,7 +125,7 @@ struct Printer {
                 c.Name = n.Payload;
                 for (uint32_t i = 0; i < kids.size(); ++i) {
                     if (i > 0) Newline(ind);
-                    // The prefix rides on every clause, or a reparse would not merge them.
+                    // Repeat the prefix so clauses merge after reparsing.
                     Variants(n.Variants);
                     Render(kids[i], c);
                 }
@@ -136,7 +133,7 @@ struct Printer {
             }
             case Kind::Clause: {
                 P(T.Str(ctx.Name));
-                const auto params = kids.first(kids.size() - 1); // body is last
+                const auto params = kids.first(kids.size() - 1);
                 if (!params.empty()) {
                     P("(");
                     CommaList(params, Fresh(Level::Argument, ind));
@@ -178,7 +175,7 @@ struct Printer {
             case Kind::MdocNotice: P("<notice/>"); return;
             case Kind::MdocListing: {
                 P("<listing");
-                // One `Print` per attribute, or a seam check splits the quoted value.
+                // Emit each quoted attribute atomically to preserve its token boundary.
                 const auto attr = [&](uint8_t set, uint8_t value, std::string_view key) {
                     if (!(n.Form & set)) return;
                     P(std::format(" {}=\"{}\"", key, (n.Form & value) ? "true" : "false"));
@@ -218,7 +215,7 @@ struct Printer {
                 Block(" with {", kids.subspan(1), ind);
                 return;
             case Kind::LetRec: {
-                // Splitting at the first `Definition` keeps a recovered `Hole` on the rec side.
+                // Split at the first Definition to retain recovery holes on the recursion side.
                 uint32_t rec_end = 1;
                 while (rec_end < kids.size() && T.KindOf(kids[rec_end]) != Kind::Definition) ++rec_end;
                 Render(kids[0], Operand(v, Side::Left, ctx));
@@ -323,7 +320,7 @@ struct Printer {
                 P(")");
                 return;
 
-            case Kind::Hole: Lexeme(v); return; // verbatim, children included
+            case Kind::Hole: Lexeme(v); return;
 
             case Kind::Int:
             case Kind::Real:
@@ -397,7 +394,6 @@ struct Printer {
     }
 
     std::string_view OperatorText(ValueId v) const {
-        // `:>` and `+>` lex as one token, so the spelling rides in `Form`.
         if (T.KindOf(v) == Kind::Merge) return T.Get(v).Form == uint8_t(MergeSpelling::Plus) ? "+>" : ":>";
         return TokenText(RowOf(T, v).Tok);
     }

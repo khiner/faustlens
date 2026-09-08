@@ -1,4 +1,4 @@
-// Edit-to-audio latency by phase, reported not asserted: a ratchet measures the machine.
+// Report phase timings without machine-dependent assertions.
 #include "Live.h"
 #include "property/Corpus.h"
 #include "query/Query.h"
@@ -17,7 +17,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// The cheap edit a live editor makes: one character in one literal, touching no import.
 std::string PerturbLast(const std::string &text) {
     std::string out = text;
     for (size_t i = out.size(); i-- > 0;)
@@ -52,7 +51,7 @@ Profile Measure(const std::string &name) {
     REQUIRE(cold.Compiled);
     p.First = cold.Timings;
 
-    // The measurement: every query already answered once, asked again after one edit.
+    // Measure one edit after warming every query.
     s.SetBuffer(path, PerturbLast(source));
     const app::Live::Result warm = live.Reload(s, path);
     REQUIRE(warm.Compiled);
@@ -80,7 +79,7 @@ std::string Line(const app::Live::Timings &t) {
 } // namespace
 
 TEST_CASE("compile preparation latency, broken out by stage") {
-    // `osc` shows a reload's fixed cost next to a program with almost none of its own.
+    // Use osc to expose fixed reload overhead.
     for (const std::string &name : {"zita_rev1", "freeverb", "harpe", "osc"}) {
         const Profile p = Measure(name);
         MESSAGE(

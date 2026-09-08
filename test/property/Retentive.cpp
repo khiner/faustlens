@@ -34,7 +34,7 @@ const char *BadScript(const EditScript &script, const TermRef &target) {
 bool BytesSurvive(std::string_view src, uint32_t begin, uint32_t end, const EditScript &script) {
     bool clobbered = false;
     for (const Replacement &rep : script) {
-        if (rep.Begin >= end) break; // disjoint and in source order
+        if (rep.Begin >= end) break;
         if (rep.End <= begin) continue;
         clobbered = true;
         break;
@@ -51,7 +51,7 @@ bool Survives(const Loaded &l, std::string_view src, const TermRef &d, const Ter
     if (BytesSurvive(src, d.SpanBegin, d.SpanEnd, script)) return true;
     const std::vector<RefId> *twins = l.Ctx->Claims(d.ValueId);
     if (twins == nullptr) return false;
-    for (const RefId r : *twins) { // sorted by `OuterBegin`: refs are pre-order
+    for (const RefId r : *twins) {
         const TermRef &o = l.R.Refs.Refs[r];
         if (o.OuterBegin < target.OuterBegin) continue;
         if (o.OuterBegin > target.OuterEnd) break;
@@ -72,7 +72,7 @@ RefId LostBytes(const Loaded &l, std::string_view src, RefId target, std::span<c
     while (!stack.empty()) {
         const Frame fr = stack.back();
         stack.pop_back();
-        if (fr.Ref == dropped) continue; // removed outright, so nobody owes its bytes
+        if (fr.Ref == dropped) continue;
         if (!fr.OnPath && !Survives(l, src, l.R.Refs.Refs[fr.Ref], t0, script)) return fr.Ref;
         const auto kids = l.R.Refs.Children(fr.Ref);
         for (uint32_t i = 0; i < kids.size(); ++i) stack.push_back({kids[i], fr.Depth + 1, fr.OnPath && fr.Depth < path.size() && i == path[fr.Depth]});

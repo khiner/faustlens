@@ -9,7 +9,6 @@ namespace {
 
 struct ParseError {};
 
-// A recovery scope, each with its own sync set.
 enum class Frame : uint8_t { StmtList, DefList, RecList, RuleList, ArgList };
 
 bool FrameConsumes(Frame f, Tok t) { return f != Frame::ArgList && t == Tok::EndDef; }
@@ -33,7 +32,7 @@ struct Built {
     RefId R = NoRef;
 };
 
-// Refs are built bottom-up, then renumbered once into the pre-order `RefTree` requires.
+// Convert bottom-up parser refs to the RefTree's required preorder.
 struct RefBuilder {
     std::vector<TermRef> Refs;
     std::vector<RefId> Pool;
@@ -64,7 +63,7 @@ struct RefBuilder {
         return out;
     }
 
-    // Explicit stack rather than recursion, so this needs no depth bound.
+    // Use an explicit stack to avoid recursion depth limits.
     void Emit(RefId root, RefTree &out) {
         struct Pending {
             RefId Src;
@@ -89,7 +88,7 @@ struct RefBuilder {
             }
             const uint32_t i = p.Next++;
             out.ChildPool[out.Refs[p.Self].FirstChild + i] = RefId(out.Refs.size());
-            place(Pool[s.FirstChild + i]); // invalidates `p`
+            place(Pool[s.FirstChild + i]);
         }
     }
 };
@@ -105,7 +104,7 @@ struct Parser {
     uint32_t LastEnd = 0;
     uint32_t Depth = 0;
     std::vector<Frame> Frames;
-    // Completed nodes of the innermost item. Whatever is left becomes a hole's children.
+    // Preserve completed children in recovery holes.
     std::vector<Built> Orphans;
     size_t OrphanBase = 0;
 
@@ -185,11 +184,11 @@ struct Parser {
         throw ParseError{};
     }
 
-    // Every nesting construct reaches `ParseExpr`, so counting there bounds recursion.
+    // Count depth at ParseExpr, which every nesting construct enters.
     struct DepthGuard {
         Parser &P;
         explicit DepthGuard(Parser &parser) : P(parser) {
-            // Raised before the increment. A throwing constructor leaves nothing to undo.
+            // Check before incrementing because a throwing constructor cannot restore the counter.
             if (P.Depth >= MaxTermDepth) P.FailWith(Code::SynDepthExceeded);
             ++P.Depth;
         }
@@ -202,7 +201,6 @@ struct Parser {
         for (const Built &b : kids) ids.push_back(b.V);
         const ValueId v = Terms.Make(k, form, variants, payload, ids);
         const RefId r = Refs.Add(v, begin, end, kids);
-        // Children are always the most recently completed nodes, in order.
         assert(orphans.size() >= kids.size());
         Orphans.resize(Orphans.size() - kids.size());
         const Built b{v, r};
@@ -236,7 +234,7 @@ struct Parser {
 
     bool StopsHere(Tok t) const {
         if (t == Tok::Eof) return true;
-        // A frame never consumes an enclosing frame's stop token, keeping holes local.
+        // Preserve enclosing stop tokens to keep recovery holes within their statement.
         for (const Frame f : Frames)
             if (FrameStopsBefore(f, t)) return true;
         return false;
@@ -246,7 +244,7 @@ struct Parser {
         const Frame frame = Frames.back();
         const uint32_t from = Begin();
         uint32_t to = from;
-        int nesting = 0; // a sync token counts only at the entry bracket depth
+        int nesting = 0; // Match synchronization tokens only at the entry bracket depth.
         while (!At(Tok::Eof)) {
             const Tok t = Peek();
             if (nesting == 0) {
@@ -319,7 +317,7 @@ struct Parser {
             case Tok::Declare: {
                 Bump();
                 const StrId name = ExpectLexeme(Tok::Ident);
-                if (At(Tok::Ident)) { // `declare name name "string"`
+                if (At(Tok::Ident)) {
                     const Built key = LeafHere(Kind::Str);
                     const Built value = ExpectLeaf(Tok::String, Kind::Str);
                     Expect(Tok::EndDef);
@@ -337,7 +335,7 @@ struct Parser {
         ParseDefinitionInto(out, begin, variants);
     }
 
-    // Only adjacent same-name clauses merge, never same-name definitions file-wide.
+    // Merge adjacent same-name clauses only.
     void ParseDefinitionInto(std::vector<Built> &out, uint32_t begin, uint16_t variants) {
         StrId name = 0;
         std::vector<Built> clauses{ParseClause(name)};
@@ -353,17 +351,17 @@ struct Parser {
         out.push_back(Node(Kind::Definition, 0, variants, name, clauses, first, end));
     }
 
-    // Restores `LastEnd` too, or a later node takes its span end from a peeked token.
     bool SameNameClauseAhead(StrId name, uint16_t variants) {
         const uint32_t saved_cur = Cur, saved_end = LastEnd;
         const uint16_t v = ParseVariants();
         const bool match = v == variants && At(Tok::Ident) && Terms.Str(name) == Text() && (PeekAhead(1) == Tok::LPar || PeekAhead(1) == Tok::Def);
         Cur = saved_cur;
+        // Restore LastEnd so lookahead cannot extend later spans.
         LastEnd = saved_end;
         return match;
     }
 
-    // `name(params) = body;`. The params are patterns, not identifiers.
+    // Parameters can be patterns.
     Built ParseClause(StrId &name) {
         const uint32_t begin = Begin();
         name = ExpectLexeme(Tok::Ident);
@@ -374,7 +372,6 @@ struct Parser {
             Expect(Tok::RPar);
         }
         Expect(Tok::Def);
-        // The body is the last child, so the parameter count needs no encoding.
         kids.push_back(ParseExpr(0, Level::Expression));
         Expect(Tok::EndDef);
         return Node(Kind::Clause, kids, begin);
@@ -560,7 +557,6 @@ struct Parser {
         ParseRecListInto(kids);
         if (Accept(Tok::Where)) ParseDefListInto(kids, Tok::RBraq);
         Expect(Tok::RBraq);
-        // The rec/`where` split reads back off the child kinds.
         return Node(Kind::LetRec, kids, begin);
     }
 
@@ -577,7 +573,7 @@ struct Parser {
         switch (t) {
             case Tok::Int: return LeafHere(Kind::Int);
             case Tok::Float: return LeafHere(Kind::Real);
-            // Minus binds a literal or identifier only, so a bare `-` is the primitive.
+            // Treat bare minus as a primitive unless followed by a literal or identifier.
             case Tok::Add:
             case Tok::Sub: {
                 const Tok next = PeekAhead(1);
@@ -595,7 +591,7 @@ struct Parser {
                 Bump();
                 Built inner = ParseExpr(0, Level::Expression);
                 Expect(Tok::RPar);
-                // Grouping parens build no value, only a wider ref span.
+                // Preserve grouping in ref spans.
                 Refs.SetOuter(inner.R, begin, LastEnd);
                 return inner;
             }
@@ -665,7 +661,7 @@ struct Parser {
         return Node(Kind::Prim, form, 0, uint32_t(p), {}, b, e);
     }
 
-    // Parameters are binding occurrences, so they are `Str`, not `Ident`.
+    // Store binding parameters as Str.
     Built ParseLambda(uint32_t begin) {
         Bump();
         Expect(Tok::LPar);
@@ -682,7 +678,6 @@ struct Parser {
         return Node(Kind::Lambda, kids, begin);
     }
 
-    // Prefix `[` modulates, infix `[` modifies (`ModifLocalDef`). Position alone splits them.
     Built ParseModulation(uint32_t begin) {
         Bump();
         std::vector<Built> kids;
@@ -821,7 +816,6 @@ struct Parser {
         return Node(Kind::Route, kids, begin);
     }
 
-    // `name("label" (, argument)*)`. Widgets differ only in `args`.
     Built ParseLabeled(uint32_t begin, Kind k, uint8_t form, int args) {
         Bump();
         Expect(Tok::LPar);

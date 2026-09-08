@@ -1,5 +1,4 @@
-// Differential oracle against `tree-sitter-faust`, on acceptance and token boundaries.
-// The two trees differ structurally by design.
+// Compare acceptance and token boundaries against the independent tree-sitter-faust grammar.
 #include "property/Corpus.h"
 #include "syntax/Parser.h"
 
@@ -72,8 +71,7 @@ TEST_CASE("accept/reject parity with tree-sitter-faust") {
 }
 
 TEST_CASE("leaf token boundaries agree with tree-sitter-faust") {
-    // Known differences are only a coarser leaf on one side, never a boundary the other
-    // lacks, so the check is nesting.
+    // Permit nested token boundaries where one parser emits a coarser leaf.
     TSParser *parser = ts_parser_new();
     ts_parser_set_language(parser, tree_sitter_faust());
 
@@ -94,7 +92,7 @@ TEST_CASE("leaf token boundaries agree with tree-sitter-faust") {
         for (const auto &[begin, end] : ts.Leaves) {
             while (i < ours.size() && ours[i].second <= begin) ++i;
             if (i == ours.size()) break;
-            // A leaf touching none of our tokens is a comment, which we lex as trivia.
+            // Unmatched tree-sitter leaves are comments represented as lexer trivia.
             if (end <= ours[i].first) continue;
             const bool nested = (begin >= ours[i].first && end <= ours[i].second) || (begin <= ours[i].first && end >= ours[i].second);
             ++leaves;

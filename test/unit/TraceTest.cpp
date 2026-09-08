@@ -1,5 +1,3 @@
-// Trace-back: click a control, see the bytes that declared it. Through `app::Live`, so
-// attribution must survive the rewrites.
 #include "Trace.h"
 #include "Live.h"
 #include "query/Query.h"
@@ -30,7 +28,7 @@ struct Fixture {
         REQUIRE(Live.Reload(Session, Path).Compiled);
     }
 
-    // A trace landing outside the edited file needs a real path to resolve against.
+    // Use a real path for traces into imported files.
     Fixture(const char *name, const char *lib_name, const std::string &lib_src, const std::string &src)
         : Dir(std::filesystem::temp_directory_path() / name), Lib(Dir / lib_name) {
         std::filesystem::remove_all(Dir);
@@ -71,11 +69,10 @@ TEST_CASE("a control traces back to the bytes that declare it") {
     );
     const app::Trace t = f.Of("gain");
     REQUIRE(t);
-    // The bare label, not the UI tree's path, which prefixes program and groups.
     CHECK(t.Control == "gain");
     CHECK(t.Path == "/s.dsp");
     CHECK(t.Controls == 1);
-    // The whole application, not the label literal: `min`/`max`/`step` declare too.
+    // Trace the whole widget application, including bounds.
     CHECK(f.Text(t) == std::vector<std::string>{"hslider(\"gain\", 0.1, 0, 1, 0.01)"});
 }
 
@@ -88,7 +85,6 @@ TEST_CASE("a bargraph traces back too, and it is the other direction") {
 }
 
 TEST_CASE("one declaration, eight controls, and one line to show for them") {
-    // One source line and eight controls, with no eighth line for a finer key.
     Fixture f("/s.dsp", "process = par(i, 8, _ * hslider(\"g%i\", 0.5, 0, 1, 0.01));\n");
     const app::Trace a = f.Of("g0"), h = f.Of("g7");
     REQUIRE(a);
@@ -101,7 +97,6 @@ TEST_CASE("one declaration, eight controls, and one line to show for them") {
 }
 
 TEST_CASE("a declaration written twice is marked twice") {
-    // One interned value, two occurrences, one control, so this is a link set.
     Fixture f(
         "/s.dsp",
         "process = _ * hslider(\"g\", 0.5, 0, 1, 0.01),\n"
@@ -120,10 +115,8 @@ TEST_CASE("a control declared in a library traces into the library") {
     Fixture f("faustlens_trace_lib", "amp.lib", "amp = _ * hslider(\"drive\", 0.5, 0, 1, 0.01);\n", "import(\"amp.lib\");\nprocess = amp;\n");
     const app::Trace t = f.Of("drive");
     REQUIRE(t);
-    // The canonical path, not the symlinked one macOS hands out for temp dirs.
     CHECK(t.Path == std::filesystem::weakly_canonical(f.Lib).string());
     CHECK(f.Text(t) == std::vector<std::string>{"hslider(\"drive\", 0.5, 0, 1, 0.01)"});
-    // The importing file marks nothing, so a pane can draw the trace in any file.
     const Snapshot both = Publish(f.Session, {f.Path, t.Path});
     CHECK(app::TraceMarks(*both.File(f.Path), t).empty());
 }
@@ -138,7 +131,7 @@ TEST_CASE("interning marks call sites the program never reached, and that is the
     const app::Trace t = f.Of("amt");
     REQUIRE(t);
     CHECK(t.Terms.size() == 1);
-    CHECK(t.Controls == 1); // `two` is not in the program at all
+    CHECK(t.Controls == 1);
     CHECK(f.Text(t).size() == 2);
 }
 
@@ -166,7 +159,6 @@ TEST_CASE("a trace survives the edit that moved the bytes under it") {
 }
 
 TEST_CASE("a control the plan cannot attribute answers with nothing, not with byte zero") {
-    // A label no widget carries is the only way here on a program that compiled.
     Fixture f("/s.dsp", "process = _ * hslider(\"gain\", 0.1, 0, 1, 0.01);\n");
     const Artifact *a = f.Live.Current.get();
     const app::Trace t = app::TraceControl(f.Session, a->Plan, 9999);

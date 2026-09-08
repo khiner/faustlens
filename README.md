@@ -1,22 +1,24 @@
 # FaustLens: a bidirectional editor and compiler for Faust
 
-A from-scratch Faust compiler built around bidirectional editing: a box graph and a text editor showing the same program, either one editable, updating each other as you type, with audio running throughout.
+FaustLens is a from-scratch Faust compiler with synchronized text and diagram editing and live audio.
+Both editors update one source document through shared undo history.
+Structural edits preserve linked source occurrences, including comments and formatting.
 
-Named for the *lens* of bidirectional programming: the text and the diagram are two views of one program, related by a `get` that renders and a `put` that splices edits back into the source.
-Structural edits retain the linked source occurrences, including their comments and formatting, while splicing the changed syntax into the document.
-
-[ARCHITECTURE.md](ARCHITECTURE.md) describes the design.
+[ARCHITECTURE.md](ARCHITECTURE.md) describes the representations, lens contracts, compilation, and runtime.
 
 ## Building
 
 ```sh
-git submodule update --init                       # doctest, tree-sitter, faust
-git -C lib/faust submodule update --init libraries # names the path: --recursive drags in oboe, CLAP, py2max
+git submodule update --init
+git -C lib/faust submodule update --init libraries
 cmake -S . -B build -G Ninja
 ninja -C build
-build/test/faustlens_tests        # unit, conformance and property suites
-build/test/faustlens_acceptance   # differential accept/reject oracle vs tree-sitter-faust
+build/test/faustlens_tests
+build/test/faustlens_widget_tests
+build/test/faustlens_acceptance
 ```
+
+The test binaries cover unit, property, and compiler conformance checks, widget interaction, and parser acceptance against tree-sitter-faust.
 
 ## Editing
 
@@ -24,17 +26,31 @@ Run `build/app/faustlens_gui path/to/program.dsp`.
 Type in the source pane or select a diagram stage to edit it structurally.
 Cmd-Z and Cmd-Shift-Z undo and redo text, diagram edits, and control gestures through one history.
 Cmd-S saves the active file.
-Compilation runs in the background; incomplete edits leave the last good program playing.
-Space expands a selected stage as a read-only preview, and M materializes that expansion into source.
+Compilation runs in the background, and incomplete edits preserve the last good audio.
+Space previews a selected stage's evaluation, and M materializes it into editable source.
 
-## The oracle
+## Reference compiler
 
-`lib/faust` is an oracle: never linked, never ported, used to generate reference outputs and as the definition of correct behaviour.
-Building it and regenerating the five comparison levels:
+The pinned `lib/faust` submodule defines reference behavior and generates comparison outputs.
+FaustLens uses its standard-library sources as data and implements its compiler independently.
+
+Build the reference compiler and regenerate the oracle:
 
 ```sh
 cd lib/faust/build
-cmake -C backends/regular.cmake -DFIR_BACKEND=COMPILER -B faustdir -G Ninja . && ninja -C faustdir faust
-cd ../../.. && test/conformance/regenerate_oracle.sh all
-test/conformance/regenerate_oracle.sh compare   # against the shipped reference set
+cmake -C backends/regular.cmake -DFIR_BACKEND=COMPILER -B faustdir -G Ninja .
+ninja -C faustdir faust
+cd ../../..
+test/conformance/regenerate_oracle.sh all
+test/conformance/regenerate_oracle.sh compare
+```
+
+## Sanitizers
+
+Use a separate build directory and reuse the generated oracle:
+
+```sh
+cmake -S . -B build-san -DFAUSTLENS_SANITIZE=ON -DFAUSTLENS_GUI=OFF
+cmake --build build-san
+FAUSTLENS_ORACLE_DIR="$PWD/build/oracle" build-san/test/faustlens_tests
 ```

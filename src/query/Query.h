@@ -1,5 +1,4 @@
-// Revision-stamped query engine with early cutoff, over the path-addressed layers only:
-// below Term everything is content-addressed.
+// Revision-stamped invalidation for path-addressed queries; interned values use content-keyed memos.
 #pragma once
 
 #include "box/Box.h"
@@ -46,9 +45,7 @@ struct FileEnvResult {
     bool Cycle = false; // set on the re-entrant call that closes an import cycle
 };
 
-// Owns everything a compile reads: terms, boxes, environments, evaluator, VFS.
 struct Session {
-    // One moment of a query's bookkeeping: when its inputs last moved, and what it read.
     struct Entry {
         uint64_t ChangedAt = 0, VerifiedAt = 0;
         std::vector<QueryKey> Deps;
@@ -64,23 +61,22 @@ struct Session {
     Evaluator Eval;
     uint64_t Revision = 1;
     std::string Root;
-    // The last `Process`'s file-level `declare`s from the import closure, plus
-    // the definition-level ones evaluation reached.
+    // Declarations from the last Process import closure and evaluated definitions.
     MetaSet Metadata;
     std::vector<Diagnostic> EvalDiags;
 
     std::map<QueryKey, Entry> Entries;
-    std::vector<QueryKey> Stack; // in-flight, for the cycle detector
+    std::vector<QueryKey> Stack;
     std::map<std::string, TermsResult> TermsResults;
     std::map<std::string, FileEnvResult> EnvResults;
     std::map<QueryKey, std::optional<std::string>> ResolveResults;
 
     Session();
 
-    // Input writes, each bumping the revision.
+    // Increment the revision on input writes.
     void SetBuffer(const std::string &path, std::string text);
     void ClearBuffer(const std::string &path);
-    // The file changed on disk, with no buffer involved to move `ChangedAt`.
+    // Notify a disk change for a file without a buffer.
     void Touch(const std::string &path);
     void AddSearchPath(std::filesystem::path);
 
@@ -88,18 +84,16 @@ struct Session {
     const FileEnvResult &FileEnv(const std::string &path);
     std::optional<std::string> Resolve(const std::string &spec, const std::string &importer);
 
-    // `process` of `path` in propagation normal form, or `Boxes::error()`.
+    // Return normalized process or an Error box.
     BoxId Process(const std::string &path);
-    // Deterministically ordered.
     std::vector<Diagnostic> Diagnostics() const;
 
     uint32_t Recomputes(QueryKind, const std::string &path) const;
 
-    // Every file ever parsed, deliberately wider than the current program's set: a stale
-    // watch costs a recompile, a missing one an unheard edit.
+    // Return every previously parsed file for watching, including files outside the current import closure.
     std::vector<std::string> Parsed() const;
 
-    // Stamp over every `FileEnv`'s `ChangedAt`, so a caller can see if any moved.
+    // Return a stamp covering all FileEnv changes.
     uint64_t FileEnvGeneration() const;
     Entry &EntryFor(const QueryKey &);
     void Record(const QueryKey &dep);

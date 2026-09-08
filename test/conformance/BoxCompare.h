@@ -1,5 +1,4 @@
-// Compares two evaluated diagrams by isomorphism, not bytes: across sessions, ids and
-// slot numbers agree only up to a bijection.
+// Compare evaluated diagrams with a bijection over node and slot ids.
 #pragma once
 
 #include "box/Box.h"
@@ -20,17 +19,16 @@ struct BoxSide {
     const Terms &Terms;
 };
 
-// Unexpected names the first pair of nodes that disagreed.
+// Return the first mismatched node pair on failure.
 std::expected<void, std::string> Isomorphic(const BoxSide &a, BoxId x, const BoxSide &b, BoxId y);
 
-// A shape dump for failure messages, not `faust -e`'s notation.
+// Format graph structure for diagnostics.
 std::string PrintBox(const BoxSide &, BoxId, int max_depth = 6);
 
-// What the reference would emit: `.`, `:` and `/` become `_`, and only a key's first
-// value survives. `author`'s later values spill into `contributor`, which keeps its own.
+// Normalize metadata keys and duplicate values to reference printing conventions.
 std::map<std::string, std::vector<std::string>> DeclareView(const MetaSet &);
 
-// Agreement under that rendering, ignoring keys the reference synthesizes into every document.
+// Compare normalized metadata excluding reference-generated keys.
 std::expected<void, std::string> SameDeclares(const MetaSet &ours, const MetaSet &theirs);
 
 inline std::string FirstError(const Session &s) {

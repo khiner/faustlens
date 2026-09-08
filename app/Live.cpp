@@ -10,7 +10,6 @@ double Live::SampleRate() const { return Host.Running ? Host.SampleRate : Curren
 
 namespace {
 
-// Milliseconds since `at`, which is advanced to now.
 double Since(std::chrono::steady_clock::time_point &at) {
     const auto now = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(now - at).count();
@@ -21,7 +20,7 @@ double Since(std::chrono::steady_clock::time_point &at) {
 std::expected<std::unique_ptr<Artifact>, std::string> Compile(Session &s, const std::string &path, Live::Timings &t) {
     auto a = std::make_unique<Artifact>();
     auto at = std::chrono::steady_clock::now();
-    // Asked separately so the profile can tell them apart, both memoized.
+    // Time the memoized queries separately.
     s.TermsOf(path);
     t.Parse = Since(at);
     s.Process(path);
@@ -35,7 +34,7 @@ std::expected<std::unique_ptr<Artifact>, std::string> Compile(Session &s, const 
     t.Lower = Since(at);
 
     a->Ui = g.Ui(RootLabel(s.Metadata));
-    // A path must name one control, and a duplicate is a diagnostic, not a stop.
+    // Report duplicate control paths without stopping compilation.
     a->Diags = CheckPaths(a->Ui);
     a->Hash = Hash(a->Plan);
 
@@ -118,7 +117,7 @@ Live::Result Live::Accept(Prepared &prepared, const controls::Values &controls) 
     }
     if (r.Unchanged || !prepared.Next) return r;
     auto &next = prepared.Next;
-    // Controls may have moved while the worker initialized the instance.
+    // Apply control changes made during compilation.
     controls::Apply(controls, next->Plan, next->Ui, *next->Dsp);
     if (Host.Running) {
         if (!Host.Swap(*next->Dsp, Current ? Current->Dsp.get() : nullptr, prepared.Transfer)) {

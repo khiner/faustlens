@@ -43,8 +43,7 @@ std::optional<Num> ApplyPrim(Prim p, std::span<const Num> a) {
         case Prim::Add: return Join(a[0], a[1], [](int32_t x, int32_t y) { return x + y; }, [](double x, double y) { return x + y; });
         case Prim::Sub: return Join(a[0], a[1], [](int32_t x, int32_t y) { return x - y; }, [](double x, double y) { return x - y; });
         case Prim::Mul: return Join(a[0], a[1], [](int32_t x, int32_t y) { return x * y; }, [](double x, double y) { return x * y; });
-        // "Division always yields a float" is a *type* rule, not a folding rule: an exact
-        // division keeps its integer here, or `hadamard(n/2)` never reaches its base case.
+        // Keep exact integer quotients during Box folding so recursive integer patterns can match.
         case Prim::Div: {
             if (a[1].AsDouble() == 0) return std::nullopt;
             if (!a[0].IsInt || !a[1].IsInt) return Num::Real(a[0].AsDouble() / a[1].AsDouble());
@@ -92,13 +91,13 @@ std::optional<Num> ApplyPrim(Prim p, std::span<const Num> a) {
                 [](double x, double y) { return std::remainder(x, y); }
             );
 
-        // Rounding folds to a *double* whatever it was given, unlike `abs`.
+        // Rounding primitives fold to double.
         case Prim::Floor: return Num::Real(std::floor(a[0].AsDouble()));
         case Prim::Ceil: return Num::Real(std::ceil(a[0].AsDouble()));
         case Prim::Rint: return Num::Real(std::rint(a[0].AsDouble()));
         case Prim::Round: return Num::Real(std::round(a[0].AsDouble()));
 
-        // Not functions of their arguments alone. `@0` is the one exception, read as the identity.
+        // Stateful primitives cannot fold except for identity delay @0.
         case Prim::FDelay:
             if (a[1].IsInt && a[1].I == 0) return a[0];
             return std::nullopt;
@@ -161,7 +160,6 @@ std::optional<std::vector<Num>> FoldOutputs(const Boxes &b, BoxId id, std::span<
             return a;
         }
         case BoxKind::Split: {
-            // Replicates modulo the input count.
             const auto a = FoldOutputs(b, kids[0], inputs);
             if (!a) return std::nullopt;
             std::vector<Num> fan;
@@ -171,7 +169,7 @@ std::optional<std::vector<Num>> FoldOutputs(const Boxes &b, BoxId id, std::span<
             return FoldOutputs(b, kids[1], fan);
         }
         case BoxKind::Merge: {
-            // Output bus `k` is the sum of inputs `k`, `k + n`, `k + 2n`, ...
+            // Output k sums inputs k, k+n, k+2n, ...
             const auto a = FoldOutputs(b, kids[0], inputs);
             if (!a) return std::nullopt;
             const auto n = size_t(b.ArityOf(kids[1]).Ins);
@@ -184,7 +182,7 @@ std::optional<std::vector<Num>> FoldOutputs(const Boxes &b, BoxId id, std::span<
             return FoldOutputs(b, kids[1], summed);
         }
         case BoxKind::Route: {
-            // 1-based. Out-of-range entries drop, shared destinations sum, unconnected reads 0.
+            // Route entries are 1-based; ignore invalid pairs, sum shared destinations, and zero unconnected outputs.
             const RouteTable &r = b.RouteAt(b.Get(id).Aux - 1);
             std::vector<Num> outs(size_t(r.Outs), Num::Int(0));
             for (size_t k = 0; k + 1 < r.Pairs.size(); k += 2) {

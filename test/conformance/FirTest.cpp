@@ -1,4 +1,3 @@
-// The `.fir` reader: every file parses, blocks close, and the vocabularies are pinned.
 #include "conformance/FirParse.h"
 #include "conformance/Sweep.h"
 
@@ -31,7 +30,7 @@ void WalkStmts(std::span<const FirStmt> v, const std::function<void(const FirStm
     }
 }
 
-// Drops the subcontainer label so the twenty-five `Sub container "mydspSIG<n>"` markers pin as one.
+// Normalize numbered subcontainer labels for vocabulary checks.
 std::string SectionKey(const std::string &n) {
     const size_t q = n.find('"');
     return q == std::string::npos ? n : n.substr(0, q) + "…";
@@ -67,13 +66,13 @@ TEST_CASE("the `.fir` reader is total over the reference corpus") {
         for (const FirSection &s : f->Sections) {
             sections.insert(SectionKey(s.Name));
             notes += s.Notes.size();
-            // `COMPILER STATISTICS` is instrumentation, not FIR, so its lines go unpinned.
+            // Exclude compiler statistics from the FIR vocabulary.
             if (s.Name != "COMPILER STATISTICS")
                 for (const std::string &t : s.Notes) note_shapes.insert(NoteShape(t));
             WalkStmts(s.Stmts, [&](const FirStmt &st) {
                 ++stmts;
                 instructions.insert(st.Term.Name);
-                // Wider than the statement heads: `Address`, `Int32` and the rest only nest.
+                // Include nested expression kinds in the vocabulary.
                 WalkTerm(st.Term, [&](const FirTerm &t) {
                     if (t.Kind == FirTerm::Kind::Call && !t.Name.empty()) callables.insert(t.Name);
                 });
@@ -108,7 +107,7 @@ TEST_CASE("the `.fir` reader is total over the reference corpus") {
         "OpenVerticalBox",
         "RetInst",
         "StoreVarInst",
-        // `Real(*)` is a binop class name in the `Instructions complexity` note, not a callable.
+        // Exclude the Real(*) statistics label from callable names.
         "&",
         "->",
         "Address",
@@ -128,9 +127,8 @@ TEST_CASE("the `.fir` reader is total over the reference corpus") {
     };
     PinVocabulary("callable", callables, known_callables);
 
-    // Not a subset of the callables: the three bracketing keywords and `CloseboxInst` print bare.
+    // Include bare block keywords and CloseboxInst.
     const std::set<std::string> known_statements = {
-        // A `ForLoopInst`'s or `IfInst`'s condition is a statement in this tree.
         "BinopInst",
         "LoadVarInst",
         "AddButtonInst",
@@ -158,8 +156,7 @@ TEST_CASE("the `.fir` reader is total over the reference corpus") {
     };
     PinVocabulary("statement", instructions, known_statements);
 
-    // Only `Init` is the init band: `ResetUI`/`Clear` are lifecycle, `Flatten FIR` repeats
-    // the whole program.
+    // Compare Init separately from lifecycle sections and repeated Flatten FIR output.
     const std::set<std::string> known_sections = {
         "Allocate",
         "Clear",
@@ -186,9 +183,8 @@ TEST_CASE("the `.fir` reader is total over the reference corpus") {
     };
     PinVocabulary("section", sections, known_sections);
 
-    // Secondary oracles on state layout, pinned even though nothing reads them.
     const std::set<std::string> known_notes = {
-        "=…=", // `========== Declaration part ==========`, inside `Flatten FIR`
+        "=…=",
         "Field", "Heap size int", "Heap size int*", "Heap size real", "Instructions complexity", "Stack size in compute", "Total heap size",
     };
     PinVocabulary("note", note_shapes, known_notes);
@@ -209,7 +205,7 @@ TEST_CASE("the `.fir` DSP struct reads as fields with shapes") {
 
         bool found = false, static_struct = false;
         for (const FirSection &s : f->Sections) {
-            // A `StaticStruct` declaration is a read-only table kept outside the DSP struct.
+            // StaticStruct tables are stored outside the DSP struct.
             if (s.Name == "Global declarations")
                 WalkStmts(s.Stmts, [&](const FirStmt &st) {
                     for (const FirTerm &a : st.Term.Args)
@@ -221,7 +217,6 @@ TEST_CASE("the `.fir` DSP struct reads as fields with shapes") {
                 const FirTerm &ty = st.Term.Args[0];
                 if (ty.Name != "StructType" || ty.Args.empty()) continue;
                 found = true;
-                // First argument is the struct's name, the rest `("type", field)` pairs.
                 for (size_t i = 1; i < ty.Args.size(); ++i) {
                     const FirTerm &pair = ty.Args[i];
                     if (pair.Kind != FirTerm::Kind::Call || pair.Args.size() != 2) {
@@ -229,7 +224,7 @@ TEST_CASE("the `.fir` DSP struct reads as fields with shapes") {
                         continue;
                     }
                     ++fields;
-                    // The extent rides on the type: `("double[1024]", ftbl0)`.
+                    // Read array extent from the field type.
                     const std::string &decl = pair.Args[0].Name;
                     const size_t br = decl.find('[');
                     types.insert(decl.substr(0, br));
@@ -256,7 +251,6 @@ TEST_CASE("the `.fir` DSP struct reads as fields with shapes") {
 
     CHECK(failures.empty());
     CHECK(files == 94);
-    // State migration pairs fields on shape, so this is the whole vocabulary a state allocator
-    // produces.
+    // Check the complete state-allocation vocabulary used by migration.
     CHECK(types == std::set<std::string>{"FAUSTFLOAT", "Soundfile*", "double", "int"});
 }

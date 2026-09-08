@@ -27,11 +27,10 @@ std::vector<Variability> InferVariability(const Signals &s) {
             switch (s.KindOf(id)) {
                 case SigKind::Int:
                 case SigKind::Real: now = Variability::Konst; break;
-                // Not constant: one element per sample.
                 case SigKind::Waveform: now = Variability::Samp; break;
                 case SigKind::Input: now = Variability::Samp; break;
 
-                // Sample rate whatever the source, and the delay index is not joined in.
+                // Delays force sample rate independently of the index expression.
                 case SigKind::Delay1:
                 case SigKind::Delay:
                 case SigKind::Prefix: now = Variability::Samp; break;
@@ -57,7 +56,7 @@ std::vector<Variability> InferVariability(const Signals &s) {
                 case SigKind::VSlider:
                 case SigKind::HSlider:
                 case SigKind::NumEntry: now = Variability::Block; break;
-                // Forwards what it meters (third child), at block rate or faster.
+                // Meter the third child at block rate or faster.
                 case SigKind::VBargraph:
                 case SigKind::HBargraph: now = Join(kid(id, 2), Variability::Block); break;
 
@@ -66,7 +65,7 @@ std::vector<Variability> InferVariability(const Signals &s) {
                 case SigKind::SoundfileRate: now = Join(kid(id, 1), Variability::Block); break;
                 case SigKind::SoundfileBuffer: now = Variability::Samp; break;
 
-                // A nullary `ffunction` is sample rate by assumption, modelled on `rand()`.
+                // Assume nullary foreign functions vary per sample, as rand does.
                 case SigKind::FFun: now = n.ChildCount == 0 ? Variability::Samp : all(id); break;
                 case SigKind::FConst: now = Variability::Konst; break;
                 case SigKind::FVar: now = Variability::Block; break;
@@ -76,9 +75,8 @@ std::vector<Variability> InferVariability(const Signals &s) {
 
                 case SigKind::Extended: {
                     switch (Ext(n.Form)) {
-                        // Moves only the interval, so it takes its third child.
                         case Ext::AssertBounds: now = kid(id, 2); break;
-                        // A bound is a compile-time number however the argument varies.
+                        // Bounds are compile-time constants.
                         case Ext::Lowest:
                         case Ext::Highest: now = Variability::Konst; break;
                         default: now = all(id); break;
@@ -86,7 +84,7 @@ std::vector<Variability> InferVariability(const Signals &s) {
                     break;
                 }
 
-                // Poison: the top cannot make a downstream band wrong.
+                // Use sample rate for error nodes to preserve downstream scheduling.
                 case SigKind::Error: now = Variability::Samp; break;
                 default: break;
             }
@@ -106,7 +104,7 @@ const Interval Zero{0, 0};
 
 double Infinity() { return std::numeric_limits<double>::infinity(); }
 
-// The shifts and bitwise operators are `intCast`-wrapped, so they saturate where `+` and `*` do not.
+// Match the saturating intCast around shifts and bitwise operators.
 Interval Arithmetic(BinOpCode b, const Interval &x, const Interval &y) {
     switch (b) {
         case BinOpCode::Add: return ivl::Add(x, y);
@@ -130,7 +128,7 @@ Interval Arithmetic(BinOpCode b, const Interval &x, const Interval &y) {
     }
 }
 
-// Indexed by `Ext`, nullptr where `ExtInterval`'s switch handles the operation.
+// Index by Ext; handle null entries in ExtInterval.
 constexpr Interval (*Unary[])(const Interval &) = {
     ivl::Abs,           ivl::Acos,
     ivl::Acosh,         ivl::Asin,
@@ -160,7 +158,7 @@ Interval ExtInterval(Ext e, const Signals &s, SigId id, std::span<const Interval
         case Ext::Min: return ivl::Min(k(0), k(1));
         case Ext::Pow: return ivl::Pow(k(0), k(1));
 
-        // The bound children are point intervals, hence `lo()` for both.
+        // Both bounds are point intervals.
         case Ext::AssertBounds: {
             const double lo = k(0).Lo, hi = k(1).Lo;
             const Interval cur = k(2);
@@ -178,7 +176,7 @@ Interval ExtInterval(Ext e, const Signals &s, SigId id, std::span<const Interval
 std::vector<Interval> InferIntervals(const Signals &s) {
     std::vector<Interval> iv(s.Size(), Top);
 
-    // Climb state per branch, keyed by group id. Group ids precede their branches, so one pass suffices.
+    // Track interval widening per recursive branch.
     std::vector<std::vector<Interval>> assumed(s.Size());
     std::vector<SigId> groups;
     for (SigId id = 0; id < s.Size(); ++id) {
@@ -211,7 +209,7 @@ std::vector<Interval> InferIntervals(const Signals &s) {
                 case SigKind::FVar:
                 case SigKind::FFun: now = Top; break;
 
-                // Zero for the samples before the line has filled. The delay amount is not read.
+                // Include initial zero history independently of delay amount.
                 case SigKind::Delay1:
                 case SigKind::Delay: now = Reunion(k(0), Zero); break;
                 case SigKind::Prefix: now = Reunion(k(0), k(1)); break;
@@ -219,10 +217,10 @@ std::vector<Interval> InferIntervals(const Signals &s) {
                 case SigKind::BinOp: now = Arithmetic(BinOpCode(n.Form), k(0), k(1)); break;
                 case SigKind::IntCast: now = ivl::IntCast(k(0)); break;
                 case SigKind::FloatCast: now = ivl::FloatCast(k(0)); break;
-                // `bitCast` moves the nature only, unlike the `intCast` next to it.
+                // Change nature only for bitCast.
                 case SigKind::BitCast: now = k(0); break;
 
-                // The selector is not joined in: only a branch can be the value.
+                // Merge branch intervals independently of the selector.
                 case SigKind::Select2: now = Reunion(k(1), k(2)); break;
                 case SigKind::Select3: now = Reunion(Reunion(k(1), k(2)), k(3)); break;
 
@@ -236,11 +234,10 @@ std::vector<Interval> InferIntervals(const Signals &s) {
 
                 case SigKind::Button:
                 case SigKind::Checkbox: now = {0, 1, 0}; break;
-                // Children are `{init, min, max, step}`.
                 case SigKind::VSlider:
                 case SigKind::HSlider:
                 case SigKind::NumEntry: now = ivl::Slider(k(1), k(2), k(3)); break;
-                // Its own bounds are a display range and do not clamp.
+                // Bargraph bounds specify display range only.
                 case SigKind::VBargraph:
                 case SigKind::HBargraph: now = k(2); break;
 
@@ -251,13 +248,13 @@ std::vector<Interval> InferIntervals(const Signals &s) {
 
                 case SigKind::Extended: now = ExtInterval(Ext(n.Form), s, id, iv); break;
 
-                // The assumed value, not the branch.
+                // Use the assumed value's interval.
                 case SigKind::Proj: {
                     const SigId g = s.Child(id, 0);
                     if (n.Payload < assumed[g].size()) now = assumed[g][n.Payload];
                     break;
                 }
-                case SigKind::Rec: continue; // a tuplet, merged after the pass
+                case SigKind::Rec: continue;
                 case SigKind::Error: now = Top; break;
                 default: break;
             }
@@ -270,7 +267,7 @@ std::vector<Interval> InferIntervals(const Signals &s) {
             iv[g] = merged;
         }
 
-        // The widening limit is 0, so the first move on a side goes straight to infinity.
+        // Widen each changing bound directly to infinity.
         settled = true;
         for (const SigId g : groups) {
             for (uint32_t j = 0; j < s.Get(g).ChildCount; ++j) {
@@ -280,7 +277,7 @@ std::vector<Interval> InferIntervals(const Signals &s) {
                 if (merged.Lo != was.Lo) lo = -Infinity();
                 if (merged.Hi != was.Hi) hi = Infinity();
                 const Interval next{lo, hi, merged.Lsb};
-                // Bounds only: the resolution never converges.
+                // Converge bounds only; resolution may diverge.
                 if (!(next == was)) settled = false;
                 assumed[g][j] = next;
             }

@@ -45,8 +45,7 @@ std::optional<Resolved> Vfs::Resolve(std::string_view spec, std::string_view imp
 
     if (auto r = buffered(s)) return r;
 
-    // The importing file's own directory, per import and not accumulated. The reference
-    // accumulates dirnames globally, which is order-dependent. Same result on the corpus.
+    // Resolve relative to each importer independently of earlier imports.
     if (!importing_file.empty()) {
         const auto dir = std::filesystem::path(importing_file).parent_path();
         if (!dir.empty()) {

@@ -8,7 +8,6 @@
 namespace faustlens::app {
 namespace {
 
-// Walking outward from the caret is what makes a widget's arguments reachable.
 RefId TextRef(const Terms &terms, const FileView &f, const boxview::Selection &sel) {
     for (const RefId r : f.Refs.Chain(sel.Caret)) {
         const Kind k = terms.KindOf(f.Refs.Refs[r].ValueId);
@@ -60,7 +59,6 @@ Edit EditFor(Terms &terms, const FileView &f, const boxview::Selection &sel, Key
 std::string ComposeExample(Terms &terms, Key key) {
     const Composition c = CompositionFor(key);
     if (c.Kind == Kind::Count_) return {};
-    // A stand-in for the selection, and the `_` a bare key press supplies.
     const ValueId a = terms.MakeLeaf(Kind::Ident, terms.InternStr("a"));
     const ValueId wire = terms.MakePrim(Prim::Wire);
     return PrintTerm(terms, terms.Make(c.Kind, c.Form, 0, 0, {a, wire}));
@@ -81,7 +79,6 @@ Edit RewireDrag(Terms &terms, const FileView &f, const boxview::Selection &route
     const RefId at = boxview::SelectedRef(f, route);
     if (at == NoRef) return {NoRef, NoTerm, "that is not a node this file wrote"};
     EditContext ctx(terms, f.Refs);
-    // Read off the term rather than off what the drag looked like.
     const Wiring w = RouteWiring(terms, f.Refs.Refs[at].ValueId);
     const bool wired = std::ranges::contains(w.Pairs, std::pair{in, out});
     return wired ? ctx.Disconnect(at, in, out) : ctx.Connect(at, in, out);

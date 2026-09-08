@@ -1,4 +1,3 @@
-// Widget metadata and the position-to-value curves of the reference's `gui/ValueConverter.h`.
 #include "controls/Style.h"
 
 #include "doctest.h"
@@ -41,7 +40,6 @@ TEST_CASE("`[hidden]` hides, and only an explicit zero does not") {
     CHECK_FALSE(StyleOf(n).Hidden);
     n.Meta["hidden"] = {"1"};
     CHECK(StyleOf(n).Hidden);
-    // `[hidden]` with no value extracts as the empty string, and still hides.
     n.Meta["hidden"] = {""};
     CHECK(StyleOf(n).Hidden);
     n.Meta["hidden"] = {"0"};
@@ -63,7 +61,7 @@ TEST_CASE("the position-to-value curve is the reference's") {
         CHECK(ToValue(n, Scale::Log, 1.0) == doctest::Approx(20000));
     }
     SUBCASE("a log range starting at zero is floored, not undefined") {
-        // The reference floors both endpoints at `DBL_EPSILON` rather than rejecting.
+        // Match the reference DBL_EPSILON floor for logarithmic endpoints.
         const UiNode n = Slider(0, 20000);
         CHECK(std::isfinite(ToValue(n, Scale::Log, 0.0)));
         CHECK(ToValue(n, Scale::Log, 0.0) == doctest::Approx(DBL_EPSILON));
@@ -80,7 +78,7 @@ TEST_CASE("the position-to-value curve is the reference's") {
             const UiNode n = Slider(1, 100);
             for (const double t : {0.0, 0.25, 0.5, 0.75, 1.0}) {
                 CHECK(ToPosition(n, s, ToValue(n, s, t)) == doctest::Approx(t));
-                // A logarithm round trip misses by an ulp. `Quantize` is exact.
+                // Allow one ulp for the logarithmic round trip.
                 CHECK(ToValue(n, s, t) >= doctest::Approx(1.0));
                 CHECK(ToValue(n, s, t) <= doctest::Approx(100.0));
                 CHECK(Quantize(n, ToValue(n, s, t)) >= 1.0);
@@ -96,7 +94,6 @@ TEST_CASE("`min`, `max` and `step` are a contract the host enforces, not one the
     const UiNode n = Slider(0, 10, 0.25);
     CHECK(Quantize(n, 3.3) == doctest::Approx(3.25));
     CHECK(Quantize(n, 3.4) == doctest::Approx(3.5));
-    // The DSP does not re-check the range, so this is the only place it holds.
     CHECK(Quantize(n, -5) == doctest::Approx(0));
     CHECK(Quantize(n, 500) == doctest::Approx(10));
     CHECK(Quantize(Slider(0, 1), 0.123456) == doctest::Approx(0.123456));
@@ -107,7 +104,6 @@ TEST_CASE("the displayed value takes its precision from the step") {
     CHECK(Format(Slider(0, 1000, 1), s, 440) == "440");
     CHECK(Format(Slider(0, 1, 0.01), s, 0.5) == "0.50");
     CHECK(Format(Slider(0, 1, 0.001), s, 0.5) == "0.500");
-    // No step declared: three places.
     CHECK(Format(Slider(0, 1), s, 0.5) == "0.500");
     s.Unit = "Hz";
     CHECK(Format(Slider(0, 1000, 1), s, 440) == "440 Hz");

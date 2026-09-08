@@ -14,7 +14,6 @@ namespace {
 bool IsIdentStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 bool IsIdent(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
-// One line's expression grammar: `Name`, `Str`, `Num` or a bracketed `Call`.
 struct TermParser {
     std::string_view S;
     std::string &Why;
@@ -41,7 +40,7 @@ struct TermParser {
         if (!Primary(out)) return false;
         while (true) {
             Space();
-            // The one member access, kept as a call so the vocabulary pin sees it.
+            // Represent member access as a call for vocabulary checks.
             if (I + 1 < S.size() && S[I] == '-' && S[I + 1] == '>') {
                 I += 2;
                 FirTerm base = std::move(out);
@@ -60,7 +59,7 @@ struct TermParser {
             ++I;
             FirTerm idx;
             Space();
-            if (At(']')) { // `fRec0[]`, an array of unstated size
+            if (At(']')) {
                 ++I;
                 out.Index.push_back(FirTerm{});
                 continue;
@@ -79,12 +78,11 @@ struct TermParser {
         if (I >= S.size()) return Fail("expected a term");
         const char c = S[I];
         if (c == '"') return Str(out);
-        if (c == '(' || c == '{') { // an unnamed group: a `StructType` field
+        if (c == '(' || c == '{') {
             out.Kind = FirTerm::Kind::Call;
             out.Bracket = c;
             return Args(out);
         }
-        // `AddSoundfile(..., &fSoundfile0)` is the one address-of.
         if (c == '&') {
             ++I;
             out.Kind = FirTerm::Kind::Call;
@@ -135,7 +133,7 @@ struct TermParser {
             while (I < S.size() && IsIdent(S[I])) ++I;
         }
         out.Name = std::string(S.substr(start, I - start));
-        // No `Space()`, so a bare `BlockInst` cannot swallow the next line.
+        // Keep bare BlockInst parsing within its line.
         if (I < S.size() && (S[I] == '(' || S[I] == '{' || S[I] == '<')) {
             out.Kind = FirTerm::Kind::Call;
             out.Bracket = S[I];
@@ -175,7 +173,6 @@ struct TermParser {
     }
 };
 
-// `======= NAME ==========`, in both widths the printer uses.
 bool Marker(const std::string &line, std::string &name) {
     if (line.size() < 3 || line[0] != '=') return false;
     size_t a = 0;
@@ -217,7 +214,7 @@ std::expected<FirFile, std::string> ParseFir(std::string_view text) {
     });
 
     out.Sections.clear();
-    out.Sections.push_back(FirSection{"", {}, {}}); // anything before the first marker
+    out.Sections.push_back(FirSection{"", {}, {}});
 
     struct Frame {
         std::vector<FirStmt> *Into;
@@ -233,12 +230,12 @@ std::expected<FirFile, std::string> ParseFir(std::string_view text) {
 
         std::string marker;
         if (Marker(body, marker)) {
-            // Inside an open block a marker is a sub-heading, not a section.
+            // Treat markers inside open blocks as subheadings.
             if (stack.size() > 1) {
                 out.Sections.back().Notes.push_back(body);
                 continue;
             }
-            if (Ends(marker, " end")) continue; // the section it closes is already recorded
+            if (Ends(marker, " end")) continue;
             std::string name = marker;
             if (Ends(name, " begin")) name.resize(name.size() - 6);
             if (name.starts_with("Container ") && out.Container.empty()) {
@@ -251,7 +248,7 @@ std::expected<FirFile, std::string> ParseFir(std::string_view text) {
             continue;
         }
 
-        // A closer has to match: unwinding to the wrong keyword reparents everything under it.
+        // Require matching block closers to preserve nesting.
         if (body == "EndBlockInst" || body == "EndForLoopInst" || body == "EndIfInst" || body == "EndDeclare") {
             if (stack.size() > 1 && body == stack.back().Closer) {
                 stack.pop_back();
@@ -291,7 +288,6 @@ std::expected<FirFile, std::string> ParseFir(std::string_view text) {
     }
 
     if (stack.size() > 1) return std::unexpected("unterminated `" + stack.back().Closer + "` at end of file");
-    // The leading section only catches a file not starting with a marker.
     if (!out.Sections.empty() && out.Sections.front().Name.empty() && out.Sections.front().Stmts.empty() && out.Sections.front().Notes.empty())
         out.Sections.erase(out.Sections.begin());
     return out;

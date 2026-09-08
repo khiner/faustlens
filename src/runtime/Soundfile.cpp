@@ -7,7 +7,7 @@ namespace faustlens {
 std::unique_ptr<Soundfile> LoadSoundfile(const SoundfileDesc &d, SoundfileReader *reader, uint32_t &unresolved) {
     unresolved = 0;
 
-    // Decode first: the widest part decides how many buffers to allocate.
+    // Decode before allocating buffers to determine the widest channel count.
     struct Part {
         std::vector<std::vector<double>> Channels;
         int32_t Length = Soundfile::EmptyFrames, Rate = Soundfile::EmptyRate;

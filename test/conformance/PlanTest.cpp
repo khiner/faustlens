@@ -1,4 +1,3 @@
-// Plan over the corpus: totality, well-formedness, and `.fir` band parity.
 #include "signal/Plan.h"
 #include "conformance/FirParse.h"
 #include "conformance/Sweep.h"
@@ -107,7 +106,7 @@ struct Check {
 
     void Run(const Plan &p) {
         Defined.assign(p.Regs, 0);
-        // One register file across all bands, so band order is definition order.
+        // Check register definitions in band execution order.
         for (const Band b : AllBands) Walk(p, b);
 
         std::vector<uint8_t> touched(p.Fields.size(), 0);
@@ -120,7 +119,7 @@ struct Check {
                     touched[i.Imm] = 1;
                 if (op == Op::Output) ++outs;
             }
-        // A widget field is the interface, so it may exist unread.
+        // Permit unread fields exposed through the UI.
         for (size_t f = 0; f < touched.size(); ++f)
             if (!touched[f] && p.Fields[f].Kind != FieldKind::Widget && p.Fields[f].Kind != FieldKind::Soundfile) Say("a field nothing reads or writes");
         if (outs != p.Outputs) Say("one output per channel is not what was emitted");
@@ -141,7 +140,7 @@ TEST_CASE("Plan hashing separates programs that differ only in an instruction's 
         REQUIRE(plan);
         return Hash(*plan);
     };
-    // `+` and `-` differ only in `Instr::form`, and lower to identically shaped bands.
+    // Isolate Instr::form changes with identically structured bands.
     CHECK(hash("process = _ + _;") != hash("process = _ - _;"));
     CHECK(hash("process = _ < _;") != hash("process = _ > _;"));
 }
@@ -185,7 +184,7 @@ TEST_CASE("Plan: total over the corpus, and well formed") {
                 ++planned_lines;
             }
         }
-        // Emission takes only the projections something reads, so only a surplus disagrees.
+        // Permit fewer allocated projections when outputs are unused.
         if (const auto maxd = MaxDelays(sigs, InferIntervals(sigs), outs)) {
             const std::vector<DelayLine> lines = DelayLines(sigs, *maxd, InferNatures(sigs), outs);
             std::map<std::pair<SigId, uint32_t>, int> theirs;
@@ -233,18 +232,15 @@ TEST_CASE("Plan: total over the corpus, and well formed") {
     );
     census.Report();
 
-    // Reference Faust accepts all 94, so nothing here may be rejected.
     CHECK(lowered == 94);
     CHECK(clean == 94);
     CHECK(surplus == 0);
 }
 
-// Operators and math functions only. `Load`/`Store`/`Declare` just name reference temporaries.
+// Compare operators and math functions, excluding reference temporaries.
 namespace {
 
-// The reference's spelling in ours: `max_`/`min_`/`max_i`/`min_i` lose their suffix,
-// `fabs` is `abs`, `<container>_faustpower<N>_<f|i>` is `pow`, a sub container's
-// lifecycle calls plumbing.
+// Normalize reference operator spellings and omit subcontainer lifecycle calls.
 std::string TheirOp(const std::string &name, const std::string &container) {
     if (name.starts_with(std::format("{}_faustpower", container))) return "pow";
     for (const char *verb : {"new", "delete", "instanceInit", "fill"})
@@ -258,7 +254,7 @@ std::string TheirOp(const std::string &name, const std::string &container) {
 
 using Ops = std::map<std::string, int>;
 
-// Loop counters are skipped: the outer is the frame loop, the one nested loop a shift array.
+// Exclude frame-loop and shift-array counters.
 void TheirSection(std::span<const FirStmt> stmts, const std::string &container, Ops &out, std::set<std::string> &dropped) {
     const std::function<void(const FirTerm &)> term = [&](const FirTerm &t) {
         if (t.Kind == FirTerm::Kind::Call) {
@@ -295,7 +291,7 @@ struct Bands {
 
 Bands Theirs(const FirFile &f, std::set<std::string> &dropped) {
     Bands out;
-    // Sub containers have no end marker, so track where they stop.
+    // Track subcontainer boundaries because the dump omits end markers.
     bool sub = false;
     for (const FirSection &s : f.Sections) {
         if (s.Name == "Sub container") {
@@ -315,7 +311,7 @@ Bands Theirs(const FirFile &f, std::set<std::string> &dropped) {
 }
 
 Bands Ours(const Plan &p) {
-    // Which registers hold minus one, so a multiply by it reads as a negation.
+    // Identify multiplication by -1 as negation.
     std::vector<uint8_t> minus_one(p.Regs, 0);
     for (const std::vector<Instr> &code : p.Bands)
         for (const Instr &i : code) {
@@ -356,7 +352,7 @@ Bands Ours(const Plan &p) {
             } else if (op == Op::Select2 || op == Op::Select3) {
                 ++into["select"];
             } else if (op == Op::SoundfileRead) {
-                // The reference materializes the part offset per read, one `+` per channel.
+                // Count the reference's per-channel soundfile offset addition.
                 ++into["+"];
             } else if (op == Op::FFun) {
                 ++into[p.Foreign[i.Imm].Name];
@@ -384,7 +380,7 @@ bool FirstDifference(const Ops &mine, const Ops &theirs, std::string &op, int &x
 
 } // namespace
 
-// `*` marks a program on `AssociationOrder`, whose graph is not the reference's anyway.
+// Mark association-order differences with *.
 TEST_CASE("`.fir` band projection: which band each computation landed in") {
     static const char *const BandName[] = {"init", "control", "sample"};
     int agreed = 0, differed = 0, deferred = 0;
@@ -445,7 +441,6 @@ TEST_CASE("`.fir` band projection: which band each computation landed in") {
 
     CHECK(agreed + differed == 94);
 
-    // A ratchet. Fourteen of the eighteen differing are on the association-order list, the
-    // rest `harpe`, `phasor`, `norm1` and `math_simp`.
+    // Preserve the recorded differences, including harpe, phasor, norm1, and math_simp.
     CHECK(agreed >= 76);
 }

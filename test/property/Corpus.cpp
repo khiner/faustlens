@@ -23,8 +23,7 @@ std::vector<CorpusFile> Collect(const fs::path &root, std::string_view extension
     return out;
 }
 
-// Twenty-one use multirate syntax reference Faust has no grammar for. The other, `error24.dsp`,
-// is `process = :`.
+// Exclude unsupported multirate syntax and error24.dsp, whose process body is a bare colon.
 const std::set<std::string> &PinnedRejections() {
     static const std::set<std::string> Set = {
         "tests/error-tests/error24.dsp",
@@ -49,7 +48,7 @@ const std::set<std::string> &PinnedRejections() {
         "tests/pass-tests/ratepass_12.dsp",
         "tests/pending-tests/mr_oversample.dsp",
         "tests/pending-tests/mr_undersample.dsp",
-    }; // 22 files, leaving 319 accepted
+    };
     return Set;
 }
 
@@ -80,7 +79,7 @@ std::vector<CorpusFile> WholeCorpus() {
 
 bool IsPinnedRejection(const std::string &relative) { return PinnedRejections().contains(relative); }
 
-// 64 MB stacks: the 2048-frame recursion bound overflows 8 MB under AddressSanitizer.
+// Use 64 MB stacks because 2048 recursive frames can exceed 8 MB under AddressSanitizer.
 void RunPool(unsigned threads, const std::function<void()> &worker) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);

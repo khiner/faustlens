@@ -13,17 +13,16 @@ namespace {
 
 constexpr int32_t MaxCopyDelay = 16;
 
-// Floor of 2, not 1.
 uint32_t Pow2Limit(int32_t x) {
     uint32_t n = 2;
     while (n < uint32_t(x)) n *= 2;
     return n;
 }
 
-// The delay a parent imposes on child `i`. Nothing but a delay imposes any.
+// Return the delay on edge i.
 std::expected<int32_t, std::string> EdgeDelay(const Signals &s, SigId parent, uint32_t i, std::span<const Interval> iv) {
     switch (s.KindOf(parent)) {
-        // Only the delayed operand: the index expression itself is read this frame.
+        // Read the delay-index expression at the current sample.
         case SigKind::Delay: {
             if (i != 0) return 0;
             const Interval &n = iv[s.Child(parent, 1)];
@@ -31,7 +30,7 @@ std::expected<int32_t, std::string> EdgeDelay(const Signals &s, SigId parent, ui
                 return std::unexpected(std::format("delay index is not in [0, INT_MAX): [{}, {}]", n.Lo, n.Hi));
             return int32_t(std::lround(n.Hi));
         }
-        // `prefix(x, y)` delays its second operand, `x` being the value at time 0.
+        // Prefix delays its second operand after its initial value.
         case SigKind::Delay1: return i == 0 ? 1 : 0;
         case SigKind::Prefix: return i == 1 ? 1 : 0;
         default: return 0;
@@ -48,8 +47,7 @@ std::vector<Band> AssignBands(std::span<const Variability> var) {
 
 std::expected<std::vector<int32_t>, std::string> MaxDelays(const Signals &s, std::span<const Interval> iv, std::span<const SigId> roots) {
     std::vector<int32_t> out(s.Size(), 0);
-    // Per edge and not accumulated, so the order the walk meets a node in does not matter.
-    // The walk cannot return early, so the first reason is carried out to the caller.
+    // Measure per-edge delays independently of traversal order and report the first failure after the walk.
     std::optional<std::string> why;
     Reachable(s, roots, [&](SigId id) {
         if (why || s.KindOf(id) == SigKind::Gen) return false;
@@ -87,7 +85,7 @@ std::vector<DelayLine> DelayLines(const Signals &s, std::span<const int32_t> max
 DelayLine LineFor(const Signals &s, SigId id, int32_t max_delay, Nature nature) {
     DelayLine l;
     if (max_delay <= 0) return l;
-    // A `prefix` already holds one sample on its state field, so it needs no array.
+    // Prefix uses its scalar state field for the previous sample.
     if (s.KindOf(id) == SigKind::Prefix && max_delay == 1) return l;
     l.Sig = id;
     l.Nature = nature;

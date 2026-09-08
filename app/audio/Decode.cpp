@@ -30,7 +30,7 @@ const Decoder::Entry &Decoder::Decode(const std::string &url) {
     for (const std::filesystem::path &dir : Search) tries.push_back(dir / url);
 
     ma_decoder dec{};
-    // Zeros ask for the file's native channels and rate, not a resample.
+    // Zero preserves the file's native channel count and sample rate.
     ma_decoder_config const cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
     bool open = false;
     for (const std::filesystem::path &p : tries) {
@@ -45,7 +45,7 @@ const Decoder::Entry &Decoder::Decode(const std::string &url) {
     e.Rate = int32_t(dec.outputSampleRate);
     e.Channels.assign(std::max(channels, 1), std::vector<double>{});
 
-    // To the end, not the reported length: an mp3's frame count is an estimate.
+    // Read to EOF because MP3 frame counts are estimates.
     std::vector<float> buf(Chunk * std::max(channels, 1));
     for (;;) {
         ma_uint64 got = 0;

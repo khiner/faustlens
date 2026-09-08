@@ -33,7 +33,7 @@ struct TempDir {
 
 TEST_CASE("the embedded standard library is path-keyed and recursive") {
     const auto entries = EmbeddedStdlib();
-    // 43 top-level files plus the 13 in subdirectories, which import by subdirectory path.
+    // Include libraries imported by subdirectory path.
     CHECK(entries.size() == 56);
 
     Vfs const vfs;
@@ -50,7 +50,6 @@ TEST_CASE("the embedded standard library is path-keyed and recursive") {
 }
 
 TEST_CASE("an open buffer shadows everything below it") {
-    // Without this, `.lib` edits take effect only on save.
     Vfs vfs;
     const auto before = vfs.Resolve("maths.lib", "");
     REQUIRE(before.has_value());
@@ -67,7 +66,6 @@ TEST_CASE("an open buffer shadows everything below it") {
 }
 
 TEST_CASE("the importing file's own directory comes before the search path") {
-    // Taken per import rather than accumulated, so resolution stays deterministic.
     const TempDir dir("faustlens_vfs_layer2");
     dir.Write("dsp/music.lib", "local = 1;\n");
     dir.Write("elsewhere/music.lib", "shared = 2;\n");
@@ -100,7 +98,6 @@ TEST_CASE("a failed resolution is retried when the file appears") {
 }
 
 TEST_CASE("ejecting writes an embedded library into the workspace") {
-    // Eject is the only path to a modified library, so the embedded copy is never changed.
     const TempDir workspace("faustlens_vfs_eject");
     Vfs vfs;
     REQUIRE(vfs.Eject("dx7/operator.lib", workspace.Path));

@@ -1,4 +1,3 @@
-// Position-free interned values, plus a per-file positional ref tree over them.
 #pragma once
 
 #include "syntax/Token.h"
@@ -23,7 +22,7 @@ inline constexpr RefId NoRef = 0xFFFFFFFFu;
 
 constexpr uint64_t Mix(uint64_t h, uint64_t x) { return h ^ (x + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2)); }
 
-// A deque, not a vector: the map's keys are views into these strings.
+// Use deque storage to preserve the map's string_view keys.
 struct StringPool {
     std::deque<std::string> Strings;
     std::unordered_map<std::string_view, uint32_t> Ids;
@@ -49,11 +48,10 @@ struct StringPool {
     std::string_view At(uint32_t id) const { return Strings[id]; }
 };
 
-// Enforced by the parser and the printer, so deep recursion is a diagnostic, not a crash.
+// Shared parser and printer recursion limit.
 inline constexpr uint32_t MaxTermDepth = 2048;
 
 enum class Kind : uint8_t {
-    // statements
     Program,
     Import,
     Declare,
@@ -69,13 +67,12 @@ enum class Kind : uint8_t {
     MdocListing,
     MdocNotice,
 
-    // expressions
     Seq,
     Par,
     Split,
     Merge,
     RecComp,
-    // The only kind whose payload is a `Tok`, which is how `RowOf` recovers the operator.
+    // BinOp stores its operator token in Payload for RowOf.
     BinOp,
     Delay1,
     NegIdent,
@@ -99,7 +96,6 @@ enum class Kind : uint8_t {
     Route,
     Hole,
 
-    // leaves
     Int,
     Real,
     Ident,
@@ -111,8 +107,8 @@ enum class Kind : uint8_t {
     Bargraph,
     Group,
     SoundfileBox,
-    // Str(return type), 1-4 Str names, Str arg types, Str(include), Str(library). `Form`
-    // is the name count, splitting the two runs.
+    // Children: return type, 1-4 names, argument types, include file, library file.
+    // Form gives the name count.
     FFun,
     FConst,
     FVar,
@@ -129,7 +125,6 @@ constexpr uint64_t KindMask(std::initializer_list<Kind> ks) {
     return m;
 }
 
-// Whether `Payload` is a string id, so `Lexeme` is safe to call.
 bool HasLexeme(Kind);
 
 enum class MergeSpelling : uint8_t { Colon, Plus }; // `:>` / `+>`
@@ -140,7 +135,7 @@ enum class BargraphKind : uint8_t { VBargraph, HBargraph };
 enum class GroupKind : uint8_t { VGroup, HGroup, TGroup };
 enum class FType : uint8_t { Int, Float };
 
-// Each attribute may repeat or be absent, so it gets a value bit and a presence bit.
+// Store presence and value separately for optional attributes.
 enum ListingBits : uint8_t {
     LstDependencies = 1 << 0,
     LstMdoctags = 1 << 1,
@@ -150,7 +145,6 @@ enum ListingBits : uint8_t {
     LstDistributedSet = 1 << 5,
 };
 
-// Precision bitmask on a statement.
 enum Variant : uint16_t {
     Single = 1,
     Double = 2,
@@ -217,21 +211,20 @@ enum class Prim : uint8_t {
 };
 
 std::string_view PrimText(Prim);
-// `Prim::Count_` where the token denotes no primitive.
 Prim PrimForToken(Tok);
 
-// One surrounding pair of quotes off a `String` lexeme, which is stored as written.
+// Remove one surrounding quote pair from a String lexeme.
 constexpr std::string_view StripQuotes(std::string_view s) {
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
     return s;
 }
 
 struct TermValue {
-    uint8_t Kind = 0; // Kind
+    uint8_t Kind = 0;
     uint8_t Form = 0; // per-kind discriminant
     uint16_t Variants = 0; // precision bitmask, 0 for non-statements
     uint32_t Payload = 0; // per-kind: an interned lexeme, a `Prim` or `Tok` code, or 0
-    uint32_t Children = 0; // offset into the child pool
+    uint32_t Children = 0;
     uint32_t ChildCount = 0;
 };
 static_assert(sizeof(TermValue) == 16);
@@ -264,7 +257,7 @@ struct Terms {
         return {ChildPool.data() + v.Children, v.ChildCount};
     }
     ValueId Child(ValueId id, uint32_t i) const { return Children(id)[i]; }
-    // Valid only where `HasLexeme(KindOf(id))`.
+    // Requires HasLexeme(KindOf(id)).
     std::string_view Lexeme(ValueId id) const { return Str(Values[id].Payload); }
     size_t Size() const { return Values.size(); }
 };
@@ -272,13 +265,13 @@ struct Terms {
 struct TermRef {
     ValueId ValueId = NoTerm;
     uint32_t SpanBegin = 0, SpanEnd = 0;
-    // Covers grouping parens, equal to the span where there are none.
+    // Span including any grouping parentheses.
     uint32_t OuterBegin = 0, OuterEnd = 0;
-    uint32_t FirstChild = 0; // offset into the ref child pool
+    uint32_t FirstChild = 0;
     uint32_t ChildCount = 0;
 };
 
-// Per-file positional tree over values. Pre-order, children contiguous and in source order.
+// Per-file refs in preorder, with contiguous children in source order.
 struct RefTree {
     std::vector<TermRef> Refs;
     std::vector<RefId> ChildPool;
@@ -289,7 +282,7 @@ struct RefTree {
         return {ChildPool.data() + t.FirstChild, t.ChildCount};
     }
     RefId Innermost(uint32_t offset) const;
-    // Every ref containing `offset`, innermost first.
+    // Return containing refs innermost first.
     std::vector<RefId> Chain(uint32_t offset) const;
 };
 

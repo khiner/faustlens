@@ -23,14 +23,13 @@ bool IsBitwise(BinOpCode b) {
     }
 }
 
-// `asin` alone among the transcendentals: `asinprim.hh` omits the `floatCast` its
-// neighbours apply. A reference bug, reproduced.
 bool ExtKeepsNature(Ext e) {
     switch (e) {
         case Ext::Abs:
         case Ext::Min:
         case Ext::Max:
         case Ext::Pow:
+        // Preserve the missing asin floatCast in reference asinprim.hh.
         case Ext::Asin: return true;
         default: return false;
     }
@@ -53,7 +52,7 @@ std::vector<Nature> InferNatures(const Signals &s) {
             switch (s.KindOf(id)) {
                 case SigKind::Int: now = Nature::Int; break;
                 case SigKind::Real: now = Nature::Real; break;
-                // On `Form`: `waveform{0., 1.}` and `waveform{0, 1}` store identical doubles.
+                // Use Form to distinguish integer and real waveform literals stored as doubles.
                 case SigKind::Waveform:
                 case SigKind::FConst:
                 case SigKind::FVar: now = n.Form == 0 ? Nature::Int : Nature::Real; break;
@@ -82,7 +81,7 @@ std::vector<Nature> InferNatures(const Signals &s) {
                 case SigKind::Select2: now = Join(kid(id, 1), kid(id, 2)); break;
                 case SigKind::Select3: now = Join(Join(kid(id, 1), kid(id, 2)), kid(id, 3)); break;
 
-                case SigKind::WRTbl: now = kid(id, 1); break; // the generator's
+                case SigKind::WRTbl: now = kid(id, 1); break;
                 case SigKind::RDTbl: now = kid(id, 0); break;
 
                 case SigKind::Button:
@@ -110,12 +109,12 @@ std::vector<Nature> InferNatures(const Signals &s) {
                     break;
                 }
 
-                case SigKind::Proj: { // branch `Payload` of the group this reads
+                case SigKind::Proj: {
                     const SigId g = s.Child(id, 0);
                     if (n.Payload < s.Get(g).ChildCount) now = nat[s.Child(g, n.Payload)];
                     break;
                 }
-                case SigKind::Rec: now = Nature::Int; break; // a group has no nature of its own
+                case SigKind::Rec: now = Nature::Int; break;
                 case SigKind::Error: now = Nature::Real; break;
                 default: break;
             }
@@ -134,9 +133,9 @@ struct Promoter {
     Signals &S;
     const std::vector<Nature> &Nat;
 
-    // `id` is the original node, which the nature table is keyed on. `p` its children.
+    // Index nature by the original node id.
     SigId operator()(SigId id, std::span<const SigId> p) {
-        const SigNode n = S.Get(id); // both by value, see `Rewriter::Go`
+        const SigNode n = S.Get(id); // Copy before rewriting grows the arena.
         const std::vector<SigId> kids(S.Children(id).begin(), S.Children(id).end());
 
         switch (S.KindOf(id)) {
@@ -144,7 +143,7 @@ struct Promoter {
                 const BinOpCode b = BinOpCode(n.Form);
                 const Nature tx = NatOf(kids[0]), ty = NatOf(kids[1]);
                 if (IsBitwise(b)) return S.MakeBin(b, ToInt(kids[0], p[0]), ToInt(kids[1], p[1]));
-                if (b == BinOpCode::Div) // always a float
+                if (b == BinOpCode::Div)
                     return S.MakeBin(b, ToFloat(kids[0], p[0]), ToFloat(kids[1], p[1]));
                 if (b == BinOpCode::Rem) {
                     if (tx == Nature::Int && ty == Nature::Int) return S.MakeBin(b, p[0], p[1]);
@@ -172,7 +171,7 @@ struct Promoter {
             case SigKind::RDTbl: return S.Make(SigKind::RDTbl, {p[0], ToInt(kids[1], p[1])});
 
             case SigKind::WRTbl: {
-                if (p.size() == 2) return S.Rebuild(id, p); // read-only, nothing to cast
+                if (p.size() == 2) return S.Rebuild(id, p);
                 const Nature tg = NatOf(kids[1]), tw = NatOf(kids[3]);
                 SigId ws = p[3];
                 if (tg != tw) ws = tg == Nature::Real ? SimpFloatCast(S, ws) : SimpIntCast(S, ws);
@@ -209,11 +208,11 @@ struct Promoter {
     SigId ToInt(SigId old, SigId promoted) { return NatOf(old) == Nature::Int ? promoted : SimpIntCast(S, promoted); }
 };
 
-// `hi < size` and not `hi <= size - 1`: `[0, inf) % 100` comes back as `[0, nexttoward(100, 0)]`.
 SigId Clamp(Signals &s, SigId i, SigId size_sig, const Interval &idx) {
     if (size_sig == NoSig || !s.IsInt(size_sig)) return i;
     const int32_t size = s.IntValue(size_sig);
     if (size <= 0) return i;
+    // Use hi < size because modulo can infer nexttoward(size, 0) as the upper bound.
     if (!idx.IsEmpty() && idx.Lo >= 0 && idx.Hi < size) return i;
     const SigId lo = SimpExtended(s, Ext::Min, {i, s.MakeInt(size - 1)});
     return SimpExtended(s, Ext::Max, {s.MakeInt(0), lo});
@@ -227,7 +226,7 @@ std::vector<SigId> Promote(Signals &s, std::span<const SigId> roots) {
 }
 
 std::vector<SigId> ClampTables(Signals &s, std::span<const SigId> roots) {
-    // Before the rewrite appends, so the clamps added here are not themselves indices to prove.
+    // Check only preexisting indices so newly inserted clamps are excluded.
     const std::vector<Interval> iv = InferIntervals(s);
     return Rewrite(s, roots, [&s, &iv](SigId id, std::span<const SigId> k) {
         switch (s.KindOf(id)) {
@@ -236,7 +235,7 @@ std::vector<SigId> ClampTables(Signals &s, std::span<const SigId> roots) {
                 return s.Make(SigKind::RDTbl, {k[0], Clamp(s, k[1], size, iv[s.Child(id, 1)])});
             }
             case SigKind::WRTbl:
-                if (k.size() != 4) break; // read-only, no write index to clamp
+                if (k.size() != 4) break;
                 return s.Make(SigKind::WRTbl, {k[0], k[1], Clamp(s, k[2], k[0], iv[s.Child(id, 2)]), k[3]});
             default: break;
         }

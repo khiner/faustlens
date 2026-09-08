@@ -1,5 +1,3 @@
-// Renders a new value tree into retained spans and printed text, against the file.
-// Not a tree diff: interned values make matching a lookup.
 #pragma once
 
 #include "syntax/Edit.h"
@@ -19,12 +17,12 @@ struct Replacement {
     std::string Text;
 };
 
-// Disjoint and in source order. A moved span is copied to its destination.
+// Replacements are disjoint and source-ordered; relocated spans are copied.
 using EditScript = std::vector<Replacement>;
 
 std::string ApplyScript(std::string_view src, const EditScript &);
 
-// What a splice needs from the file rather than the edit. Built once per parse.
+// Source context reusable across edits to one parse.
 struct SpliceContext {
     const Terms &Terms;
     std::string_view Src;
@@ -36,16 +34,16 @@ struct SpliceContext {
 
     SpliceContext(const faustlens::Terms &, std::string_view src, const RefTree &, const TokenVector &);
 
-    // The print position of `target`, with the indent set to its start column.
+    // Return the target's print context with its starting column as indent.
     Ctx At(RefId target) const;
 
-    // Every replacement lies inside `target`'s outer span.
+    // Keep replacements within the target outer span.
     EditScript Splice(RefId target, ValueId new_root) const;
     EditScript Splice(RefId target, ValueId new_root, const Ctx &ctx0) const;
-    // Explicit links determine which occurrences survive, move, or are copied.
+    // Use explicit links to retain, relocate, or copy source occurrences.
     EditScript Splice(const Edit &) const;
 
-    // Every ref carrying this value, sorted by `OuterBegin`. Null where none.
+    // Return matching refs sorted by OuterBegin, or null.
     const std::vector<RefId> *Claims(ValueId) const;
 };
 

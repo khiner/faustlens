@@ -23,15 +23,15 @@ std::string BodyShape(std::string_view expr) {
 } // namespace
 
 TEST_CASE("precedence and associativity, from the one table the printer also reads") {
-    CHECK(BodyShape("a : b : c") == "Seq[Ident(a) Seq[Ident(b) Ident(c)]]"); // right
-    CHECK(BodyShape("a , b , c") == "Par[Ident(a) Par[Ident(b) Ident(c)]]"); // right
-    CHECK(BodyShape("a ~ b ~ c") == "RecComp[RecComp[Ident(a) Ident(b)] Ident(c)]"); // left
-    CHECK(BodyShape("a+b+c") == "BinOp(+)[BinOp(+)[Ident(a) Ident(b)] Ident(c)]"); // left
+    CHECK(BodyShape("a : b : c") == "Seq[Ident(a) Seq[Ident(b) Ident(c)]]");
+    CHECK(BodyShape("a , b , c") == "Par[Ident(a) Par[Ident(b) Ident(c)]]");
+    CHECK(BodyShape("a ~ b ~ c") == "RecComp[RecComp[Ident(a) Ident(b)] Ident(c)]");
+    CHECK(BodyShape("a+b+c") == "BinOp(+)[BinOp(+)[Ident(a) Ident(b)] Ident(c)]");
     CHECK(BodyShape("a : b , c") == "Seq[Ident(a) Par[Ident(b) Ident(c)]]");
     CHECK(BodyShape("a , b ~ c") == "Par[Ident(a) RecComp[Ident(b) Ident(c)]]");
     CHECK(BodyShape("a <: b : c") == "Split[Ident(a) Seq[Ident(b) Ident(c)]]");
     CHECK(BodyShape("a+b*c") == "BinOp(+)[Ident(a) BinOp(*)[Ident(b) Ident(c)]]");
-    CHECK(BodyShape("a*b@c") == "BinOp(*)[Ident(a) BinOp(@)[Ident(b) Ident(c)]]"); // @ is 11
+    CHECK(BodyShape("a*b@c") == "BinOp(*)[Ident(a) BinOp(@)[Ident(b) Ident(c)]]");
     CHECK(BodyShape("a@b*c") == "BinOp(*)[BinOp(@)[Ident(a) Ident(b)] Ident(c)]");
     CHECK(BodyShape("a.b(x)") == "Apply[Access(b)[Ident(a)] Ident(x)]");
     CHECK(BodyShape("a'.b") == "Access(b)[Delay1[Ident(a)]]");
@@ -62,7 +62,7 @@ TEST_CASE("the two power spellings are one primitive under a form tag") {
     const ParseResult b = Parse(t, "process = pow;");
     REQUIRE(a.Diags.empty());
     REQUIRE(b.Diags.empty());
-    CHECK(a.Root != b.Root); // the spelling is kept
+    CHECK(a.Root != b.Root);
     CHECK(BodyShape("x^y") == "BinOp(^)[Ident(x) Ident(y)]");
 }
 
@@ -124,7 +124,7 @@ TEST_CASE("the constructs with fixed shapes") {
     CHECK(Accepts("process = vgroup(\"g\", button(\"b\"));"));
     CHECK(Accepts("process = vbargraph(\"a\", 0, 1);"));
     CHECK(Accepts("process = soundfile(\"a\", 2);"));
-    // An ffunction name that lexes as a keyword (`sin`, `min`) is unusable, in the reference too.
+    // Match the reference rejection of keyword-spelled foreign names.
     CHECK(Accepts("process = ffunction(float sinhf|sinh|sinhl(float), <math.h>, \"\");"));
     CHECK(!Accepts("process = ffunction(float sinf|sin|sinl(float), <math.h>, \"\");"));
     CHECK(Accepts("process = ffunction(float f(), <math.h>, \"\");"));
@@ -194,7 +194,6 @@ TEST_CASE("cursor to box finds the innermost ref") {
 }
 
 TEST_CASE("nesting past the depth bound is a diagnostic, not a crash") {
-    // Every traversal is recursive.
     Terms t;
     const std::string deep = std::format("process = {}1{};", std::string(MaxTermDepth + 8, '('), std::string(MaxTermDepth + 8, ')'));
     const ParseResult r = Parse(t, deep);

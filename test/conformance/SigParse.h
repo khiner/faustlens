@@ -1,6 +1,4 @@
-// The reference's `.sig` notation, not Faust source: a `// Size = N` header, one
-// `ID_n = <op>` line per node, then `SIG = (...)`. Every shared subterm gets its own
-// `ID`, so no line chains two same-priority operators.
+// Parse reference .sig files with a size header, node definitions, and a SIG output list.
 #pragma once
 
 #include <cstdint>
@@ -28,7 +26,7 @@ struct SigTerm {
     Kind Kind = Kind::Op;
     std::string Text; // the operator, function, name, or label
     int64_t I = 0; // Int, and the index for Id / RecVar / Input
-    double D = 0; // Real
+    double D = 0;
     std::vector<SigTerm> Args;
 };
 
@@ -38,10 +36,10 @@ struct SigFile {
     SigTerm Outputs; // `SIG = (...)`, always a List
 };
 
-// Unexpected gets the offending line and a reason.
+// Return the offending line and reason on failure.
 std::expected<SigFile, std::string> ParseSig(std::string_view text);
 
-// The term as text, not the reference's notation.
+// Format the parsed term for diagnostics.
 std::string PrintSigTerm(const SigTerm &);
 
 } // namespace faustlens::test

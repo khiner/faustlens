@@ -1,5 +1,4 @@
-// The evaluated diagram. Hash-consed, so equality is an integer comparison, and
-// arity-checked at construction.
+// Interned evaluated diagrams with arity checked at construction.
 #pragma once
 
 #include "Arena.h"
@@ -18,8 +17,7 @@ using EnvId = uint32_t;
 inline constexpr BoxId NoBox = 0xFFFFFFFFu;
 
 enum class BoxKind : uint8_t {
-    // Normal form: what propagation dispatches on. A literal carries its value
-    // and not its lexeme, so `100.0` and `1e+02` are one box.
+    // Numeric literals store values, so equivalent spellings share a Box.
     Int,
     Real,
     Wire, // `_`
@@ -40,16 +38,15 @@ enum class BoxKind : uint8_t {
     Split,
     Merge,
     Rec, // lhs, rhs
-    // children: ins, outs, entries, not a table since a `route` may hold pattern
-    // variables. aux is nonzero only where all three folded.
+    // Children: ins, outs, entries, including pattern variables.
+    // Aux is nonzero when all three are constant.
     Route,
-    Environment, // what an environment closure becomes once symbolic
+    Environment, // symbolic environment closure
     Slot,
-    Symbolic, // children: slot, body. An abstraction applied to a slot
-    Error, // poison: unconstrained arity, absorbs its neighbours
+    Symbolic, // children: slot, body
+    Error, // unconstrained arity; propagates through composition
 
-    // Values that are not circuits. form: TermClosure or EnvClosure. payload: the
-    // abstraction's term, unset for an environment. aux: EnvId
+    // Non-circuit values: form is TermClosure or EnvClosure, payload is the abstraction term, and aux is EnvId.
     Closure,
     PatternMatcher, // payload: the `Case` term, aux: PMState index, children: args consumed
     PatternVar, // payload: the bound name
@@ -59,14 +56,12 @@ enum class BoxKind : uint8_t {
 
 std::string_view BoxKindName(BoxKind);
 
-// The five composition operators are contiguous above.
 constexpr bool IsComposition(BoxKind k) { return k >= BoxKind::Seq && k <= BoxKind::Rec; }
 
-// How many inputs the primitive takes. Every primitive has one output.
+// Return the primitive's input count; each primitive has one output.
 uint8_t PrimArity(Prim);
 
-// `known` is false where the arity is undetermined, which composition propagates
-// outward.
+// Unknown arity propagates through composition.
 struct Arity {
     int32_t Ins = 0, Outs = 0;
     bool Known = false;
@@ -74,25 +69,22 @@ struct Arity {
 
 using BoxNode = ArenaNode;
 
-// A widget's four bounds, a bargraph's two.
 struct Bounds {
     double Init = 0, Min = 0, Max = 0, Step = 0;
 };
 
-// A `route(ins, outs, pairs)` whose three parts folded to constants.
 struct RouteTable {
     int32_t Ins = 0, Outs = 0;
     std::vector<int32_t> Pairs;
 };
 
-// An `ffunction`'s declared signature.
 struct Signature {
     FType Result = FType::Float;
     std::vector<uint8_t> Args; // FType, or 2 for `any`
     StrId Include = 0, Library = 0;
 };
 
-// The live rules of a partially applied `case`, one environment each.
+// Partially applied case rules with one environment per rule.
 struct PMState {
     std::vector<std::vector<BoxId>> Patterns; // per rule, evaluated once
     std::vector<EnvId> RuleEnvs;
@@ -118,10 +110,9 @@ struct Boxes : Arena<Boxes, BoxKind, BoxId> {
     BoxId MakePrim(Prim p) { return MakeLeaf(BoxKind::Prim, uint32_t(p)); }
 
     const Arity &ArityOf(BoxId b) const { return Arities[b]; }
-    // Ask before `Make`, which has no term to attribute a diagnostic to.
+    // Check before Make to attribute arity failures to a source term.
     bool Composable(BoxKind, BoxId a, BoxId b) const;
 
-    // Side tables, addressed by a node's `Aux`.
     uint32_t AddBounds(const faustlens::Bounds &);
     const faustlens::Bounds &BoundsAt(uint32_t i) const { return Bounds[i]; }
     uint32_t AddRoute(RouteTable);
@@ -133,8 +124,7 @@ struct Boxes : Arena<Boxes, BoxKind, BoxId> {
     uint32_t AddPMState(PMState);
     const PMState &PMStateAt(uint32_t i) const { return PmStates[i]; }
 
-    // Slot numbers are per-`Boxes` and monotonic, so two evaluations of one
-    // program agree only up to a bijection. Compare graphs, not bytes.
+    // Slot numbers are local to Boxes; compare graphs with a slot bijection across evaluations.
     BoxId NewSlot(StrId name);
 
     Arity Infer(BoxKind, uint32_t payload, uint32_t aux, std::span<const BoxId> children) const;

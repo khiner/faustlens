@@ -26,7 +26,7 @@ void Move(app::Live &live, controls::Values &store, std::string_view label, doub
     controls::Record(store, a->Plan.Label(w->WidgetLabel), *w, v);
 }
 
-// What a control reads now, or a sentinel where the running program has no such widget.
+// Return the current control value or a sentinel for an absent widget.
 double Read(const app::Live &live, std::string_view label) {
     const Artifact *a = live.Current.get();
     REQUIRE(a != nullptr);
@@ -65,14 +65,13 @@ TEST_CASE("a slider stays moved when the code around it is edited") {
 }
 
 TEST_CASE("and stays moved across a revision that did not declare it") {
-    // The reported bug: move a slider, delete the stage it is in, undo.
     Fixture f(
         "gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
         "process = _ * gain;\n"
     );
     Move(f.Live, f.Controls, "gain", 0.75);
 
-    f.Edit("process = _;\n"); // the definition is gone, and so is the widget
+    f.Edit("process = _;\n");
     REQUIRE(Read(f.Live, "gain") == -12345);
 
     f.Edit(
@@ -83,7 +82,7 @@ TEST_CASE("and stays moved across a revision that did not declare it") {
 }
 
 TEST_CASE("a control keys on its path, not on the id the arena gave it") {
-    // Equal ids in two programs name different paths, so keying on id silenced the oscillator.
+    // Preserve control paths across reused intern ids.
     Fixture f(
         "freq = hslider(\"freq\", 220, 20, 8000, 1);\n"
         "process = os_dummy(freq) : abs : max ~ *(0.999) : vbargraph(\"m\", 0, 1)\n"
@@ -91,7 +90,6 @@ TEST_CASE("a control keys on its path, not on the id the arena gave it") {
     );
     Move(f.Live, f.Controls, "freq", 440);
 
-    // One widget, taking the id the slider had in the program above.
     f.Edit("process = _ : abs : max ~ *(0.999) : vbargraph(\"m\", 0, 1);\n");
     CHECK(Read(f.Live, "m") == doctest::Approx(0));
 
@@ -115,7 +113,7 @@ TEST_CASE("a control with no entry goes back to what its program declares") {
     Move(f.Live, f.Controls, "gain", 0.75);
     REQUIRE(Read(f.Live, "gain") == doctest::Approx(0.75));
 
-    f.Controls.clear(); // what an undo past that gesture leaves
+    f.Controls.clear();
     const Artifact *a = f.Live.Current.get();
     REQUIRE(a != nullptr);
     controls::Apply(f.Controls, a->Plan, a->Ui, *a->Dsp);
@@ -123,7 +121,6 @@ TEST_CASE("a control with no entry goes back to what its program declares") {
 }
 
 TEST_CASE("a restored value is re-quantized against the program it lands in") {
-    // The host enforces `min`/`max`/`step`, so a value restored into a narrower range clamps.
     Fixture f("process = _ * hslider(\"gain\", 0, 0, 1, 0.01);\n");
     Move(f.Live, f.Controls, "gain", 0.9);
     f.Edit("process = _ * hslider(\"gain\", 0, 0, 0.5, 0.01);\n");
@@ -152,7 +149,7 @@ TEST_CASE("a stored value applies only where the widget is the same kind") {
 }
 
 TEST_CASE("outputs and momentary controls are never stored") {
-    // A bargraph is written by the DSP, and a stored `button` at 1 is stuck down.
+    // Exclude DSP-written bargraphs and momentary buttons from stored values.
     CHECK(controls::RestorableAs(UiKind::VBargraph) == controls::Restorable::No);
     CHECK(controls::RestorableAs(UiKind::HBargraph) == controls::Restorable::No);
     CHECK(controls::RestorableAs(UiKind::Button) == controls::Restorable::No);

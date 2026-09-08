@@ -23,9 +23,9 @@ constexpr std::array<std::string_view, size_t(Op::Count_)> OpNames = {
     "store",   "sf.length", "sf.rate", "sf.read", "fconst", "fvar", "ffun", "loop.begin", "loop.end", "guard.begin", "guard.end",
 };
 
-// DNF is what makes a node reached both under a guard and outside it come out unguarded.
-using Clause = std::vector<SigId>; // sorted. the atoms ANDed
-using Dnf = std::vector<Clause>; // sorted. the clauses ORed, empty being `true`
+// An unguarded use makes the combined DNF condition true.
+using Clause = std::vector<SigId>; // sorted conjunction of atoms
+using Dnf = std::vector<Clause>; // sorted disjunction of clauses; empty means true
 
 Clause SetUnion(const Clause &a, const Clause &b) {
     Clause r;
@@ -48,14 +48,14 @@ struct Conditions {
     std::vector<Dnf> Table;
     std::map<Dnf, uint32_t> Ids;
 
-    Conditions() { Table.emplace_back(); } // id 0 is `true`
+    Conditions() { Table.emplace_back(); }
 
     uint32_t Atom(SigId c) { return Intern(Dnf{Clause{c}}); }
 
-    // The pairwise pass keeps the more general of two comparable clauses: `a` over `a & b`.
     uint32_t Or(uint32_t x, uint32_t y) {
         if (x == 0 || y == 0) return 0;
         Dnf a = Table[x], b = Table[y];
+        // Keep the more general clause, such as a instead of a & b.
         for (Clause &ai : a)
             for (Clause &bj : b) {
                 const Clause ii = SetIntersection(ai, bj);
@@ -96,20 +96,20 @@ struct Conditions {
     }
 };
 
-// Hash consing overlaps the graphs, so a node emitted in two scopes gets two registers.
+// Allocate separate registers for shared nodes emitted in distinct scopes.
 struct Scope {
     std::vector<Instr> *Target[3] = {nullptr, nullptr, nullptr};
-    uint32_t Loop = NoLoop; // the `LoopBegin` that owns this scope's fields
+    uint32_t Loop = NoLoop;
 
     std::unordered_map<SigId, Reg> Val;
     std::unordered_map<SigId, uint32_t> Line, Perm, Table, Widget;
-    std::unordered_map<SigId, uint8_t> Rec; // 0 unseen, 1 in flight, 2 done
+    std::unordered_map<SigId, uint8_t> Rec;
     std::unordered_map<int32_t, Reg> Ints;
     std::unordered_map<uint32_t, Reg> GuardReg;
     std::vector<int32_t> Maxd;
     uint32_t Iota = NoField;
     Reg IotaReg = NoReg;
-    uint32_t Guard = 0; // the condition currently bracketed, 0 for none
+    uint32_t Guard = 0;
 
     struct Epilogue {
         enum class Kind : uint8_t { Shift, Iota, WaveIndex };
@@ -122,7 +122,6 @@ struct Scope {
     std::vector<Epilogue> Epilogues;
 };
 
-// `Open` settles all three before the instruction, outside the bracket it opens.
 struct Slot {
     uint32_t Field = NoField;
     Reg At = NoReg;
@@ -133,7 +132,6 @@ struct Lowering {
     const Signals &Sigs;
     const std::vector<SigId> &Roots;
     Plan &Plan;
-    // Set once by `Fail`, and reported by `Run`.
     std::string Why;
 
     std::vector<Nature> Nat;
@@ -141,7 +139,7 @@ struct Lowering {
     std::vector<Interval> Iv;
     Conditions Conds;
     std::unordered_map<SigId, uint32_t> CondAt;
-    // Which projection of a group is read, and by which node. An unread one is dropped.
+    // Track read projections to omit unused outputs.
     std::map<std::pair<SigId, uint32_t>, SigId> ProjAt;
     std::unordered_map<SigId, uint8_t> Reached;
     Scope *Sc = nullptr;
@@ -157,7 +155,7 @@ struct Lowering {
         const auto it = CondAt.find(id);
         return it == CondAt.end() ? 0 : it->second;
     }
-    // A guard only ever brackets the sample band.
+    // Guards apply only to the sample band.
     uint32_t GuardOf(SigId id) const { return BandOf[id] == Band::Sample ? CondOf(id) : 0; }
 
     Reg NewReg() { return Plan.Regs++; }
@@ -189,16 +187,14 @@ struct Lowering {
 
     Reg IntReg(int32_t);
     Reg IotaReg();
-    // The current sample's slot: 0 on a copy line, `IOTA & (extent - 1)` on a ring.
     Reg WriteIndex(uint32_t field);
-    // The slot `delay` back. `zero` is a literal-0 delay, whose ring read is the write index.
+    // A literal-zero ring delay reads at the write index.
     Reg ReadIndex(uint32_t field, Reg delay, bool zero);
 
     Reg GuardReg(uint32_t cond);
     void SetGuard(uint32_t cond, Reg g);
 
-    // Emitting operands can compile a group body that reaches back here, staling
-    // `Emit`'s opening memo check.
+    // Return a cached register, including values emitted during operand compilation.
     bool Already(SigId id, Reg &out) const {
         const auto it = Sc->Val.find(id);
         if (it == Sc->Val.end()) return false;
@@ -237,7 +233,7 @@ Reg Lowering::Bin(BinOpCode op, Reg a, Reg b) {
     Instr i;
     i.Op = uint8_t(Op::BinOp);
     i.Form = uint8_t(op);
-    i.Nature = Nature::Int; // every caller is integer: index arithmetic and the guard fold
+    i.Nature = Nature::Int;
     i.Dst = r;
     const Reg args[] = {a, b};
     i.Args = PushArgs(args);
@@ -269,7 +265,7 @@ uint32_t Lowering::WidgetField(SigId id, uint32_t label) {
     return Sc->Widget[id] = f;
 }
 
-// The URL set is metadata on the widget's own label, so it comes off the innermost segment.
+// Read soundfile URL metadata from the innermost label segment.
 uint32_t Lowering::SoundfileDescOf(SigId id) {
     const SigNode n = Sigs.Get(id);
     SoundfileDesc d;
@@ -284,8 +280,7 @@ uint32_t Lowering::SoundfileDescOf(SigId id) {
     const auto url = meta.find("url");
     if (url != meta.end())
         for (const std::string &v : url->second) {
-            // As the runtime's `parseMenuList2`: `{`, `;`-separated single-quoted
-            // names, `}`. Anything that does not parse as a list is one URL.
+            // Parse reference parseMenuList2 syntax: brace-enclosed, semicolon-separated quoted URLs, or one unparsed URL.
             std::vector<std::string> names;
             const char *p = v.c_str();
             const auto blank = [&] {
@@ -325,7 +320,7 @@ uint32_t Lowering::ForeignDescOf(ForeignKind kind, uint32_t name, uint8_t ftype,
     ForeignDesc d;
     d.Kind = kind;
     d.Name = Sigs.Str(name);
-    // Typed by the declared result: `ffunction(int isnanf(float))` is an int.
+    // Use the declared foreign result type.
     d.Result = FType(ftype) == FType::Int ? Nature::Int : Nature::Real;
     for (const SigId a : args) d.Args.push_back(Nat[a]);
     for (size_t i = 0; i < Plan.Foreign.size(); ++i) {
@@ -374,7 +369,7 @@ Reg Lowering::IotaReg() {
 Reg Lowering::WriteIndex(uint32_t field) {
     if (!Plan.Fields[field].Ring) return IntReg(0);
     const int32_t mask = int32_t(Plan.Fields[field].Extent) - 1;
-    const Reg iota = IotaReg(); // may allocate, so the field reference is not held
+    const Reg iota = IotaReg(); // Copy before field allocation.
     return Bin(BinOpCode::AND, iota, IntReg(mask));
 }
 
@@ -393,7 +388,7 @@ void Lowering::Reach(SigId t) {
         const uint32_t i = Sigs.Get(t).Payload;
         if (i >= Sigs.Get(rec).ChildCount) return;
         ProjAt[{rec, i}] = t;
-        Reach(Sigs.Child(rec, i)); // branch `i` alone: the group is not a node
+        Reach(Sigs.Child(rec, i));
         return;
     }
     for (const SigId c : Sigs.Children(t)) Reach(c);
@@ -402,12 +397,12 @@ void Lowering::Reach(SigId t) {
 void Lowering::Annotate(SigId t, uint32_t nc) {
     if (const auto it = CondAt.find(t); it != CondAt.end()) {
         const uint32_t xc = Conds.Or(it->second, nc);
-        if (xc == it->second) return; // already at least this general
+        if (xc == it->second) return;
         nc = it->second = xc;
     } else {
         CondAt[t] = nc;
     }
-    // A `Control` conjoins its condition onto its value operand only, not the condition one.
+    // Conjoin a Control condition onto its value operand only.
     if (Sigs.KindOf(t) == SigKind::Control) {
         const SigId x = Sigs.Child(t, 0), y = Sigs.Child(t, 1);
         Annotate(y, nc);
@@ -420,7 +415,7 @@ void Lowering::Annotate(SigId t, uint32_t nc) {
 
 Reg Lowering::GuardReg(uint32_t cond) {
     if (const auto it = Sc->GuardReg.find(cond); it != Sc->GuardReg.end()) return it->second;
-    // Atoms emit under their own conditions, the combining instructions outside every bracket.
+    // Emit condition atoms under their guards and combining instructions outside guards.
     std::vector<std::vector<Reg>> atoms;
     for (const Clause &c : Conds.At(cond)) {
         atoms.emplace_back();
@@ -447,6 +442,7 @@ void Lowering::SetGuard(uint32_t cond, Reg g) {
 }
 
 Slot Lowering::Open(SigId id) {
+    // Compute the state slot and condition before opening the instruction guard.
     Slot sl;
     sl.Field = LineOf(id);
     if (sl.Field != NoField) sl.At = WriteIndex(sl.Field);
@@ -457,13 +453,11 @@ Slot Lowering::Open(SigId id) {
 }
 
 Reg Lowering::Close(SigId id, const Slot &sl, Reg dst) {
-    // The store is in the frame loop whatever band computed the value, so a block-rate
-    // signal keeps a per-sample history.
+    // Store history every sample even when the source is computed at block rate.
     if (sl.Field != NoField) Push(Band::Sample, Op::StoreField, NoReg, sl.Field, {sl.At, dst});
     if (sl.Cond == 0) return dst;
 
-    // A guarded value has to survive a frame the guard was false in, so it comes back out
-    // of state, loaded outside the bracket.
+    // Load guarded values from state to preserve output across inactive frames.
     if (sl.Field != NoField) {
         SetGuard(0, NoReg);
         return Load(Band::Sample, sl.Field, {sl.At});
@@ -481,7 +475,7 @@ Reg Lowering::LoadValue(SigId id, Band b, uint32_t field, std::initializer_list<
     return Sc->Val[id] = Close(id, sl, Load(b, field, at));
 }
 
-// The one loop other than the frame loop. The generator gets its own scope.
+// Compile table generators in a separate init-loop scope.
 uint32_t Lowering::EmitTable(SigId id) {
     if (const auto it = Sc->Table.find(id); it != Sc->Table.end()) return it->second;
     const SigId size_sig = Sigs.Child(id, 0), gen = Sigs.Child(id, 1);
@@ -516,7 +510,7 @@ uint32_t Lowering::EmitTable(SigId id) {
     return f;
 }
 
-// A body reaches its own projections only through a delay, so the lines cut the cycle.
+// Delay lines terminate traversal through recursive projections.
 bool Lowering::EmitRec(SigId rec) {
     if (Sc->Rec[rec] != 0) return true;
     Sc->Rec[rec] = 1;
@@ -537,7 +531,6 @@ bool Lowering::EmitRec(SigId rec) {
             Sc->Val[p] = r;
             continue;
         }
-        // Unguarded, `Close` reads back `r` itself: a projection's `@0` is the register.
         const Slot sl = Open(p);
         if (Failed) return false;
         Sc->Val[p] = Close(p, sl, r);
@@ -550,24 +543,24 @@ Reg Lowering::Emit(SigId id) {
     if (const auto it = Sc->Val.find(id); it != Sc->Val.end()) return it->second;
     if (Failed) return NoReg;
 
-    const SigNode n = Sigs.Get(id); // by value: `Children` is a span into the arena
+    const SigNode n = Sigs.Get(id); // Copy before arena growth.
     const SigKind k = SigKind(n.Kind);
     const Band b = BandOf[id];
     const std::vector<SigId> kids(Sigs.Children(id).begin(), Sigs.Children(id).end());
 
-    // None of the forwarding kinds takes a delay line: it belongs to the producer.
+    // Allocate delay lines on the producer through forwarding nodes.
     switch (k) {
         case SigKind::Error: return Fail("an error node reached lowering", id), NoReg;
         case SigKind::Rec: return Fail("a group reached lowering other than through a projection", id), NoReg;
         case SigKind::Gen: return Fail("a generator reached lowering other than through a table", id), NoReg;
 
-        // Emitting `y` is what widens the root set.
+        // Emit the attached operand to retain its side effects.
         case SigKind::Attach: {
             const Reg r = Emit(kids[0]);
             Emit(kids[1]);
             return Failed ? NoReg : (Sc->Val[id] = r);
         }
-        // The guard is not here, it is the condition annotated onto `x`.
+        // Apply the condition already annotated on x.
         case SigKind::Control: {
             Emit(kids[1]);
             const Reg r = Emit(kids[0]);
@@ -580,12 +573,12 @@ Reg Lowering::Emit(SigId id) {
         }
         case SigKind::Extended: {
             const Ext e = Ext(n.Form);
-            // The bounds feed interval analysis rather than the program.
+            // Bounds affect interval analysis only.
             if (e == Ext::AssertBounds) {
                 const Reg r = Emit(kids[2]);
                 return Failed ? NoReg : (Sc->Val[id] = r);
             }
-            // Constant at the operand's bound, so the operand is typed, not emitted.
+            // Read the inferred bound without emitting the operand.
             if (e == Ext::Lowest || e == Ext::Highest) {
                 const double v = e == Ext::Lowest ? Iv[kids[0]].Lo : Iv[kids[0]].Hi;
                 const uint64_t bits = BitsOf(v);
@@ -606,13 +599,13 @@ Reg Lowering::Emit(SigId id) {
     }
 
     switch (k) {
-        // The host writes the field. The bounds belong to the UI tree, not the program.
+        // Host-written widget fields use bounds from the UI descriptor.
         case SigKind::Button:
         case SigKind::Checkbox:
         case SigKind::VSlider:
         case SigKind::HSlider:
         case SigKind::NumEntry: return LoadValue(id, b, WidgetField(id, n.Payload), {});
-        // Read only through the three accessors, so it carries a field and no register.
+        // Soundfile accessors read a shared pointer field.
         case SigKind::Soundfile: {
             if (!Sc->Widget.contains(id)) {
                 const uint32_t f = AddField(FieldKind::Soundfile, id, Nature::Real, 1);
@@ -624,7 +617,6 @@ Reg Lowering::Emit(SigId id) {
         case SigKind::WRTbl: {
             const uint32_t f = EmitTable(id);
             if (f == NoField) return NoReg;
-            // Placed by variability, so a constant-rate write lands in the init band.
             if (kids.size() == 4) {
                 const Reg wi = Emit(kids[2]), ws = Emit(kids[3]);
                 if (Failed) return NoReg;
@@ -633,7 +625,7 @@ Reg Lowering::Emit(SigId id) {
                 Push(b, Op::StoreField, NoReg, f, {wi, ws});
                 if (c) SetGuard(0, NoReg);
             }
-            // A table is a value in the graph only, ordering a read after its write.
+            // Table dependencies order reads after writes.
             return Sc->Val[id] = NoReg;
         }
         case SigKind::RDTbl: {
@@ -646,7 +638,7 @@ Reg Lowering::Emit(SigId id) {
             if (Failed) return NoReg;
             return LoadValue(id, b, f, {ri});
         }
-        // A bare `waveform` cycles: a static array plus an index advanced per frame.
+        // Cycle waveform samples with a per-frame index.
         case SigKind::Waveform: {
             const std::vector<double> &w = Sigs.WaveformAt(n.Aux);
             const uint32_t f = AddField(FieldKind::Table, id, Nat[id], uint32_t(w.size()));
@@ -663,7 +655,7 @@ Reg Lowering::Emit(SigId id) {
             const SigId x = kids[0];
             const Reg d = k == SigKind::Delay1 ? IntReg(1) : Emit(kids[1]);
             if (Failed) return NoReg;
-            // A projection whose group is in flight stops here, cutting the cycle.
+            // Stop at projections of an in-flight group.
             if (Sigs.KindOf(x) == SigKind::Proj) {
                 if (!EmitRec(Sigs.Child(x, 0))) return NoReg;
             } else if (!Sc->Line.contains(x)) {
@@ -673,8 +665,7 @@ Reg Lowering::Emit(SigId id) {
             const auto at_line = Sc->Line.find(x);
             const uint32_t xf = at_line == Sc->Line.end() ? NoField : at_line->second;
             if (xf == NoField) {
-                // `s@0` survives simplification only on a projection. Any other read of
-                // history a signal does not keep is an error.
+                // Allow zero-delay projections without history; other delayed reads require allocated history.
                 const auto v = Sc->Val.find(x);
                 if (v == Sc->Val.end() || Sc->Maxd[x] > 0) return Fail("a delayed read of a signal that keeps no history", id), NoReg;
                 return Sc->Val[id] = v->second;
@@ -684,8 +675,7 @@ Reg Lowering::Emit(SigId id) {
             const Reg ri = ReadIndex(xf, d, k == SigKind::Delay && Sigs.IsInt(kids[1]) && Sigs.IntValue(kids[1]) == 0);
             return LoadValue(id, b, xf, {ri});
         }
-        // `prefix(x, y)` is `x` at time 0 then `y` delayed. The load precedes the store,
-        // cutting the cycle when `y` reaches back here.
+        // Load prefix state before storing y to preserve feedback causality.
         case SigKind::Prefix: {
             const uint32_t f = AddField(FieldKind::Perm, id, Nat[id], 1);
             Sc->Perm[id] = f;
@@ -723,7 +713,7 @@ Reg Lowering::Emit(SigId id) {
             in.Op = uint8_t(Op::Input);
             in.Imm = n.Payload;
             break;
-        // The descriptor index, not the name, so reading a Plan needs no `Signals`.
+        // Store descriptor indices so execution is independent of Signals.
         case SigKind::FConst:
             in.Op = uint8_t(Op::FConst);
             in.Imm = ForeignDescOf(ForeignKind::Constant, n.Payload, n.Form, {});
@@ -741,19 +731,19 @@ Reg Lowering::Emit(SigId id) {
         case SigKind::IntCast: in.Op = uint8_t(Op::IntCast); break;
         case SigKind::FloatCast: in.Op = uint8_t(Op::FloatCast); break;
         case SigKind::BitCast: in.Op = uint8_t(Op::BitCast); break;
-        // Faust evaluates both branches and then selects, so they are ordinary operands.
+        // Evaluate both select branches unconditionally.
         case SigKind::Select2: in.Op = uint8_t(Op::Select2); break;
         case SigKind::Select3: in.Op = uint8_t(Op::Select3); break;
         case SigKind::SoundfileLength: in.Op = uint8_t(Op::SoundfileLength); break;
         case SigKind::SoundfileRate: in.Op = uint8_t(Op::SoundfileRate); break;
         case SigKind::SoundfileBuffer: in.Op = uint8_t(Op::SoundfileRead); break;
         case SigKind::VBargraph:
-        case SigKind::HBargraph: break; // below, once its operand exists
+        case SigKind::HBargraph: break;
         default: return Fail("no lowering for this node", id), NoReg;
     }
 
     if (k == SigKind::VBargraph || k == SigKind::HBargraph) {
-        // The program reads the load, where a `FAUSTFLOAT` round trip shows at single precision.
+        // Reload the bargraph field to preserve FAUSTFLOAT rounding.
         const Reg v = Emit(kids[2]);
         if (Failed) return NoReg;
         const uint32_t f = WidgetField(id, n.Payload);
@@ -766,7 +756,7 @@ Reg Lowering::Emit(SigId id) {
 
     std::vector<Reg> args;
     if (k == SigKind::SoundfileLength || k == SigKind::SoundfileRate || k == SigKind::SoundfileBuffer) {
-        Emit(kids[0]); // allocates the pointer field
+        Emit(kids[0]);
         if (Failed) return NoReg;
         in.Imm = Sc->Widget[kids[0]];
         for (size_t i = 1; i < kids.size(); ++i) args.push_back(Emit(kids[i]));
@@ -784,25 +774,24 @@ Reg Lowering::Emit(SigId id) {
     in.Args = PushArgs(args);
     in.ArgCount = uint32_t(args.size());
     Push(b, in);
-    // Index arithmetic shares the literal's instruction.
     if (k == SigKind::Int) Sc->Ints.emplace(Sigs.IntValue(id), dst);
     return Sc->Val[id] = Close(id, sl, dst);
 }
 
 void Lowering::EmitEpilogue() {
     SetGuard(0, NoReg);
-    // Indexed rather than ranged: the vector can grow while it is walked.
+    // Use indices because emission can grow the vector.
     for (size_t e = 0; e < Sc->Epilogues.size() && !Failed; ++e) {
         const Scope::Epilogue ep = Sc->Epilogues[e];
         const Reg g = ep.Cond ? GuardReg(ep.Cond) : NoReg;
         if (Failed) return;
         SetGuard(ep.Cond, g);
         switch (ep.Kind) {
-            // A copy line is capped at fifteen pairs, so the sample band stays loop-free.
+            // Keep copy-line updates unrolled within the configured size limit.
             case Scope::Epilogue::Kind::Shift:
                 for (int32_t i = ep.MaxDelay; i >= 1; --i) {
                     const Reg from = IntReg(i - 1), to = IntReg(i);
-                    SetGuard(ep.Cond, g); // `IntReg` closes any open bracket
+                    SetGuard(ep.Cond, g); // IntReg closes the active guard.
                     const Reg r = Load(Band::Sample, ep.Field, {from});
                     Push(Band::Sample, Op::StoreField, NoReg, ep.Field, {to, r});
                 }
@@ -813,7 +802,7 @@ void Lowering::EmitEpilogue() {
                 Push(Band::Sample, Op::StoreField, NoReg, ep.Field, {nxt});
                 break;
             }
-            case Scope::Epilogue::Kind::WaveIndex: { // `(1 + idx) % size`
+            case Scope::Epilogue::Kind::WaveIndex: {
                 const Reg cur = Load(Band::Sample, ep.Field, {});
                 const Reg inc = Bin(BinOpCode::Add, IntReg(1), cur);
                 const Reg nxt = Bin(BinOpCode::Rem, inc, IntReg(int32_t(ep.Size)));
@@ -832,7 +821,7 @@ void Prune(Plan &p) {
         for (const std::vector<Instr> &band : p.Bands)
             for (const Instr &i : band)
                 for (uint32_t a = 0; a < i.ArgCount; ++a) read[p.Operands[i.Args + a]] = 1;
-        // A loop's induction register is not a value, so it survives an unread `Dst`.
+        // Preserve loop induction registers even when unused by value instructions.
         for (std::vector<Instr> &band : p.Bands) {
             const size_t was = band.size();
             std::erase_if(band, [&](const Instr &i) { return i.Dst != NoReg && !read[i.Dst] && Op(i.Op) != Op::LoopBegin; });
@@ -886,7 +875,7 @@ std::expected<Plan, std::string> Graph::Lower() const {
     Plan out;
     out.Inputs = Arity.Ins;
     if (auto lowered = Lowering{s, Outs, out}.Run(); !lowered) return std::unexpected(std::move(lowered).error());
-    // Copied out of the arena that interned them: the ids mean nothing outside it.
+    // Copy labels from the compilation arena into the Plan.
     for (const Field &f : out.Fields) {
         if (f.Kind != FieldKind::Widget) continue;
         if (out.Labels.size() <= f.Label) out.Labels.resize(f.Label + 1);
@@ -904,7 +893,7 @@ uint64_t Hash(const Plan &p) {
     for (const Field &f : p.Fields) {
         h = Mix(h, uint64_t(f.Kind));
         h = Mix(h, uint64_t(f.Nature));
-        h = Mix(h, f.Hash); // `Origin` deliberately not mixed: it is position
+        h = Mix(h, f.Hash); // Exclude source positions from the Plan hash.
         h = Mix(h, f.Shape);
         h = Mix(h, f.Extent);
         h = Mix(h, f.Ring ? 1 : 0);

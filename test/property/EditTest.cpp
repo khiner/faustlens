@@ -1,5 +1,4 @@
-// Every structural edit at every corpus ref: a disjoint script inside the target's span
-// that keeps unrebuilt bytes and parses.
+// Check bounded splices and source retention across generated corpus edits.
 #include "syntax/Edit.h"
 #include "property/Corpus.h"
 #include "property/Retentive.h"
@@ -26,7 +25,7 @@ struct Check {
     Sweep &Sw;
     size_t Budget = 96;
 
-    // `retain` answers the first ref inside the target whose bytes the script dropped.
+    // Return the first source ref whose required bytes were removed.
     template<class Retain> bool Run(const char *what, RefId at, const Edit &e, Retain retain) {
         const TermRef &t = L.R.Refs.Refs[e.Target];
         const EditScript script = L.Ctx->Splice(e);
@@ -87,7 +86,6 @@ void EntryRefs(const Loaded &l, RefId r, std::vector<RefId> &out) {
     for (const RefId c : l.R.Refs.Children(r)) EntryRefs(l, c, out);
 }
 
-// A `route` entry is draggable only where it is a plain decimal `Int`.
 bool Decimal(const Loaded &l, RefId r, uint32_t *out) {
     const ValueId v = l.R.Refs.Refs[r].ValueId;
     if (l.Terms.KindOf(v) != Kind::Int) return false;
@@ -95,7 +93,7 @@ bool Decimal(const Loaded &l, RefId r, uint32_t *out) {
     return std::from_chars(s.data(), s.data() + s.size(), *out).ec == std::errc();
 }
 
-// Appending a pair rebuilds every `Par`, so what owes bytes is the counts and kept entries.
+// Check retained route counts and entries after rebuilding comma nodes.
 RefId LostEntry(const Loaded &l, std::string_view src, RefId route, std::span<const RefId> gone, const EditScript &script) {
     const TermRef &t0 = l.R.Refs.Refs[route];
     std::vector<RefId> stack{route};
@@ -118,7 +116,7 @@ constexpr Connective Connectives[] = {
     {Kind::RecComp, 0},
 };
 
-// `at` returns false to stop that file, so one failure is reported per file, not per ref.
+// Report at most one failure per file.
 template<class AtRef> Merged SweepRefs(AtRef at) {
     return SweepFiles([&at](const CorpusFile &f, Loaded &l, Sweep &sw) {
         EditContext ed(l.Terms, l.R.Refs);
@@ -133,7 +131,7 @@ template<class AtRef> Merged SweepRefs(AtRef at) {
 TEST_CASE("wrap and insert: a new stage leaves every other node's bytes alone") {
     const Merged m = SweepRefs([](Check &ck, EditContext &ed, RefId i) {
         const ValueId probe = ck.L.Terms.MakeLeaf(Kind::Ident, ck.L.Terms.InternStr("fl_probe"));
-        // One connective and side per ref, cycled, rather than twelve sweeps.
+        // Cycle connective and side choices across refs.
         const Connective &c = Connectives[i % std::size(Connectives)];
         const Side side = (i / std::size(Connectives)) % 2 ? Side::Before : Side::After;
         const Edit e = ed.Compose(i, c.Kind, c.Form, side, probe);
@@ -146,7 +144,7 @@ TEST_CASE("wrap and insert: a new stage leaves every other node's bytes alone") 
 TEST_CASE("delete: removing a stage leaves the other one's bytes alone") {
     const Merged m = SweepRefs([](Check &ck, EditContext &ed, RefId i) {
         const Edit e = ed.Delete(i);
-        // The deleted stage is the one subtree nobody owes bytes to.
+        // Exclude the deleted stage from retention requirements.
         return !e || ck.Run("delete", i, e, {}, i);
     });
     Report(m, "deletions");

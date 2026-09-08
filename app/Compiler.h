@@ -1,4 +1,4 @@
-// A single worker owns the incremental Session. Requests and results own their data.
+// One worker owns the Session; requests and publications own their data.
 #pragma once
 
 #include "Live.h"
@@ -34,7 +34,7 @@ public:
 
     struct Publication {
         uint64_t Ticket = 0, DocumentRevision = 0;
-        // Independent pools: UI term construction cannot mutate the worker's arenas.
+        // UI term construction uses independent syntax pools.
         faustlens::Terms Terms;
         Snapshot Snap;
         Live::Prepared Audio;
@@ -50,7 +50,7 @@ public:
     Compiler(const Compiler &) = delete;
     Compiler &operator=(const Compiler &) = delete;
 
-    // Replaces queued work. A result for a superseded request is never returned.
+    // Replace queued work and discard superseded results.
     uint64_t Submit(Request);
     std::unique_ptr<Publication> Poll();
     void Retire(std::vector<std::shared_ptr<Artifact>>);

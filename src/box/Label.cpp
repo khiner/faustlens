@@ -41,14 +41,14 @@ std::vector<PathSeg> LabelToPath(std::string_view s) {
             const size_t slash = s.find('/', 2);
             out.push_back({std::string(s.substr(2, slash == std::string_view::npos ? std::string_view::npos : slash - 2)), code, true});
             if (slash == std::string_view::npos) {
-                // A trailing group still leaves a leaf, spelled as the empty name.
+                // Preserve an empty leaf after a trailing group.
                 out.push_back({std::string(), 0, false});
                 return out;
             }
             s.remove_prefix(slash + 1);
             continue;
         }
-        // The leaf, taken whole: a `/` with no `x:` prefix does *not* split.
+        // Split paths only at group prefixes such as `v:`, preserving slashes in leaf names.
         out.push_back({std::string(s), 0, false});
         return out;
     }
@@ -101,10 +101,9 @@ void ExtractMetadata(std::string_view full, std::string &label, std::map<std::st
                     ++deep;
                     key += c;
                 }
-                // Only the outermost colon separates. A nested one belongs to the key.
+                // Nested colons belong to the metadata key.
                 else if (c == ':' && deep == 1)
                     state = Value;
-                // A key with no colon carries the empty value.
                 else if (c == ']' && --deep < 1) close("");
                 else key += c;
                 break;

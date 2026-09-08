@@ -11,7 +11,6 @@ std::vector<std::string> Workspace::Paths() const {
     return out;
 }
 
-// A drag in flight is not part of history until CommitGesture.
 Workspace::State Workspace::Now() const { return {Files, Committed}; }
 
 void Workspace::Push() {
@@ -41,9 +40,9 @@ bool Workspace::Edit(const std::string &path, const EditScript &script) {
 }
 
 bool Workspace::CommitGesture(const controls::Values &now) {
-    // Against the pre-gesture state, so a drag that came back is no step.
+    // Compare with the pre-gesture value to omit gestures that restore it.
     if (Committed == now) return false;
-    Push(); // records `Committed`, so the entry is what to undo *to*
+    Push();
     Committed = now;
     Controls = now;
     return true;

@@ -6,7 +6,7 @@
 namespace faustlens::test {
 namespace {
 
-// The reference's name for one of our nodes, which is what the sides match on.
+// Return the reference spelling used for node comparison.
 std::string OpName(const Signals &s, SigId id) {
     const SigNode &n = s.Get(id);
     switch (s.KindOf(id)) {
@@ -50,10 +50,9 @@ struct Comparer {
     const Signals &S;
     const SigFile &F;
     std::map<Key, bool> Memo;
-    // Which of our groups each `Wn` stands for, inside the branches it heads.
+    // Enclosing Wn bindings to graph group ids.
     std::map<int64_t, SigId> Rec;
-    // `Wn` to its `letrec`, for occurrences outside those branches: the printer ids a
-    // recursion's body before the `letrec` line.
+    // Map Wn to letrec for references emitted before the group declaration.
     std::map<int64_t, const SigTerm *> Binder;
     std::vector<std::string> Path;
 
@@ -63,14 +62,13 @@ struct Comparer {
     }
 
     std::string Why;
-    // Where the walk parted.
     SigId At = NoSig;
 
     bool Equal(SigId a, const SigTerm &b) {
         const SigTerm &t = Resolve(b);
         const Key key{a, &t};
         if (const auto it = Memo.find(key); it != Memo.end()) return it->second;
-        Memo[key] = true; // assume, so a shared subgraph is not re-walked
+        Memo[key] = true;
         const bool r = Compare(a, t);
         Memo[key] = r;
         return r;
@@ -129,14 +127,14 @@ struct Comparer {
                 if (k == SigKind::Int && S.IntValue(a) == t.I) return true;
                 return No(a, t, "integer");
             case SigTerm::Kind::Real:
-                // The printer writes full precision, so exact comparison hides no drift.
+                // Compare full-precision literals exactly.
                 if (k == SigKind::Real && S.RealValue(a) == t.D) return true;
                 return No(a, t, "real");
             case SigTerm::Kind::Input:
                 if (k == SigKind::Input && n.Payload == uint32_t(t.I)) return true;
                 return No(a, t, "input");
             case SigTerm::Kind::Waveform:
-                // The printer elides the contents, so shape is all there is.
+                // Compare waveform shape because the dump omits samples.
                 if (k == SigKind::Waveform) return true;
                 return No(a, t, "waveform");
             case SigTerm::Kind::Name:
@@ -144,18 +142,18 @@ struct Comparer {
                 return No(a, t, "foreign name");
             case SigTerm::Kind::RecVar: {
                 if (const auto it = Rec.find(t.I); it != Rec.end() && it->second == a) return true;
-                // Not the group we are inside, so compare against its `letrec`, stopping the cycle.
+                // Compare external recursion references through letrec to terminate cycles.
                 const auto b = Binder.find(t.I);
                 if (b == Binder.end()) return No(a, t, "a recursive variable with no letrec");
                 return Equal(a, *b->second);
             }
             case SigTerm::Kind::String: return No(a, t, "a label outside a widget");
             case SigTerm::Kind::List: return No(a, t, "a list where a signal was expected");
-            case SigTerm::Kind::Id: // `Resolve` already followed it
+            case SigTerm::Kind::Id:
             case SigTerm::Kind::Op: break;
         }
 
-        // `x'` covers both a one-sample delay and a delay whose index folded to 1.
+        // Treat prime syntax as either Delay1 or a delay with a constant-one index.
         if (t.Text == "'") {
             if (k == SigKind::Delay1) return Children(a, t, 0, 0);
             if (k == SigKind::Delay && S.IsInt(S.Child(a, 1)) && S.IntValue(S.Child(a, 1)) == 1) {
@@ -182,7 +180,7 @@ struct Comparer {
         if (IsLabelled(k)) {
             if (t.Args.empty() || t.Args[0].Kind != SigTerm::Kind::String) return No(a, t, "a widget without a label");
             if (S.Str(n.Payload) != t.Args[0].Text) return No(a, t, "label");
-            // A `soundfile`'s channel count stays on the box, so the dump lacks it.
+            // Exclude soundfile channel counts absent from signal dumps.
             if (k == SigKind::Soundfile) return true;
             return Children(a, t, 1, 0);
         }

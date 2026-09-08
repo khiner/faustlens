@@ -27,7 +27,7 @@ struct Cursor {
     }
 };
 
-// `strtod` reads both spellings of an unbounded side, `inf` and `1.79769e+308`.
+// Accept both inf and finite maximum spellings of unbounded endpoints.
 bool Number(Cursor &c, double &out) {
     c.Skip();
     const std::string text(c.S.substr(c.I));
@@ -52,7 +52,7 @@ bool Header(Cursor &c, TypeEntry &t) {
     while (c.I < c.S.size() && (std::isalpha(static_cast<unsigned char>(c.S[c.I])) || c.S[c.I] == '?')) ++c.I;
     if (c.I == begin) return false;
     t.Code = std::string(c.S.substr(begin, c.I - begin));
-    // A tuplet's two letters carry only a variability.
+    // Tuplet headers specify variability only.
     if (t.Code.size() >= 5) {
         t.Nature = t.Code[0];
         t.Variability = t.Code[1];
@@ -64,7 +64,7 @@ bool Header(Cursor &c, TypeEntry &t) {
 
 bool Entry(Cursor &c, TypeEntry &t, bool nested);
 
-// Fields separate with `*`. A comma appears only inside an interval.
+// Separate fields at asterisks and reserve commas for intervals.
 bool Members(Cursor &c, TypeEntry &t) {
     for (;;) {
         TypeEntry m;
@@ -77,7 +77,7 @@ bool Members(Cursor &c, TypeEntry &t) {
 
 bool Entry(Cursor &c, TypeEntry &t, bool nested) {
     if (!Header(c, t) || !Interval(c, t)) return false;
-    if (nested) return true; // members are simple in every corpus file
+    if (nested) return true;
     if (c.Take(":Table(")) {
         t.Shape = TypeEntry::Shape::Table;
         TypeEntry content;
@@ -94,7 +94,7 @@ bool Entry(Cursor &c, TypeEntry &t, bool nested) {
 }
 
 std::string Num(double v) {
-    if (v == 0) return "0"; // so -0 and 0 do not read as different bounds
+    if (v == 0) return "0"; // normalize signed zero
     char buf[40];
     std::snprintf(buf, sizeof buf, "%.17g", v);
     return buf;
@@ -143,7 +143,7 @@ std::expected<TypeFile, std::string> ParseType(std::string_view text) {
 }
 
 std::string TypeKey(const TypeEntry &t) {
-    // Computability, vectorability, boolean and the lsb are deliberately absent.
+    // Compare nature, variability, and bounds only.
     std::string out;
     out += t.Nature ? t.Nature : '_';
     out += t.Variability ? t.Variability : '_';

@@ -1,5 +1,4 @@
-// Honours `[hidden]`, `[style:knob]`, `[scale:log|exp]`, `[unit:]` and
-// `[tooltip]`, ignoring every other key.
+// Support hidden, style, scale, unit, and tooltip metadata.
 #pragma once
 
 #include "signal/Ui.h"
@@ -9,7 +8,6 @@
 
 namespace faustlens::controls {
 
-// The curve is the program's, so it follows the reference converters.
 enum class Scale : uint8_t { Linear, Log, Exp };
 
 struct Style {
@@ -21,15 +19,14 @@ struct Style {
 
 Style StyleOf(const UiNode &);
 
-// `t` is normalized to `[0, 1]`. Log endpoints floor at `DBL_EPSILON`, as in
-// the reference's `ValueConverter.h`.
+// `t` is in [0, 1]; log endpoints floor at DBL_EPSILON as in reference ValueConverter.h.
 double ToValue(const UiNode &, Scale, double t);
 double ToPosition(const UiNode &, Scale, double v);
 
-// Applies the declared `min`, `max` and `step`, which the reference does not.
+// Quantize to the declared bounds and step.
 double Quantize(const UiNode &, double v);
 
-// `440 Hz`, `-6.00 dB`, `1`. Decimals come from the declared `step`.
+// Format with the declared step precision and unit.
 std::string Format(const UiNode &, const Style &, double v);
 
 } // namespace faustlens::controls

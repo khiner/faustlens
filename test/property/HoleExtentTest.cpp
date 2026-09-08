@@ -1,4 +1,3 @@
-// Every hole's span lies inside the `;`-delimited statement containing the failure.
 #include "property/Corpus.h"
 #include "syntax/Parser.h"
 
@@ -53,13 +52,13 @@ TEST_CASE("holes carry the children the failing frame had built") {
     for (const TermRef &ref : r.Refs.Refs) {
         if (terms.KindOf(ref.ValueId) != Kind::Hole) continue;
         found = true;
-        CHECK(terms.Children(ref.ValueId).size() >= 2); // `a` and `b`
+        CHECK(terms.Children(ref.ValueId).size() >= 2);
     }
     CHECK(found);
 }
 
 TEST_CASE("the same bytes recovered in different frames intern apart") {
-    // A hole's children are not a function of its lexeme, so two recoveries differ.
+    // Recovery-hole children can differ for the same source lexeme.
     Terms terms;
     const ParseResult top = Parse(terms, "process = ?;");
     const ParseResult nested = Parse(terms, "process = x with { y = ?; };");
@@ -85,7 +84,6 @@ TEST_CASE("a hole stays inside its statement") {
 }
 
 TEST_CASE("hole extent over the truncation corpus") {
-    // Truncating at a few interior offsets breaks the file in many different frames.
     size_t checked = 0;
     for (const CorpusFile &f : TestsCorpus()) {
         if (f.Text.size() < 32) continue;

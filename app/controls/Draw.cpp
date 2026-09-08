@@ -16,7 +16,7 @@ namespace {
 
 constexpr float KnobDiameter = 46.0f, VerticalHeight = 120.0f;
 
-// The value text is handed to ImGui as a `printf` format, so `%` must escape.
+// Escape `%` because ImGui interprets value text as a printf format.
 std::string AsFormat(const std::string &s) {
     std::string out;
     for (const char c : s) {
@@ -31,13 +31,13 @@ struct Turn {
     bool Released = false;
 };
 
-// A rotary, since ImGui has none. `*t` is a normalized position.
+// `*t` is normalized to [0, 1].
 Turn Knob(const char *id, float *t, const char *text) {
     const float d = KnobDiameter * ImGui::GetFontSize() / 13.0f;
     const ImVec2 at = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(id, {d, d});
     const bool active = ImGui::IsItemActive();
-    // Before the label, since `IsItemDeactivated` answers about the last item.
+    // Read deactivation before drawing the label, which changes ImGui's last item.
     Turn turn;
     turn.Released = ImGui::IsItemDeactivated();
     if (active) {
@@ -49,7 +49,6 @@ Turn Knob(const char *id, float *t, const char *text) {
         }
     }
 
-    // 3pi/4 and 3pi/2: three quarters of a turn, opening downward.
     constexpr float Start = 2.356194f, Sweep = 4.712389f;
     const ImVec2 c{at.x + d / 2, at.y + d / 2};
     const float r = d / 2 - 2;
@@ -83,13 +82,12 @@ void DrawWidget(const UiNode &n, Surface &s) {
     const float h = VerticalHeight * ImGui::GetFontSize() / 13.0f;
 
     ImGui::PushID(int(n.WidgetLabel));
-    // Grouped so the trace-back and tooltip below get one rect for every kind.
+    // Group the widget for a shared trace and tooltip rectangle.
     ImGui::BeginGroup();
     Interp &dsp = s.Dsp;
     const std::string_view path = s.Plan.Label(n.WidgetLabel);
     const double value = dsp.Control(n.WidgetLabel);
     const std::string text = Format(n, st, value);
-    // Every write goes through here, so the store cannot fall behind.
     const auto write = [&](double v) {
         dsp.SetControl(n.WidgetLabel, v);
         Record(s.Store, path, n, v);
@@ -98,7 +96,7 @@ void DrawWidget(const UiNode &n, Surface &s) {
     switch (n.Kind) {
         case UiKind::Button: {
             ImGui::Button(n.Label.c_str());
-            // Held, not toggled: 1 only while the mouse is down, so never stored.
+            // Momentary buttons remain active only during a press and are excluded from stored values.
             dsp.SetControl(n.WidgetLabel, ImGui::IsItemActive() ? 1.0 : 0.0);
             break;
         }
@@ -111,7 +109,7 @@ void DrawWidget(const UiNode &n, Surface &s) {
         case UiKind::VSlider:
         case UiKind::HSlider:
         case UiKind::NumEntry: {
-            // Normalized, so `[scale:log]` is the program's curve not ImGui's.
+            // Apply the program's scale to a normalized ImGui slider.
             float t = float(ToPosition(n, st.Scale, value));
             Turn turn;
             if (st.Knob) {
@@ -147,7 +145,7 @@ void DrawWidget(const UiNode &n, Surface &s) {
             } else {
                 ImGui::TextUnformatted(n.Label.c_str());
                 ImGui::SameLine();
-                ImGui::ProgressBar(t, {-FLT_MIN, 0}, text.c_str()); // an overlay, not a format
+                ImGui::ProgressBar(t, {-FLT_MIN, 0}, text.c_str());
             }
             break;
         }
@@ -158,7 +156,6 @@ void DrawWidget(const UiNode &n, Surface &s) {
             break;
     }
     ImGui::EndGroup();
-    // Trace-back on the right button, since a left press moves the widget.
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) s.Report.Traced = n.WidgetLabel;
     if (!st.Tooltip.empty()) ImGui::SetItemTooltip("%s", st.Tooltip.c_str());
     ImGui::PopID();
@@ -166,7 +163,6 @@ void DrawWidget(const UiNode &n, Surface &s) {
 
 void DrawNode(const UiNode &n, Surface &s, bool root);
 
-// A tab group is not a layout: each child is a page.
 void DrawChildren(const UiNode &n, Surface &s) {
     if (n.Orient == 2) {
         if (ImGui::BeginTabBar("##t")) {
@@ -197,7 +193,6 @@ void DrawNode(const UiNode &n, Surface &s, bool root) {
         DrawWidget(n, s);
         return;
     }
-    // The root's label is the program name the window already shows.
     if (!root && !n.Label.empty()) ImGui::SeparatorText(n.Label.c_str());
     ImGui::PushID(n.Label.c_str());
     DrawChildren(n, s);

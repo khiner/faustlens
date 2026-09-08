@@ -1,4 +1,3 @@
-// Constant folding over Box: iteration counts, widget bounds, `route`'s arguments, `2, 3 : +`.
 #pragma once
 
 #include "box/Box.h"
@@ -9,7 +8,7 @@
 
 namespace faustlens {
 
-// Saturating double-to-int, NaN to 0.
+// Saturate double-to-int conversions and map NaN to zero.
 int32_t ToInt(double);
 
 struct Num {
@@ -25,10 +24,10 @@ struct Num {
 
 inline BoxId MakeNum(Boxes &b, const Num &v) { return v.IsInt ? b.MakeInt(v.I) : b.MakeReal(v.D); }
 
-// Nothing where the primitive is not a function of its arguments alone.
+// Return empty for primitives requiring state.
 std::optional<Num> ApplyPrim(Prim, std::span<const Num> args);
 
-// `box` run with `inputs`, or nothing where any of it is not constant.
+// Evaluate a constant box with inputs, or return empty.
 std::optional<std::vector<Num>> FoldOutputs(const Boxes &, BoxId, std::span<const Num> inputs);
 
 std::optional<Num> FoldConstant(const Boxes &, BoxId);

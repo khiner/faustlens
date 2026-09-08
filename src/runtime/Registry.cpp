@@ -21,7 +21,7 @@ double Cosh(double x) { return std::cosh(x); }
 double Sinh(double x) { return std::sinh(x); }
 double Tanh(double x) { return std::tanh(x); }
 double CopySign(double x, double y) { return std::copysign(x, y); }
-// Declared `int` rather than `bool`, matching `math.lib`'s `ffunction`.
+// Return int to match the math.lib foreign declaration.
 int32_t IsNan(double x) { return std::isnan(x) ? 1 : 0; }
 int32_t IsInf(double x) { return std::isinf(x) ? 1 : 0; }
 
@@ -35,7 +35,7 @@ template<class R> R Invoke(const Symbol &s, std::span<const Scalar> a) {
                                                    reinterpret_cast<R (*)(double, int32_t)>(s.Fn)(a[0].D, a[1].I);
             return s.Args[1] == Nature::Real ? reinterpret_cast<R (*)(int32_t, double)>(s.Fn)(a[0].I, a[1].D) :
                                                reinterpret_cast<R (*)(int32_t, int32_t)>(s.Fn)(a[0].I, a[1].I);
-        default: return R{}; // arity three or more: `CanCall` said no
+        default: return R{};
     }
 }
 

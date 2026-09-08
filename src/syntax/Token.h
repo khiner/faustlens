@@ -14,7 +14,7 @@ enum class Tok : uint8_t {
 
     BDoc,
     EDoc,
-    DocChar, // one token per maximal prose run, not per character
+    DocChar, // one token per maximal prose run
     BEqn,
     EEqn,
     BDgm,
@@ -187,7 +187,7 @@ enum class Tok : uint8_t {
 
 inline constexpr int TokenKindCount = int(Tok::Count_);
 
-// The fixed spelling, or "" for tokens carrying a lexeme.
+// Return the fixed spelling, or empty for a lexeme-bearing token.
 std::string_view TokenText(Tok);
 std::string_view TokenName(Tok);
 
@@ -196,8 +196,7 @@ struct Spelling {
     Tok Kind;
 };
 
-// Every token whose spelling is a word, minus the listing-mode attributes, sorted by
-// text. Derived from `TokenText`.
+// Return word tokens sorted by spelling, excluding listing attributes.
 std::span<const Spelling> Keywords();
 
 constexpr bool IsTrivia(Tok k) { return k == Tok::Whitespace || k == Tok::LineComment || k == Tok::BlockComment; }
@@ -209,8 +208,7 @@ struct Token {
     uint32_t Begin, End; // byte offsets into the file, [begin, end)
 };
 
-// Tiles the file: every byte in exactly one token, trivia included. Only the
-// terminating zero-width `Eof` sits outside the tiling.
+// Cover every source byte once, including trivia; EOF has zero width.
 using TokenVector = std::vector<Token>;
 
 } // namespace faustlens

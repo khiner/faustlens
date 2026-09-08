@@ -1,4 +1,4 @@
-// Read forward for the parser's binding powers, backward for the printer's parens.
+// Shared operator binding powers for parsing and printing.
 #pragma once
 
 #include "syntax/Term.h"
@@ -10,32 +10,32 @@ namespace faustlens {
 
 enum class Assoc : uint8_t { Left, Right, Postfix };
 
-// A suffix operator takes a braced block rather than a right operand.
+// Suffix operators take a braced block.
 enum class OpShape : uint8_t { Infix, Postfix, Suffix };
 
 struct OpRow {
-    uint8_t Level = 0; // 1..15, lowest binds loosest. 0 means "not an operator"
+    uint8_t Level = 0; // 1..15 from lowest precedence; 0 for non-operators
     Assoc Assoc = Assoc::Left;
     OpShape Shape = OpShape::Infix;
     Kind Kind = Kind::Count_;
-    bool Spaced = false; // diagram-shaped operators space, arithmetic is tight
+    bool Spaced = false; // space composition operators
     Tok Tok = Tok::Count_;
 };
 
 inline constexpr uint8_t PrimitiveLevel = 16;
 
-// A same-level operand is taken on the associativity-favoured side only.
+// Allow equal precedence on the associative side.
 constexpr uint16_t LeftBp(const OpRow &r) { return uint16_t(2 * r.Level + (r.Assoc == Assoc::Right ? 1 : 0)); }
 constexpr uint16_t RightBp(const OpRow &r) { return uint16_t(2 * r.Level + (r.Assoc == Assoc::Left ? 1 : 0)); }
 
 uint8_t PrecOf(const Terms &, ValueId);
 
-// All agree but `BinOp`, whose operator is a payload recoverable only from the term.
+// Read the operator from BinOp payloads.
 const OpRow &RowOf(Tok);
 const OpRow &RowOf(Kind);
 const OpRow &RowOf(const Terms &, ValueId);
 
-// Argument admits `:`, `<:`, `:>`, `~` and below, but not `,`, `with`, `letrec`.
+// Argument positions exclude comma, with, and letrec.
 enum class Level : uint8_t { Expression = 1, Argument = 2 };
 
 bool ExcludedFromArgument(const Terms &, ValueId);

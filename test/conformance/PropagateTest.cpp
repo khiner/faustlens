@@ -1,4 +1,3 @@
-// Propagation over the reference corpus, and `.sig` isomorphism against the dumps.
 #include "signal/Propagate.h"
 #include "conformance/SigCompare.h"
 #include "conformance/Sweep.h"
@@ -53,7 +52,7 @@ TEST_CASE("propagation covers the reference corpus") {
     int programs = 0, recursive = 0;
     size_t nodes = 0;
 
-    // Not `Program`: the raw `Run` output is the subject, so nothing may run before the checks.
+    // Check raw Run output before normalization.
     for (const fs::path &p : DspPaths()) {
         const std::string name = p.stem().string();
         Session s;
@@ -88,7 +87,7 @@ TEST_CASE("propagation covers the reference corpus") {
             continue;
         }
 
-        // A reachable empty group means a reserved id escaped into the graph.
+        // Reject reachable unfinished recursive groups.
         std::vector<SigId> live;
         Reachable(sigs, outs, [&](SigId id) {
             live.push_back(id);
@@ -112,25 +111,22 @@ TEST_CASE("propagation covers the reference corpus") {
     MESSAGE("propagated ", programs, " programs, ", nodes, " reachable nodes, ", recursive, " with a recursive group");
 }
 
-// `FAUST_SIG_NO_NORM` suppresses only sum normalization, so the unnormalized dump is
-// still simplified.
+// FAUST_SIG_NO_NORM disables sum normalization while retaining simplification.
 TEST_CASE("`.sig` isomorphism against the unnormalized dump") { CHECK(SigSweep(".nonorm.sig", "unnormalized", false) == 94); }
 
-// The 20 that remain are exactly the watch list below.
 TEST_CASE("`.sig` isomorphism against the normalized dump") { CHECK(SigSweep(".sig", "normalized", true) >= 74); }
 
-// Association order is deferred, split by where it lands: outside a recursion the 2e-06
-// comparison absorbs it.
+// Classify association differences by whether feedback can accumulate their rounding error.
 namespace {
 
-// Over-approximated: a constant shared into a recursion is marked too.
+// Include constants shared into recursion in this conservative classification.
 std::vector<uint8_t> FeedbackCone(const Signals &s) {
     std::vector<SigId> branches;
     for (SigId i = 0; i < s.Size(); ++i) {
         if (s.KindOf(i) != SigKind::Rec) continue;
         for (const SigId c : s.Children(i)) branches.push_back(c);
     }
-    // `Proj` reads back into its own group, so the graph is cyclic here.
+    // Follow projections through their recursive group.
     std::vector<uint8_t> in(s.Size(), 0);
     Reachable(s, branches, [&](SigId id) {
         in[id] = 1;
@@ -139,14 +135,14 @@ std::vector<uint8_t> FeedbackCone(const Signals &s) {
     return in;
 }
 
-// Ours clamps a table index the reference proved in range and left alone.
+// Detect table clamps absent from the reference graph.
 bool IsClamp(const std::string &why) {
     return why.find("[max vs ") != std::string::npos && (why.find("sigRDTbl") != std::string::npos || why.find("sigWRTbl") != std::string::npos);
 }
 
 } // namespace
 
-// `outside` is weaker than it looks: the comparison stops at the first disagreement.
+// Classify only the first reported disagreement.
 TEST_CASE("association-order residue is recorded and classified") {
     int clamps = 0, feedback = 0, outside = 0;
     std::vector<std::string> failures, rows;
@@ -198,6 +194,6 @@ TEST_CASE("association-order residue is recorded and classified") {
     CHECK(failures.empty());
     CHECK(feedback == 11);
     CHECK(outside == 9);
-    // A clamp reappearing means interval analysis lost a bound it used to prove.
+    // Detect regressions in proven table-index bounds.
     CHECK(clamps == 0);
 }

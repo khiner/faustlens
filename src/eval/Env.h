@@ -1,4 +1,4 @@
-// Interned persistent environments: identical layers are one node, which the evaluation memo needs.
+// Intern equivalent environment layers for evaluation memo keys.
 #pragma once
 
 #include "box/Box.h"
@@ -14,8 +14,7 @@ namespace faustlens {
 inline constexpr EnvId NilEnv = 0;
 inline constexpr uint32_t NoResolution = 0xFFFFFFFFu;
 
-// A definition closes over its own layer, so deriving its env at lookup is what lets
-// layers intern.
+// Derive a definition's closure environment from its containing layer.
 enum class BindKind : uint8_t {
     Definition,
     Closure, // `e[defs]`'s replacements
@@ -43,15 +42,14 @@ struct Envs {
     std::vector<Node> Nodes;
     std::vector<Binding> Pool;
     std::unordered_map<uint64_t, std::vector<EnvId>> Buckets;
-    // A file's layer holds every definition it imports, so a linear scan costs the whole library.
+    // Index imported definitions to avoid scanning the full library on lookup.
     std::vector<std::unordered_map<StrId, uint32_t>> Index;
 
     Envs();
 
-    // Bindings keep insertion order, which is source order.
     EnvId Push(EnvId parent, std::span<const Binding> bindings, bool barrier = false, uint32_t resolution = NoResolution);
     EnvId PushValue(EnvId parent, StrId name, BindKind, uint32_t id, EnvId env = NilEnv);
-    // A barrier stops a `stop_at_barrier` lookup and is invisible to any other.
+    // Stop only stop_at_barrier lookups at this layer.
     EnvId PushBarrier(EnvId parent) { return Push(parent, {}, true); }
 
     EnvId Parent(EnvId e) const { return Nodes[e].Parent; }
@@ -63,7 +61,7 @@ struct Envs {
     const Binding *Lookup(EnvId, StrId name, bool stop_at_barrier = false) const;
     const Binding *LookupLocal(EnvId, StrId name) const;
 
-    // The nearest enclosing file's key, so `component` and `library` reach it from any scope.
+    // Nearest enclosing file for component and library resolution.
     uint32_t ResolutionOf(EnvId) const;
 
     EnvId ReplaceDefs(EnvId layer, std::span<const Binding> replacements);

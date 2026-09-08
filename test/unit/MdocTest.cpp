@@ -1,4 +1,3 @@
-// The mdoc lexer modes, which only four corpus files reach, so hand-written.
 #include "syntax/Lexer.h"
 #include "syntax/Parser.h"
 #include "syntax/Printer.h"
@@ -103,7 +102,7 @@ TEST_CASE("mdoc round-trips") {
 }
 
 TEST_CASE("the mode stack returns to prose after every pushing tag") {
-    // Prose either side is what shows the pop: in default mode those words would be identifiers.
+    // Prose tokens verify restoration of mdoc mode.
     const std::string src = "<mdoc>one<equation>a</equation>two<diagram>b</diagram>"
                             "three<metadata>author</metadata>four</mdoc>";
     CheckTiling(src);
@@ -111,7 +110,6 @@ TEST_CASE("the mode stack returns to prose after every pushing tag") {
     const ParseResult r = Parse(t, src);
     REQUIRE(r.Diags.empty());
     const auto parts = t.Children(FirstStatement(t, r));
-    // prose, equation, prose, diagram, prose, metadata, prose
     REQUIRE(parts.size() == 7);
     CHECK(t.KindOf(parts[0]) == Kind::MdocProse);
     CHECK(t.KindOf(parts[1]) == Kind::MdocEquation);
@@ -131,8 +129,7 @@ TEST_CASE("an equation holds a whole level-1 expression") {
 }
 
 TEST_CASE("prose is one token per maximal run, and `<` in it is ordinary text") {
-    // Flex returns DOCCHAR a character at a time, so one token per run sizes the token
-    // vector by structure rather than by file length.
+    // Coalesce prose into runs to bound token count by document structure.
     const std::string src = "<mdoc>a < b and a <= b, but not <equation>x</equation></mdoc>";
     CheckTiling(src);
     const LexResult lex = Lex(src);
@@ -144,7 +141,7 @@ TEST_CASE("prose is one token per maximal run, and `<` in it is ordinary text") 
 }
 
 TEST_CASE("listing mode tiles its own whitespace") {
-    // Flex's `lst` state has no whitespace production and silently ECHOes these spaces.
+    // Reference Flex echoes listing whitespace without a token.
     for (const std::string_view src : {
              "<mdoc><listing /></mdoc>",
              "<mdoc><listing/></mdoc>",
@@ -171,7 +168,7 @@ TEST_CASE("an unknown listing attribute is diagnosed, not consumed silently") {
 }
 
 TEST_CASE("`<mdoc>` beats the fstring rule, and `<math.h>` is unaffected") {
-    // Both rules match the same six bytes, and flex breaks the tie by rule order.
+    // Match Flex rule order for equal-length tokens.
     const LexResult a = Lex("<mdoc></mdoc>");
     REQUIRE(a.Tokens.size() >= 2);
     CHECK(a.Tokens[0].Kind == Tok::BDoc);

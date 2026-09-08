@@ -12,7 +12,7 @@ bool Same(const Binding &a, const Binding &b) { return a.Name == b.Name && a.Kin
 } // namespace
 
 Envs::Envs() {
-    Nodes.push_back({}); // NilEnv
+    Nodes.push_back({});
     Index.emplace_back();
 }
 
@@ -38,7 +38,7 @@ EnvId Envs::Push(EnvId parent, std::span<const Binding> bindings, bool barrier, 
     const auto id = EnvId(Nodes.size());
     Nodes.push_back({parent, first, uint32_t(bindings.size()), resolution, barrier, h});
     Index.emplace_back();
-    // Later wins, matching a lookup that scans outward from the end.
+    // Later bindings override earlier ones.
     for (uint32_t i = 0; i < bindings.size(); ++i) Index[id][bindings[i].Name] = i;
     bucket.push_back(id);
     return id;
@@ -70,7 +70,6 @@ uint32_t Envs::ResolutionOf(EnvId e) const {
 }
 
 EnvId Envs::ReplaceDefs(EnvId layer, std::span<const Binding> replacements) {
-    // A definition names its own layer implicitly, so nothing needs re-pointing.
     std::vector<Binding> merged(Bindings(layer).begin(), Bindings(layer).end());
     for (const Binding &r : replacements) {
         const auto it = std::ranges::find_if(merged, [&](const Binding &b) { return b.Name == r.Name; });

@@ -28,13 +28,13 @@ Payload PayloadOf(BoxKind k) {
         case BoxKind::Group:
         case BoxKind::Soundfile:
         case BoxKind::PatternVar: return Payload::Str;
-        // A slot's payload is a name reparsing renames, so only the bijection counts.
+        // Compare renamed slots through a bijection.
         case BoxKind::Slot: return Payload::None;
         default: return Payload::None;
     }
 }
 
-// `.box` files print at limited precision, so reals need a relative tolerance.
+// Use relative tolerance for the limited precision of reference .box output.
 bool Close(double p, double q) { return p == q || std::fabs(p - q) <= 1e-9 * std::max(1.0, std::fabs(p)); }
 
 struct Comparer {
@@ -47,16 +47,15 @@ struct Comparer {
     const BoxSide &A;
     const BoxSide &B;
     std::map<Key, bool> Memo;
-    // Enclosing `Symbolic` bindings, innermost last. Scoped, not global: one shared subtree
-    // can carry two slot numbers.
+    // Track enclosing symbolic bindings innermost last.
     std::vector<std::pair<uint32_t, uint32_t>> Binders;
     std::string Why;
 
     bool Equal(BoxId x, BoxId y) {
-        // Binder depth is in the key: one pair can be asked under two `Symbolic` scopes.
+        // Include binder depth in memo keys for shared subgraphs evaluated under different scopes.
         const Key key{x, y, uint32_t(Binders.size())};
         if (const auto it = Memo.find(key); it != Memo.end()) return it->second;
-        Memo[key] = true; // assume, so a shared subgraph is not re-walked
+        Memo[key] = true;
         const bool r = Compare(x, y);
         Memo[key] = r;
         return r;
@@ -71,7 +70,7 @@ struct Comparer {
         const BoxNode &nx = A.Boxes.Get(x);
         const BoxNode &ny = B.Boxes.Get(y);
         const BoxKind kx = A.Boxes.KindOf(x), ky = B.Boxes.KindOf(y);
-        // Before the kind test: `x : (a <: b)` and `(x : a) <: b` are one diagram.
+        // Compare equivalent composition chains before node kinds.
         if (Chained(kx) || Chained(ky)) return SameChain(x, y);
         if (kx != ky) return No(x, y, "different kinds");
         if (nx.Form != ny.Form) return No(x, y, "different form tags");
@@ -146,8 +145,7 @@ struct Comparer {
             default: break;
         }
 
-        // One printed priority for `:`, `<:` and `:>`, so the tree is unrecoverable and the
-        // chain comparison is exact, not a weakening.
+        // Compare flattened chains because the reference printer uses equal precedence for :, <:, and :>.
         if (kx == BoxKind::Par) return SameChain(x, y);
 
         for (uint32_t i = 0; i < nx.ChildCount; ++i)
@@ -169,7 +167,6 @@ struct Comparer {
         return true;
     }
     static bool Chained(BoxKind k) { return k == BoxKind::Seq || k == BoxKind::Split || k == BoxKind::Merge; }
-    // Composition operators chain together, `,` only with itself.
     static void Flatten(const BoxSide &s, BoxId b, Chain &out, bool par = false) {
         const BoxKind k = s.Boxes.KindOf(b);
         if (out.Operands.empty() && out.Ops.empty()) par = k == BoxKind::Par;
@@ -198,7 +195,7 @@ std::string PrintBox(const BoxSide &s, BoxId b, int max_depth) {
     std::string out(BoxKindName(k));
     switch (PayloadOf(k)) {
         case Payload::Int: out += std::format("({})", s.Boxes.IntValue(b)); break;
-        // `{:f}`, not `{}`: the pinned shape text spells a real as `1.500000`.
+        // Preserve fixed-point formatting in diagnostic snapshots.
         case Payload::Real: out += std::format("({:f})", s.Boxes.RealValue(b)); break;
         case Payload::Prim: out += std::format("({})", PrimText(Prim(n.Payload))); break;
         case Payload::Str: out += std::format("({})", s.Terms.Str(n.Payload)); break;
@@ -216,7 +213,6 @@ std::string PrintBox(const BoxSide &s, BoxId b, int max_depth) {
 }
 
 std::map<std::string, std::vector<std::string>> DeclareView(const MetaSet &m) {
-    // `MetaSet` already deduplicates on (key, value), so only grouping is left.
     std::map<std::string, std::vector<std::string>> raw;
     std::vector<std::string> order;
     for (const auto &[k, v] : m.Entries) {
@@ -227,7 +223,7 @@ std::map<std::string, std::vector<std::string>> DeclareView(const MetaSet &m) {
     std::map<std::string, std::vector<std::string>> out;
     for (const std::string &k : order) {
         const std::vector<std::string> &vs = raw[k];
-        // `author` and `contributor` are the only keys whose duplicates survive printing.
+        // Preserve repeated author and contributor metadata as the reference printer does.
         if (k == "author") {
             out["author"].push_back(vs.front());
             for (size_t i = 1; i < vs.size(); ++i) out["contributor"].push_back(vs[i]);
@@ -247,7 +243,7 @@ std::map<std::string, std::vector<std::string>> DeclareView(const MetaSet &m) {
 
 namespace {
 
-// Compilation keys, not program ones. `name` and `filename` are excluded: both sides make them.
+// Exclude reference-generated compilation metadata from comparison.
 bool IsSynthesizedKey(const std::string &k) {
     if (k == "version" || k == "compile_options") return true;
     constexpr std::string_view Path = "library_path";

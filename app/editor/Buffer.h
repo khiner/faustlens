@@ -1,5 +1,3 @@
-// The text buffer for one file. Undo lives in `Workspace`: an undo unit spans
-// every open buffer.
 #pragma once
 
 #include "syntax/Splice.h"
@@ -11,8 +9,7 @@
 namespace faustlens::app {
 
 struct Buffer {
-    // Never null. Shared and immutable so recording a snapshot is a refcount, and
-    // the pointer is the whole snapshot.
+    // Non-null immutable text shared with history entries.
     std::shared_ptr<const std::string> Shared;
     uint32_t Cursor = 0, Anchor = 0;
 
@@ -22,7 +19,7 @@ struct Buffer {
     void SetCursor(uint32_t offset);
     void SetSelection(uint32_t cursor, uint32_t anchor);
 
-    // Neither records anything undoable. The caller snapshots via `Workspace`.
+    // The caller records undo state through Workspace.
     void Replace(uint32_t begin, uint32_t end, std::string_view with);
     void Apply(const EditScript &);
 

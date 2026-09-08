@@ -1,4 +1,3 @@
-// The link between a file's bytes and the stages the box view draws.
 #include "boxview/Select.h"
 #include "property/Corpus.h"
 #include "query/Query.h"
@@ -47,8 +46,7 @@ TEST_CASE("text and diagram selection have the same occurrence ancestry") {
 }
 
 TEST_CASE("selection closes over the reference corpus") {
-    // A composition's span begins where its first child's does, so a stage's
-    // anchor must be a byte no child covers.
+    // Choose a stage anchor outside child spans.
     size_t checked = 0, unmarked = 0, reresolved = 0;
     std::map<std::string, size_t> unmarked_by_kind, reresolved_by_kind;
 
@@ -97,7 +95,6 @@ TEST_CASE("the selection names one occurrence of a value drawn twice") {
     const Node *at = SelectedNode(*f, root, ProcessBodyRef(s.Terms, *f), sel);
     REQUIRE(at != nullptr);
     CHECK(at == &root.Kids[1]);
-    // Searching by value alone finds the first box instead, which is the difference.
     CHECK(Layout::Find(root, sel.Value()) == &root.Kids[0]);
 
     const size_t first = f->Text.find('_');
@@ -106,8 +103,7 @@ TEST_CASE("the selection names one occurrence of a value drawn twice") {
 }
 
 TEST_CASE("every byte of a diagram's source selects a stage") {
-    // A diagram collapses everything but compositions into one stage, so selection walks
-    // outwards from the innermost ref.
+    // Select the nearest ancestor represented in the diagram.
     size_t bytes = 0, dead = 0;
 
     ForEachDiagram([&](Session &, const FileView &f, ValueId body, const Node &root) {

@@ -26,7 +26,6 @@ TEST_CASE("parentheses are re-derived, not stored") {
     CHECK(RoundTrip("process = (a+b)*c;") == "process = (a+b)*c;");
     CHECK(RoundTrip("process = a+(b*c);") == "process = a+b*c;");
     CHECK(RoundTrip("process = a+(b+c);") == "process = a+(b+c);");
-    // Levels 12-15 chain, so no parentheses are needed between them.
     CHECK(RoundTrip("process = (a.b)(x);") == "process = a.b(x);");
     CHECK(RoundTrip("process = (a')(x);") == "process = a'(x);");
     CHECK(RoundTrip("process = f((a,b));") == "process = f((a,b));");
@@ -35,7 +34,6 @@ TEST_CASE("parentheses are re-derived, not stored") {
 }
 
 TEST_CASE("layout follows the corpus's dominant convention") {
-    // Diagram-shaped operators take one space each side, expression-shaped ones are tight.
     CHECK(RoundTrip("process = a:b;") == "process = a : b;");
     CHECK(RoundTrip("process = a <: b :> c;") == "process = a <: b :> c;");
     CHECK(RoundTrip("process = a  ,  b;") == "process = a,b;");
@@ -95,13 +93,12 @@ TEST_CASE("PutGet over the constructs") {
 }
 
 TEST_CASE("printing inserts a space where a seam would fuse tokens") {
-    // `3.name` would lex as the float `3.` then `name`, a different program.
+    // Spacing prevents 3.name from lexing as floating-point 3. followed by name.
     Terms terms;
     const ValueId three = terms.MakeLeaf(Kind::Int, terms.InternStr("3"));
     const ValueId access = terms.Make(Kind::Access, 0, 0, terms.InternStr("name"), {three});
     CHECK(PrintTerm(terms, access) == "3 .name");
 
-    // Word-shaped operators are tight in the table and would otherwise fuse.
     const ValueId a = terms.MakeLeaf(Kind::Ident, terms.InternStr("a"));
     const ValueId b = terms.MakeLeaf(Kind::Ident, terms.InternStr("b"));
     const ValueId pair[] = {a, b};
@@ -110,11 +107,11 @@ TEST_CASE("printing inserts a space where a seam would fuse tokens") {
 }
 
 TEST_CASE("a recovered hole stays on the rec side of `where`") {
-    // Splitting at the first non-`RecDef` would drag every `RecDef` after a hole across `where`.
+    // Keep recovery holes and subsequent RecDefs before where.
     Terms terms;
     const std::string src = "process = a letrec { 'x = ?; 'y = y; where z = 1; };";
     const ParseResult r = Parse(terms, src);
-    REQUIRE(!r.Diags.empty()); // the `?` is what makes the hole
+    REQUIRE(!r.Diags.empty());
     const std::string printed = PrintTerm(terms, r.Root);
     CAPTURE(printed);
     CHECK(printed.find("'y = y;") < printed.find("where"));

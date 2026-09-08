@@ -1,5 +1,4 @@
-// Reader for the reference's `.fir` notation, the oracle for Plan. Its printer omits
-// separators, so a list comma is optional.
+// Accept optional list commas in reference .fir notation.
 #pragma once
 
 #include <expected>
@@ -9,37 +8,37 @@
 
 namespace faustlens::test {
 
-// `Call` covers every `XxxInst(...)` and every bracketed group, named or not.
+// Call represents instructions and named or unnamed bracketed groups.
 struct FirTerm {
     enum class Kind { Call, Name, Str, Num };
 
     Kind Kind = Kind::Name;
-    // A flag word keeps its bar: `StaticStruct|Const` is one `Name`.
+    // Preserve flag combinations such as StaticStruct|Const as one Name.
     std::string Name;
-    double Num = 0; // `Num` only
+    double Num = 0;
     char Bracket = '('; // `Call`: one of `(`, `{`, `<`
-    std::vector<FirTerm> Args; // `Call`
+    std::vector<FirTerm> Args;
     std::vector<FirTerm> Index;
 };
 
-// `DeclareFunInst` brackets only when it is a definition, and only indentation tells it apart.
+// Use indentation to distinguish DeclareFunInst definitions from declarations.
 struct FirStmt {
     FirTerm Term;
     std::vector<FirStmt> Body;
 };
 
 struct FirSection {
-    std::string Name; // as written between the `=` runs, less any ` begin` suffix
+    std::string Name;
     std::vector<FirStmt> Stmts;
-    std::vector<std::string> Notes; // lines the statement grammar has no shape for, in order
+    std::vector<std::string> Notes; // unparsed lines in source order
 };
 
 struct FirFile {
-    std::string Container; // the `Container "mydsp"` marker's name
+    std::string Container;
     std::vector<FirSection> Sections;
 };
 
-// Unexpected gets the offending line and a reason.
+// Return the offending line and reason on failure.
 std::expected<FirFile, std::string> ParseFir(std::string_view text);
 
 std::string PrintFirTerm(const FirTerm &);

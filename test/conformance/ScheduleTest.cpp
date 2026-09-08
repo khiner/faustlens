@@ -1,4 +1,4 @@
-// Constants are not compared: the reference's `fConst` sharing analysis is one we do not have.
+// Exclude constant sharing from schedule comparison.
 #include "signal/Schedule.h"
 #include "conformance/FirParse.h"
 #include "conformance/Sweep.h"
@@ -16,7 +16,7 @@ using namespace faustlens::test;
 
 namespace {
 
-// Reference field names carry class and nature: `?Rec` is recursive history, `?Vec` a delay.
+// Reference Rec fields store recursive history and Vec fields store delays.
 bool IsDelayField(const std::string &name, char &nature) {
     static const char *Prefixes[] = {"fRec", "iRec", "fVec", "iVec"};
     for (const char *p : Prefixes) {
@@ -29,11 +29,10 @@ bool IsDelayField(const std::string &name, char &nature) {
     return false;
 }
 
-// Names are not compared: the reference numbers its fields in emission order.
+// Compare field layouts independently of reference emission numbering.
 std::string LineKey(char nature, uint32_t extent) { return std::format("{}[{}]", nature, extent); }
 
-// A table program emits a `DSP struct` per sub container, so read the one named for the container.
-// `iota` is a second result, not an error: the reference names its counter `IOTA0`.
+// Select the named container's DSP struct and report its IOTA counter separately.
 std::expected<std::map<std::string, int>, std::string> TheirLines(const FirFile &f, bool &iota) {
     std::map<std::string, int> out;
     bool found = false;
@@ -50,7 +49,6 @@ std::expected<std::map<std::string, int>, std::string> TheirLines(const FirFile 
                 if (pair.Kind != FirTerm::Kind::Call || pair.Args.size() != 2) continue;
                 const std::string &decl = pair.Args[0].Name;
                 const std::string &name = pair.Args[1].Name;
-                // The name is `IOTA0`, not `IOTA`.
                 if (name.starts_with("IOTA")) iota = true;
                 char nature = 'f';
                 if (!IsDelayField(name, nature)) continue;
@@ -85,7 +83,6 @@ TEST_CASE("`.fir` projection: delay lines and their shapes") {
         const Signals &sigs = prog.Sigs;
         const std::vector<SigId> &outs = prog.Outs;
 
-        // Reference Faust accepted all 94, so any rejection here is ours.
         const auto maxd = MaxDelays(sigs, InferIntervals(sigs), outs);
         if (!maxd) {
             ++differed;
@@ -146,10 +143,8 @@ TEST_CASE("`.fir` projection: delay lines and their shapes") {
     census.Report();
 
     CHECK(agreed + differed == 94);
-    // Not a ratchet: a rejection is a program reference Faust compiles and we do not.
     CHECK(rejected == 0);
 
-    // A ratchet. Ten of the eleven differences are on `propagate_test.cpp`'s association-order
-    // list. `harpe` is the exception: isomorphic graph, twice the lines.
+    // Preserve the recorded delay-layout differences, including harpe beyond the association-order list.
     CHECK(agreed >= 83);
 }

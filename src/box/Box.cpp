@@ -8,8 +8,7 @@ namespace {
 
 constexpr uint64_t Seed = 0x51ED270B7C4A1E35ull;
 
-// Input counts, one row group per `PrimText` row in term.cpp -- keep the two in
-// step. The trailing 0 is `Count_`.
+// Keep primitive arities in PrimText order, with a trailing zero for Count_.
 constexpr std::array<uint8_t, size_t(Prim::Count_) + 1> PrimArities = {
     1, 1, 1, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1,
     1, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 3, 5, 3, 4, 3, 1, 1, 0,
@@ -91,8 +90,7 @@ Arity Boxes::Infer(BoxKind k, uint32_t payload, uint32_t aux, std::span<const Bo
         case BoxKind::Rec: {
             const Arity &a = Arities[children[0]], &b = Arities[children[1]];
             Arity out;
-            // Untyped rather than wrong, so a pattern holding a `PatternVar`
-            // composes freely.
+            // Allow composition while pattern-variable arity is undetermined.
             if (!a.Known || !b.Known) return {};
             return Compose(k, a, b, out) ? out : Arity{};
         }
@@ -101,8 +99,7 @@ Arity Boxes::Infer(BoxKind k, uint32_t payload, uint32_t aux, std::span<const Bo
 }
 
 BoxId Boxes::Make(BoxKind kind, uint8_t form, uint32_t payload, uint32_t aux, std::span<const BoxId> children) {
-    // `Error` absorbs its neighbours, so one typo yields one diagnostic and not
-    // one per enclosing composition.
+    // Propagate Error without adding diagnostics for enclosing compositions.
     if (Error != NoBox)
         for (const BoxId c : children)
             if (c == Error) return Error;
@@ -116,7 +113,7 @@ BoxId Boxes::Make(BoxKind kind, uint8_t form, uint32_t payload, uint32_t aux, st
     if (const BoxId id = Find(h, proto, children); id != NotFound) return id;
 
     const Arity arity = Infer(kind, payload, aux, children);
-    // The net under `Composable`: a mismatched composition is unrepresentable.
+    // Reject mismatched composition arities at construction.
     if (!arity.Known && IsComposition(kind) && Arities[children[0]].Known && Arities[children[1]].Known) return Error;
 
     Arities.push_back(arity);
@@ -125,7 +122,7 @@ BoxId Boxes::Make(BoxKind kind, uint8_t form, uint32_t payload, uint32_t aux, st
 
 bool Boxes::Composable(BoxKind k, BoxId a, BoxId b) const {
     const Arity &x = Arities[a], &y = Arities[b];
-    if (!x.Known || !y.Known) return true; // nothing to disagree about yet
+    if (!x.Known || !y.Known) return true;
     Arity out;
     return Compose(k, x, y, out);
 }

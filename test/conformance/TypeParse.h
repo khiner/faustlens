@@ -1,6 +1,4 @@
-// The reference's `.type` notation: a `Size = N` header then N lexically sorted
-// `Type = ...` lines, one per node and not per type. The five letters are nature,
-// variability, computability, vectorability and boolean, a tuplet printing two.
+// Parse one reference type entry per node, including repeated types.
 #pragma once
 
 #include <cstdint>
@@ -28,10 +26,10 @@ struct TypeFile {
     std::vector<TypeEntry> Types;
 };
 
-// Unexpected gets the offending line and a reason.
+// Return the offending line and reason on failure.
 std::expected<TypeFile, std::string> ParseType(std::string_view text);
 
-// A comparable key: nature, variability, the bounds, and the shape.
+// Return a comparison key for nature, variability, bounds, and structure.
 std::string TypeKey(const TypeEntry &);
 
 std::string PrintTypeEntry(const TypeEntry &);

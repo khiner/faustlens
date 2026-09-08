@@ -11,7 +11,6 @@ QueryKey EnvKey(const std::string &p) { return {QueryKind::FileEnv, p, {}}; }
 QueryKey VfsKey() { return {QueryKind::VfsRevision, {}, {}}; }
 QueryKey ResolveKey(const std::string &spec, const std::string &importer) { return {QueryKind::Resolve, spec, importer}; }
 
-// A `declare`'s namespace key, so `math.lib`'s `author` is `math.lib/author`.
 std::string_view Basename(std::string_view path) {
     const size_t slash = path.find_last_of('/');
     return slash == std::string_view::npos ? path : path.substr(slash + 1);
@@ -21,12 +20,11 @@ std::string_view Basename(std::string_view path) {
 
 Session::Session() : Eval(Terms, Boxes, Envs) {
     Entries[VfsKey()].ChangedAt = Revision;
-    // A resolver map baked into the environment would be cyclic.
+    // Resolve lazily to support mutually referring file environments.
     Eval.Resolve = [this](std::string_view importer, std::string_view spec) {
         const auto target = Resolve(std::string(spec), std::string(importer));
         if (!target) return NilEnv;
         const FileEnvResult &r = FileEnv(*target);
-        // The target contributes header metadata as an `import` does.
         for (const auto &[k, v] : r.Meta.Entries) Metadata.Add(k, v);
         return r.Env;
     };
@@ -44,13 +42,13 @@ void Session::SetBuffer(const std::string &path, std::string text) {
     ++Revision;
     Vfs.SetBuffer(path, std::move(text));
     Entries[TextKey(path)].ChangedAt = Revision;
-    // A buffer opening is also a change to what `Resolve` can see.
+    // Opening a buffer can change import resolution.
     Entries[VfsKey()].ChangedAt = Revision;
 }
 
 void Session::Touch(const std::string &path) {
     ++Revision;
-    // Stamping alone would recompute from the cached read and repeat the answer.
+    // Invalidate the disk cache before recomputing file text.
     Vfs.Forget(path);
     Entries[TextKey(path)].ChangedAt = Revision;
 }
@@ -70,7 +68,7 @@ void Session::AddSearchPath(std::filesystem::path p) {
 
 bool Session::NeedsRecompute(const QueryKey &key, Entry &e) {
     if (e.VerifiedAt == Revision) return false;
-    if (e.VerifiedAt == 0) return true; // never computed
+    if (e.VerifiedAt == 0) return true;
     const std::vector<QueryKey> deps = e.Deps;
     bool stale = false;
     for (const QueryKey &d : deps) {
@@ -78,7 +76,7 @@ bool Session::NeedsRecompute(const QueryKey &key, Entry &e) {
             case QueryKind::Terms: TermsOf(d.A); break;
             case QueryKind::FileEnv: FileEnv(d.A); break;
             case QueryKind::Resolve: Resolve(d.A, d.B); break;
-            default: break; // inputs carry their own `ChangedAt`
+            default: break;
         }
         if (Entries[d].ChangedAt > e.VerifiedAt) stale = true;
     }
@@ -89,8 +87,7 @@ bool Session::NeedsRecompute(const QueryKey &key, Entry &e) {
 std::optional<std::string> Session::Resolve(const std::string &spec, const std::string &importer) {
     const QueryKey key = ResolveKey(spec, importer);
     Record(key);
-    // Depending on the VFS revision retries a failed resolution exactly when
-    // something could have changed, without negative caching.
+    // Depend on the VFS revision to retry failed resolutions after filesystem changes.
     Entry &probe = EntryFor(key);
     if (!NeedsRecompute(key, probe)) return ResolveResults[key];
 
@@ -133,8 +130,7 @@ void Session::ComputeTerms(const std::string &path) {
     }
 
     Entry &e = Entries[key];
-    // The one hand-written equality rule: spans shift on every whitespace edit, so
-    // comparing whole results would defeat the cutoff.
+    // Compare term values only so whitespace edits preserve early cutoff.
     const auto it = TermsResults.find(path);
     const bool same = it != TermsResults.end() && it->second.Root == next.Root && it->second.Diags.size() == next.Diags.size();
     if (!same) e.ChangedAt = Revision;
@@ -160,11 +156,10 @@ void Session::ComputeFileEnv(const std::string &path) {
     FileEnvResult next;
     next.Diags = t.Diags;
 
-    // Only `import` resolves here, its bindings merging into this layer. `component` and
-    // `library` need two interned layers referencing each other, so the resolver takes them.
+    // Flatten imports here and resolve component/library environments lazily.
     if (t.Root != NoTerm) {
         const auto stmts = Terms.Children(t.Root);
-        // Copied out: every call below can grow the pool the span points into.
+        // Copy before recursive queries can grow the pool.
         const std::vector<ValueId> statements(stmts.begin(), stmts.end());
         std::vector<Binding> imported;
         for (const ValueId s : statements) {
@@ -180,7 +175,7 @@ void Session::ComputeFileEnv(const std::string &path) {
                 next.Diags.push_back({.Code = Code::ResImportCycle, .Subject = s, .Payload = spec});
                 continue;
             }
-            // Imports flatten into one layer, so two files defining a name collide.
+            // Report same-name definitions in flattened imports.
             for (const Binding &b : sub.Bindings) {
                 const auto seen = std::ranges::find_if(imported, [&](const Binding &x) { return x.Name == b.Name; });
                 if (seen == imported.end()) imported.push_back(b);
@@ -199,7 +194,6 @@ void Session::ComputeFileEnv(const std::string &path) {
 
     Entry &e = Entries[key];
     const auto it = EnvResults.find(path);
-    // Interned, so an edit that re-derives the same environment cuts off here.
     if (it == EnvResults.end() || it->second.Env != next.Env) e.ChangedAt = Revision;
     EnvResults[path] = std::move(next);
     e.VerifiedAt = Revision;
@@ -209,8 +203,7 @@ void Session::ComputeFileEnv(const std::string &path) {
 const FileEnvResult &Session::FileEnv(const std::string &path) {
     const QueryKey key = EnvKey(path);
     Record(key);
-    // An import cycle is a query cycle. Nothing on the cycle is cached, since its
-    // result depends on which file was queried first.
+    // Leave import-cycle queries uncached because their results depend on entry order.
     if (Entries[key].InFlight) {
         for (const QueryKey &k : Stack) Entries[k].Uncached = true;
         static const FileEnvResult Cycle = [] {
@@ -225,26 +218,24 @@ const FileEnvResult &Session::FileEnv(const std::string &path) {
         Entries[key].InFlight = true;
         ComputeFileEnv(path);
         Entries[key].InFlight = false;
-        if (Entries[key].Uncached) Entries[key].VerifiedAt = 0; // recomputed each revision
+        if (Entries[key].Uncached) Entries[key].VerifiedAt = 0;
     }
     return EnvResults[path];
 }
 
 BoxId Session::Process(const std::string &path) {
     if (Root != path) {
-        ++Revision; // the `declare` namespacing rule reads which file is root
+        ++Revision; // Declaration namespaces depend on the root file.
         Root = path;
     }
     Eval.Diags.clear();
     Eval.Meta.Entries.clear();
     const uint64_t before = FileEnvGeneration();
     const FileEnvResult &env = FileEnv(path);
-    // A `component` target is in no importing layer, so a change to it moves no
-    // layer id and ordinary invalidation cannot see it.
+    // Invalidate evaluation when a component target changes without changing the importer's layer id.
     if (FileEnvGeneration() != before) Eval.ClearMemo();
     Metadata = env.Meta;
-    // Set before evaluation, so a failing file still has a name. Appended, not replaced,
-    // so a literal `filename` prints first.
+    // Append the filename before evaluation so failures retain it and explicit declarations remain first.
     const std::string_view base = Basename(path);
     const auto &entries = Metadata.Entries;
     const bool named = std::ranges::any_of(entries, [](const auto &e) { return e.first == "name"; });
@@ -283,7 +274,6 @@ uint32_t Session::Recomputes(QueryKind kind, const std::string &path) const {
 
 std::vector<std::string> Session::Parsed() const {
     std::vector<std::string> out;
-    // `Entries` is ordered, so this is too.
     for (const auto &[key, entry] : Entries)
         if (key.Kind == QueryKind::Terms) out.push_back(key.A);
     return out;

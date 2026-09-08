@@ -1,4 +1,4 @@
-// The extracted UI tree against the `.fir`'s `User Interface` section, both sides flattened.
+// Compare flattened UI trees with the reference FIR User Interface section.
 #include "signal/Ui.h"
 #include "conformance/FirParse.h"
 #include "conformance/Sweep.h"
@@ -23,7 +23,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Bounds compare as numbers, not text: the reference prints `60` as `6e+01`.
+// Compare numeric bounds independently of reference text formatting.
 std::string Num(double v) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%.17g", v);
@@ -45,7 +45,7 @@ const char *KindName(UiKind k) {
 }
 
 void FlattenOurs(const UiNode &n, std::vector<std::string> &out) {
-    // A soundfile's `url` is the instruction's own field, not metadata.
+    // Read soundfile URLs from the instruction field.
     if (n.Kind == UiKind::Soundfile && !n.IsGroup) {
         const auto url = n.Meta.find("url");
         out.push_back(std::format("soundfile {} {}", n.Label, url == n.Meta.end() || url->second.empty() ? "" : *url->second.begin()));
@@ -77,7 +77,6 @@ std::expected<std::vector<std::string>, std::string> FlattenTheirs(const FirFile
     for (const FirSection &s : f.Sections) {
         if (s.Name != "User Interface") continue;
         for (const FirStmt &top : s.Stmts) {
-            // The section is one `BlockInst` wrapping the whole listing.
             const std::vector<FirStmt> &body = top.Term.Name == "BlockInst" ? top.Body : s.Stmts;
             for (const FirStmt &st : body) {
                 const FirTerm &t = st.Term;
@@ -132,7 +131,7 @@ TEST_CASE("UI completeness: the extracted tree matches the `.fir` User Interface
         }
         widgets += int(prog.Prop.Ui.size());
 
-        // Both trees are built downstream of simplification, so a folded-away widget is in neither.
+        // Compare widgets remaining after simplification.
         std::vector<std::string> ours;
         FlattenOurs(prog.Ui(RootLabel(prog.Session.Metadata)), ours);
 
@@ -152,13 +151,11 @@ TEST_CASE("UI completeness: the extracted tree matches the `.fir` User Interface
     census.Report();
 
     CHECK(agreed + differed == 94);
-    // Reference rules: the root takes `declare name` over the filename, an unlabelled
-    // bargraph is counter-named and anything else `0x00`.
+    // Use declared names for roots, counters for unnamed bargraphs, and 0x00 for other unnamed nodes.
     CHECK(agreed == 94);
 }
 
 TEST_CASE("a label path names exactly one control") {
-    // Reference faust throws on a duplicate path and every corpus program compiles there.
     int programs = 0, warned = 0;
     std::vector<std::string> errors;
     std::map<std::string, int> warnings;
@@ -184,12 +181,12 @@ TEST_CASE("a label path names exactly one control") {
     for (const std::string &e : errors) MESSAGE("  ", e);
     CHECK(errors.empty());
 
-    // No corpus program reaches the bargraph case: `vumeter`'s empty label counter-names as theirs.
+    // Exercise unnamed bargraphs beyond corpus coverage.
     CHECK(warnings.empty());
 }
 
 TEST_CASE("the three duplicate-path rules, stated apart") {
-    // Reference faust refuses to compile these, so none is in the corpus.
+    // Test programs rejected by the reference outside the accepted corpus.
     const auto check = [](const std::string &src) {
         Program const prog("/u.dsp", src);
         REQUIRE(prog.Ok);
@@ -204,7 +201,7 @@ TEST_CASE("the three duplicate-path rules, stated apart") {
         CHECK(d[0].Payload.find("'/p/g'") != std::string::npos);
     }
     SUBCASE("an input and a bargraph on one path is an error") {
-        // Regresses a demo bug: the two labels clean to one path.
+        // Detect paths that collide after label cleanup.
         const std::vector<Diagnostic> d = check("process = _ * hslider(\"L [unit:dB]\", 0, 0, 1, 0.1) : vbargraph(\"L\", 0, 1);\n");
         REQUIRE(d.size() == 1);
         CHECK(d[0].Severity == Severity::Error);

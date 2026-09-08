@@ -12,7 +12,7 @@ namespace {
 
 bool Carried(const Field &f) { return f.Loop == NoLoop && f.Sig != NoSig && (f.Kind == FieldKind::Delay || f.Kind == FieldKind::Perm); }
 
-// The shared `IOTA`. A position, not a value, so it is read but never migrated.
+// Read the shared IOTA position without migrating it.
 bool IsIota(const Field &f) { return f.Kind == FieldKind::Perm && f.Sig == NoSig && f.Loop == NoLoop; }
 
 int32_t IotaOf(const Plan &p, const Interp &in) {
@@ -21,28 +21,28 @@ int32_t IotaOf(const Plan &p, const Interp &in) {
     return 0;
 }
 
-// The slot `k` frames back, one formula for both line shapes so a resized delay migrates.
+// Return the slot k frames before the write head for either delay layout.
 uint32_t Slot(const Field &f, int32_t iota, uint32_t k) {
     if (!f.Ring) return k;
     return uint32_t(iota - int32_t(k)) & (f.Extent - 1);
 }
 
-// Copies the common window relative to the write head, so a lengthened delay keeps its history.
+// Copy shared history relative to the write head.
 void Copy(const Field &of, std::span<const Scalar> from, int32_t old_iota, const Field &nf, std::span<Scalar> to, int32_t new_iota) {
     const uint32_t n = std::min(of.Extent, nf.Extent);
     for (uint32_t k = 0; k < n; ++k) to[Slot(nf, new_iota, k)] = from[Slot(of, old_iota, k)];
-    // A rotated ring's untouched slots are not the ones `Clear` zeroed.
+    // Zero unused slots relative to the rotated ring position.
     for (uint32_t k = n; k < nf.Extent; ++k) to[Slot(nf, new_iota, k)] = Scalar{};
 }
 
-// Ties break on offset, not field index, so the result is independent of lowering order.
+// Break ties by source offset to preserve independence from lowering order.
 struct Pair {
     uint32_t Distance = 0;
     uint32_t OldAt = 0, NewAt = 0;
     uint32_t OldField = 0, NewField = 0;
 
-    // Not defaulted: the field indices must stay out of the order.
     std::strong_ordering operator<=>(const Pair &b) const {
+        // Exclude field indices from ordering.
         if (const auto c = Distance <=> b.Distance; c != 0) return c;
         if (const auto c = OldAt <=> b.OldAt; c != 0) return c;
         return NewAt <=> b.NewAt;
@@ -58,7 +58,7 @@ StateTransfer MatchState(const Plan &old_plan, std::span<const uint32_t> old_at,
     StateTransfer transfer;
     Migration &m = transfer.Counts;
 
-    // Keyed on hash and kind: one node can own both a delay line and a `Perm`.
+    // Match hash and kind because one node can own both history and scalar state.
     std::map<std::pair<uint64_t, FieldKind>, std::vector<uint32_t>> by_hash;
     std::map<std::pair<uint64_t, FieldKind>, std::vector<uint32_t>> by_shape;
     std::vector<uint8_t> old_taken(old_plan.Fields.size(), 0);

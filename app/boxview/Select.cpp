@@ -5,14 +5,14 @@
 namespace faustlens::boxview {
 namespace {
 
-// Every move along the chain must re-anchor, or a reparse pulls it back.
+// Update the byte anchor on each selection move to preserve it across reparses.
 void Anchor(Selection &s, const FileView &f) {
     const RefId r = SelectedRef(f, s);
     if (r == NoRef) return;
     if (const auto at = OffsetOfRef(f, r)) s.Caret = *at;
 }
 
-// Below the evaluated view the drawn tree and the ref tree stop corresponding.
+// Expanded children have no corresponding source refs.
 const Node *Descend(const FileView &f, const Node &n, RefId r, RefId want) {
     if (r == want) return &n;
     const std::span<const RefId> kids = f.Refs.Children(r);

@@ -1,4 +1,4 @@
-// The vocabulary is pinned so an unknown operation cannot pass as a call node.
+// Reject unrecognized operations through an explicit vocabulary check.
 #include "conformance/SigParse.h"
 #include "conformance/Sweep.h"
 
@@ -16,8 +16,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Every operation this corpus reaches: the reference printer's own, plus the `ffunction`s
-// the corpus declares.
+// Include reference operations and corpus-declared foreign functions.
 const std::set<std::string> &KnownOps() {
     static const std::set<std::string> k = {
         "+",         "-",      "*",         "/",         "%",          "<<",     ">>",        ">>>",     "<",      "<=",     ">",       ">=",       "==",
@@ -63,7 +62,7 @@ TEST_CASE("the `.sig` reader is total over the reference corpus") {
             failures.push_back(name + ": " + f.error());
             continue;
         }
-        // The reference's own node count, an independent check nothing was skipped.
+        // Cross-check the reference node count for omitted nodes.
         if (f->Size >= 0 && size_t(f->Size) != f->Defs.size())
             failures.push_back(std::format("{}: header says {} nodes, read {}", name, f->Size, f->Defs.size()));
         if (f->Outputs.Args.empty()) failures.push_back(name + ": no outputs");
@@ -79,7 +78,7 @@ TEST_CASE("the `.sig` reader is total over the reference corpus") {
 
     for (const std::string &s : failures) MESSAGE(s);
     CHECK(failures.empty());
-    CHECK(files == 188); // 94 programs, normalized and unnormalized
+    CHECK(files == 188);
 
     std::vector<std::string> unknown;
     for (const std::string &o : ops)

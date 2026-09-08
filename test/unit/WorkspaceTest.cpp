@@ -1,4 +1,3 @@
-// One history over the whole editable state: every open file's text and the control values.
 #include "editor/Workspace.h"
 #include "controls/Store.h"
 
@@ -37,7 +36,6 @@ TEST_CASE("an undo step spans every open file") {
     REQUIRE(s.Ok);
     CHECK(s.Texts == std::vector<std::string>{"/lib.lib"});
     CHECK(ws.Find("/lib.lib")->Text() == "g = 0.5;");
-    // Unwinding is chronological, so the other file's earlier edit stands.
     CHECK(ws.Find("/a.dsp")->Text() == "PROCESS = _;");
 
     s = ws.Undo();
@@ -48,7 +46,6 @@ TEST_CASE("an undo step spans every open file") {
 }
 
 TEST_CASE("a step names only the files whose bytes moved") {
-    // What the caller republishes. Naming every open file costs a reparse of each.
     Workspace ws;
     ws.Open("/a.dsp", "process = _;");
     ws.Open("/b.dsp", "process = _;");
@@ -104,7 +101,6 @@ TEST_CASE("undoing a gesture restores the store and asks for no recompile") {
     REQUIRE(s.Ok);
     CHECK(s.Texts.empty());
     CHECK(ws.Find("/a.dsp")->Text() == "process = _;");
-    // An entry is a state, not a delta, so an unmentioned path is a control never moved.
     CHECK(ws.Controls.empty());
 
     const Workspace::Step r = ws.Redo();
@@ -132,7 +128,6 @@ TEST_CASE("text edits and gestures unwind in reverse chronological order") {
     s = ws.Undo();
     CHECK(s.Texts == std::vector<std::string>{"/a.dsp"});
     CHECK(ws.Find("/a.dsp")->Text() == "process = _;");
-    // A text edit does not move a control, so the gesture below keeps its value.
     CHECK(ws.Controls.at("/g").V == doctest::Approx(0.5));
 
     s = ws.Undo();
@@ -142,7 +137,6 @@ TEST_CASE("text edits and gestures unwind in reverse chronological order") {
 }
 
 TEST_CASE("entries share the files they did not change") {
-    // 200 gestures over 200KB of open files, none of which is copied per entry.
     Workspace ws;
     ws.Open("/big.dsp", std::string(100000, 'x'));
     ws.Open("/also.lib", std::string(100000, 'y'));
@@ -155,7 +149,6 @@ TEST_CASE("entries share the files they did not change") {
 }
 
 TEST_CASE("an undone text edit still names its file where the bytes match") {
-    // Erring the other way would call a real edit a gesture.
     Workspace ws;
     ws.Open("/a.dsp", "process = _;");
     REQUIRE(Put(ws, "/a.dsp", 0, 1, "P"));
