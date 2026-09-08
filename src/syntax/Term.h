@@ -28,6 +28,17 @@ struct StringPool {
     std::deque<std::string> Strings;
     std::unordered_map<std::string_view, uint32_t> Ids;
 
+    StringPool() = default;
+    StringPool(const StringPool &other) : Strings(other.Strings) {
+        for (uint32_t i = 0; i < Strings.size(); ++i) Ids.emplace(Strings[i], i);
+    }
+    StringPool &operator=(const StringPool &other) {
+        if (this != &other) *this = StringPool(other);
+        return *this;
+    }
+    StringPool(StringPool &&) = default;
+    StringPool &operator=(StringPool &&) = default;
+
     uint32_t Intern(std::string_view s) {
         if (const auto it = Ids.find(s); it != Ids.end()) return it->second;
         const auto id = uint32_t(Strings.size());

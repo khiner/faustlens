@@ -2,8 +2,10 @@
 
 #include <cmath>
 #include <format>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace faustlens {
@@ -25,7 +27,10 @@ std::string Quoted(std::string_view s) { return std::format("\"{}\"", s); }
 struct Lifter {
     Terms &Terms;
     const Boxes &Boxes;
-    std::unordered_map<BoxId, ValueId> Memo;
+    std::unordered_map<uint64_t, ValueId> Memo;
+    std::unordered_map<uint32_t, StrId> Names;
+    std::unordered_set<StrId> UsedNames;
+    uint32_t Scope = 0, NextScope = 0;
     const char *Why = nullptr;
     BoxId At = NoBox;
     uint32_t Depth = 0;
@@ -69,12 +74,13 @@ struct Lifter {
 
 ValueId Lifter::Go(BoxId b) {
     if (Why != nullptr) return NoTerm;
-    if (const auto it = Memo.find(b); it != Memo.end()) return it->second;
+    const uint64_t key = (uint64_t(Scope) << 32) | b;
+    if (const auto it = Memo.find(key); it != Memo.end()) return it->second;
     if (Depth >= MaxTermDepth) return Decline(b, "the evaluated graph is too deep to write");
     ++Depth;
     const ValueId v = Build(b);
     --Depth;
-    if (v != NoTerm) Memo.emplace(b, v);
+    if (v != NoTerm) Memo.emplace(key, v);
     return v;
 }
 
@@ -160,12 +166,26 @@ ValueId Lifter::Build(BoxId b) {
             return Terms.Make(Kind::FFun, 1, 0, 0, kids);
         }
 
-        // `Symbolic(slot, body)` is `\(x).(body)`, named by the unique slot number.
-        case BoxKind::Slot: return Terms.MakeLeaf(Kind::Ident, Terms.InternStr(std::format("fl_slot{}", n.Aux)));
+        case BoxKind::Slot: {
+            const auto it = Names.find(n.Aux);
+            return it == Names.end() ? Decline(b, "the evaluated expression has a free parameter outside this scope") : Terms.MakeLeaf(Kind::Ident, it->second);
+        }
         case BoxKind::Symbolic: {
-            if (!Kids(b, kids)) return NoTerm;
-            const StrId name = Terms.Get(kids[0]).Payload;
-            return Terms.Make(Kind::Lambda, {Terms.MakeLeaf(Kind::Str, name), kids[1]});
+            const uint32_t slot = Boxes.Get(Boxes.Child(b, 0)).Aux;
+            StrId name = Terms.InternStr(std::format("fl_slot{}", slot));
+            for (uint32_t suffix = 1; UsedNames.contains(name); ++suffix) name = Terms.InternStr(std::format("fl_slot{}_{}", slot, suffix));
+            UsedNames.insert(name);
+            const auto previous = Names.find(slot);
+            const std::optional<StrId> saved = previous == Names.end() ? std::nullopt : std::optional(previous->second);
+            Names[slot] = name;
+            const uint32_t outer = Scope;
+            Scope = ++NextScope;
+            const ValueId body = Go(Boxes.Child(b, 1));
+            Scope = outer;
+            if (saved) Names[slot] = *saved;
+            else Names.erase(slot);
+            if (body == NoTerm) return NoTerm;
+            return Terms.Make(Kind::Lambda, {Terms.MakeLeaf(Kind::Str, name), body});
         }
 
         case BoxKind::Error: return Decline(b, "the program does not compile here");
@@ -180,6 +200,13 @@ ValueId Lifter::Build(BoxId b) {
 
 } // namespace
 
-Lifted Lift(Terms &terms, const Boxes &boxes, BoxId b) { return Lifter{terms, boxes}.Run(b); }
+Lifted Lift(Terms &terms, const Boxes &boxes, BoxId b, std::span<const SlotName> ambient) {
+    Lifter lifter{terms, boxes};
+    for (const SlotName &slot : ambient) {
+        lifter.Names.emplace(slot.Slot, slot.Name);
+        lifter.UsedNames.insert(slot.Name);
+    }
+    return lifter.Run(b);
+}
 
 } // namespace faustlens

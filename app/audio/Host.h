@@ -2,6 +2,7 @@
 // allocates nor frees.
 #pragma once
 
+#include "runtime/Migrate.h"
 #include <atomic>
 #include <cstdint>
 #include <expected>
@@ -33,6 +34,8 @@ struct Host {
         Interp *Dsp = nullptr;
         std::vector<std::vector<double>> InBuf, OutBuf;
         std::vector<double *> InAt, OutAt;
+        const Interp *From = nullptr;
+        StateTransfer Transfer;
     };
 
     static constexpr double FadeMilliseconds = 5.0;
@@ -64,7 +67,7 @@ struct Host {
 
     // The caller keeps ownership until `Collect` returns the instance. False
     // where there is no room: backpressure.
-    bool Swap(Interp &next);
+    bool Swap(Interp &next, const Interp *from = nullptr, const StateTransfer & = {});
 
     // Instances the audio thread has finished with, freed off it. Call from any
     // other thread, and before their Plans go.

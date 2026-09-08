@@ -79,7 +79,8 @@ So do not invert evaluation — **render the Term graph as boxes and edit that**
 `par(i, 10, osc(i))` displays as a single `par` node with a multiplicity badge, because that is what the source says.
 
 Faust's *grammar* desugars: it rewrites `a + b` into `boxSeq(boxPar(a, b), boxAdd())` and `x'` into `boxSeq(x, boxDelay1())`, along with `@`, the comparisons and the bitwise operators.
-There is no way back — `(a, b) : +` cannot be reprinted as `a + b` in general — so printer soundness would be lost on the file's first arithmetic expression.
+Desugaring loses which spelling the author chose: `(a, b) : +` and `a + b` can denote the same circuit.
+Reconstructing that choice would require retained source correspondence or a resugaring policy.
 Term therefore keeps the surface forms and desugars on the way to Box, the opposite of the reference.
 This is the **resugaring** problem [R1, R2], *avoided* rather than solved: keeping the surface forms leaves nothing to recover.
 
@@ -88,68 +89,76 @@ Mirroring the grammar preserves most of this for free — two spellings are usua
 
 So there are two views: the **structural view** (the Term graph, editable) and the **evaluated view** (the Box graph, read-only, reachable by expanding any node).
 To edit inside an expanded view the user invokes **materialize** [R3]: the Box subgraph is lifted back into Term, the source is rewritten to match, and the result is editable structurally.
-The lift runs one way only, takes the desugared spelling everywhere, and is **partial by design** — a closure, an `Error`, or the `Slot`/`Symbolic` pair that modulation introduces is not a circuit, so materialize rejects it with a diagnostic rather than inventing syntax.
+Expansion evaluates the selected source occurrence in its lexical scope, including symbolic bindings for enclosing function parameters.
+It never chooses an environment from another occurrence with an equal value id.
+Closures are normalized to symbolic circuits before lifting.
+The lift takes the desugared spelling and is **partial by design**: errors, environments, and free slots with no visible source binder are declined.
+A `Symbolic` introduces a fresh lambda binder, while an ambient `Slot` uses its visible source parameter name.
 Materializing is lossy and user-initiated.
 
 ### Text and Term form a retentive lens
 
-`get` parses text into Term and produces a set of **links** relating source regions to view regions; `put` takes the original source, the new view and those links, and restores consistency while *retaining* the linked source regions [R4].
-The per-file ref tree *is* that link set, so `put` aligns against it rather than reading a single range out of it.
+`get` parses text into Term and an occurrence-specific ref tree.
+Structural edits carry **links** from paths in the replacement term to the old source refs whose bytes they preserve [R4, §5].
+These updated links distinguish survival, movement, and copying even when several occurrences have equal values.
+`put` applies the resulting splice to the original source.
+Text remains authoritative, so comments, spelling, formatting, and incomplete input have one owner.
+Both the text pane and diagram operate on this source-backed document.
 
-This is deliberately not a **quotient lens** [R5], though it looks close: quotient lenses hold laws modulo inessential detail — whitespace, attribute order, line breaking — with `put` canonizing and then reprinting.
-Here that "inessential detail" is exactly what must be preserved: the user's comments.
-One part of the idea survives: the printer is a *canonizer* for parenthesization and spelling, and the canonizer law instantiates to PutGet.
+The contracts are:
 
-Four obligations, checked over the whole corpus:
+- **Token coverage.** Every byte belongs to exactly one token, including whitespace and comments.
+- **Printer round trip.** `parse(print(t)) == t` for well-formed surface terms in the parser's image, with equality including spelling.
+  This is a printer contract, distinct from the editor's update law.
+- **PutGet.** Parsing the source after an accepted structural splice produces the intended rewritten program, including its surrounding syntax.
+- **Hippocraticness.** Writing back the same view with unchanged correspondence leaves the source byte-identical.
+  Swapping equal-valued occurrences can change correspondence and therefore change bytes.
+- **Retentiveness.** Every explicit link retains that source occurrence's outer-span bytes at its destination occurrence, with additional grouping permitted by the destination grammar.
+  Bytes outside the edit's target span remain unchanged.
 
-- **Token coverage.**
-  The token vector *tiles the file*: every byte lies in exactly one token, comments and whitespace included.
-  This is what lets an edit script reuse a span without knowing what is inside it.
-- **PutGet (printer soundness).**
-  `value(parse(print(t))) == value(t)`, compared as interned ids and so exact.
-  Quantified over hole-free terms.
-- **Retentiveness.**
-  Stated against the edited ref's *outer span* (its bytes plus any grouping parentheses): every byte outside it is unchanged, and every node of the new tree whose value id occurs in the pre-edit ref tree inside that span is emitted as the bytes of one such occurrence, byte for byte, interior trivia included.
-  Hippocraticness — an edit to an equal subtree leaves the file byte-identical — is the special case where the root matches.
-- **Normalization idempotence.**
-  Bytes that *are* reprinted come out canonically parenthesized, so a second splice over the same region changes nothing.
+The tests check token coverage, printer round trips, identity splices, generated edits, and source retention across the corpus.
+Full-program reparsing and destination-link checks use a bounded, distributed sample of catalogue edits per file.
+Focused regressions cover repeated equal values, moved comments, argument boundaries, and lexical validation.
+These are executable checks, not a formal proof for every possible edit.
+Materialization has a separate contract: lifting, splicing, parsing, and evaluating preserve the circuit, including its enclosing bindings.
+Lifted terms need not retain the original surface spelling.
 
-Retentiveness requires more than "bytes outside the edited range survive", which reprinting a whole subtree from Term satisfies while dropping every comment *inside* the edit.
+Quotient lenses [R5] describe laws modulo chosen equivalences.
+They do not require discarding comments, and quotienting and retention address different concerns.
+In the parse/print analogy, parsing chooses the abstract representative and printing chooses concrete syntax.
+The printer alone is not a lens `put`.
 
 ### The splice
 
-An edit is a Term rewrite plus a **splice**, and a splice is an *edit script* — a set of disjoint byte-range replacements — not a single replacement of the rewritten node's range.
-Given the old ref tree, the new value tree and the original bytes, `splice` **renders** the new tree into a sequence of retained spans and printed text and **reconciles** that sequence against the file.
-Neither layer is a tree diff: matching is a hash-map lookup, since every value is already interned — *truediff*'s trick [R6], free here.
-A match **claims** an old ref, retaining its bytes.
+An edit contains a target ref, a replacement Term value, and links to surviving source occurrences.
+Composition, deletion, retext, and rewiring preserve these links while constructing the replacement.
+Unchanged subtrees retain their whole source region.
+A new stage has no source link, even if its value equals another stage.
+The lower-level value-rewrite API also supports equality-based alignment for transformations that supply no correspondence.
+That heuristic does not express occurrence-specific editing intent [R11].
 
-The two layers are one function: render calls `retain` and `print` directly, and the sequence exists only as the call order, so render and reconcile cannot disagree on ordering.
-A reconcile cursor only ever advances, which makes the script disjoint and source-ordered by construction and guarantees no replacement ever covers a retained span.
-`retain`'s second branch — for a span behind the cursor — handles moves and duplication with no special case.
+Rendering produces a sequence of retained source fragments and printed text.
+Before reconciling it with the source, the splicer gathers all retained regions so comment salvage knows which comments will travel with a moved or copied fragment.
+A reconcile cursor advances monotonically, producing disjoint source-ordered replacements.
+Fragments behind the cursor are copied into their new position.
 
 Four details are essential:
 
-- **Claims are restricted to the target span.**
-  Searched over the whole file, a claim can return a ref beginning after the target ends, and a retention escapes the region the edit promised to stay inside.
-- **A claim stops the descent.**
-  Equal value ids are structurally identical subtrees, so a retained node's interior is never visited.
-  That makes retention linear and keeps the comments inside it.
-- **Comment salvage.**
-  The bytes between two retained spans are a connective and its trivia, which an insertion rewrites.
-  `salvage` re-emits that region's comment tokens — enumerable, because the token vector tiles the file — on the side of the operator they were written on.
-  Whitespace is not salvaged; the printer supplies it.
-- **Seams must not fuse tokens.**
-  Retention puts bytes beside bytes they were never adjacent to and the lexer is maximal-munch: `Access(Int(3), name)` emitted as `3.name` lexes as the float `3.` then `name`.
-  Emission inserts a space wherever concatenating across a seam would move a token boundary, decided by lexing the junction.
+- **Links stay inside the target span.** A replacement cannot claim source bytes outside the region it owns.
+- **Retention respects destination grammar.** Precedence and the distinction between expression and argument positions determine whether a fragment needs grouping.
+  A retained sequence can contain a comma below its root, so checking only the root operator is insufficient.
+- **Comment salvage excludes retained regions.** Comments in replaced gaps are re-emitted once, unless explicit copying intentionally duplicates them.
+  Whitespace in those gaps is supplied by the printer.
+- **Seams must not fuse tokens.** Joining `3` and `.name` would lex as `3.` followed by `name`.
+  Emission inserts spacing where lexing a junction would move a token boundary.
 
-Worked example — `a : b` → `a : x : b`.
-The new tree is `Seq(a, Seq(x, b))`.
-Render claims neither `Seq`, so it prints their syntax and claims `a` and `b`: `retain(a) print(" : ") print("x") print(" : ") retain(b)`.
-Both retained spans keep their place, leaving one replacement: the three bytes between them become seven.
-A whole-subtree reprint would have rewritten every byte of `a` and `b`.
+For `a : b` → `a : x : b`, the new tree is `Seq(a, Seq(x, b))`.
+Links retain the original `a` and `b`; the printer emits the new connectives and `x`.
+Only the gap between the retained stages changes.
 
-**Only the top of the stack is a lens.**
-Term to Box has a `get` and no lawful `put`, so Box is a projection, and `materialize` is the one operation the lens laws do not cover.
+The evaluated Box graph is a projection in this product, with explicit materialization before structural editing.
+Evaluation has no unique inverse, but a chosen update policy can obey laws on a suitable domain [R3].
+The choice to materialize does not imply that a lawful evaluated-view update is mathematically impossible.
 
 ### Values and refs
 
@@ -207,9 +216,10 @@ Recovery is panic-mode and per-frame: each frame carries its own synchronization
 On failure the frame records a diagnostic, consumes to its sync token, and emits a **`Hole`** carrying the source bytes plus the children it had already built — so `a : b : ` still renders `a` and `b` in the box view.
 A hole prints back verbatim and evaluates to an `Error` box.
 
-Derived printers and parsers were also considered: invertible syntax descriptions generate both from one description [R9], and FliPpr derives a parser from a pretty-printer [R10], either of which would make PutGet true by construction.
-Both give up error recovery, which a live editor cannot afford.
-The shared precedence table provides the part of that guarantee that matters most.
+Derived printers and parsers were also considered: invertible syntax descriptions generate both from one description [R9], and FliPpr derives a parser from a pretty-printer [R10], which derive consistency properties for their parser/printer relation.
+Those properties would not by themselves establish this editor's splice law.
+This editor would still need source references, retained-fragment emission, and its chosen recovery behavior.
+The hand-written parser and printer share a precedence table and are checked against each other.
 
 **A generated grammar is still useful as a test oracle.**
 `khiner/tree-sitter-faust` is independently written, so it serves as a *differential acceptance oracle*: parse both corpora with both parsers and compare accept/reject plus agreement on leaf token boundaries.
@@ -262,22 +272,23 @@ One hand-written rule: `terms(path)` returns a value id, a ref tree and a token 
 Two cycle detectors sit at two layers, deliberately not unified: import cycles are query cycles, detected by an in-flight stack, with nothing on the cycle cached so the result stays independent of entry order; evaluation loops are detected by marking a `(value id, environment id)` key in flight.
 One is about paths, the other about values.
 
-The engine is single-threaded, with cancellation only at phase boundaries.
+One worker owns the single-threaded query engine.
+Requests coalesce before compilation; superseded results are discarded after preparation and before publication.
+An in-progress compile runs to its next worker check rather than being interrupted inside evaluation.
 
 ### Lifetimes
 
-Interning is append-only and a session runs for hours, so what is never reclaimed is a deliberate choice.
-Two lifetimes, split on the same boundary the query engine draws:
+The worker Session retains its interned strings, terms, environments, boxes, and evaluation memo for its lifetime.
+They are append-only; idle arena reclamation is not implemented.
+Each publication copies the syntax pools and open-file source data into storage owned independently of the worker.
+Published term ids refer to those copied pools; the UI may intern edit terms locally without affecting the Session.
+Expanded views contain lifted terms, not worker Box ids.
 
-- **Permanent** — interned strings, `TermValue`s, environments.
-  These are the id spaces quoted by things that outlive a compile: diagnostics, ref entries, every content-addressed memo key.
-  Growth is bounded by *distinct terms ever typed*.
-- **Droppable arenas** — the eval arena (Box nodes and the eval memo) and the compile arena (Signal nodes, analyses, the max-delay map, the `signal id -> value id` side table, Plan).
-  Each is dropped and rebuilt whole above a byte budget, **on idle only**, so the cost never lands on a keystroke.
-  The two drop independently: reclaiming signal memory should not throw away the eval cache.
-
-**One invariant makes this safe: nothing outside an arena holds an arena id.**
-The running instance keys state on *hashes*, not ids, so state migration survives a generation boundary untouched.
+Compiled artifacts own their signal pools, Plan, UI tree, and DSP instance together.
+Requests hold the artifact against which state matching was prepared.
+The UI rejects a prepared instance if that base has changed.
+The audio host retains old instances through the crossfade; the UI collects retired voices and returns their artifacts and obsolete publications to the worker for destruction.
+Shutdown stops the callback before destroying artifacts.
 
 ---
 
@@ -445,8 +456,15 @@ A UI value needs a home that outlives any instance, so it lives beside the text 
 
 ### Hand-off
 
-Compile off the audio thread; publish by atomic pointer swap; the audio thread picks it up at a block boundary and the old instance is freed on the compile thread.
+Compile, initialize, decode soundfiles, and match state fields on the worker.
+Preparation reads the old Plan and source offsets, never the running DSP state.
+The UI publishes a prepared voice by atomic pointer hand-off.
+At the next callback boundary, the audio thread copies the matched state from the current instance before running the replacement.
+This copy uses precomputed field pairs and allocates nothing, but its cost scales with the carried delay history.
+A pending hand-off must be consumed before another is accepted, so the migration base is the instance at that boundary.
+Retired artifacts are freed on the worker after the callback has finished with them.
 Never allocate or lock on the audio thread.
+The first device open occurs on the UI thread and reinitializes the first instance at the device sample rate before starting callbacks.
 State preservation alone still clicks when the graph changes structurally, so **cross-fade** over a few milliseconds, running both instances during the overlap.
 The fade is *linear, with weights summing to one*, so two instances producing the same signal sum to that signal — an equal-power fade would raise it by as much as 3 dB.
 When the new Plan hashes equal to the old, skip the swap entirely.
@@ -480,7 +498,7 @@ A live editor may not.
   An explicit `Error` node propagates through Box and Signal: a broken definition poisons itself and its dependents, and everything else still compiles.
 - **Partial trees still work.**
   A half-typed expression becomes a `Hole`, so the rest of the file still renders as boxes and the hole prints back verbatim.
-  **No editor state is meaningless** — the property Hazel's typed holes guarantee for a full language [R12], reached here by holes plus the `Error` arity rule.
+  This is a recovery policy, not Hazel's formal guarantee of meaningful typed-hole states [R12].
 - **The program with a hole in it does not run.**
   Hazel evaluates *around* holes; not here, because running around a hole means choosing a signal for it, and every choice is a program the user did not write, played into their monitors at full gain.
   Hearing the last good program is the better answer for a DSP.
@@ -540,7 +558,7 @@ Each is pinned with a purpose-built probe: division always yields a float even f
 
 **Six properties have no analogue in the reference compiler**, each protecting something the product depends on:
 
-1. **Splice fidelity** — the four lens obligations over the whole corpus, with generated edit cases rather than sampling.
+1. **Splice fidelity** — corpus-wide token, printer, identity, and generated-edit checks, with bounded full-program reparsing and destination-correspondence checks.
 2. **Incremental equivalence** — an incrementally recompiled result must be *identical* to a from-scratch compile of the edited text.
    The invariant a memoizing compiler most easily breaks.
 3. **Tier agreement** — interpreter and LLVM outputs match within tolerance.
@@ -564,25 +582,17 @@ faustlens/
     eval/        evaluator, pattern matching, interned environments, folding, memo cache
     box/         Box graph, arity
     signal/      flat DAG, hash-consing, normalization
-    analysis/    type, interval
-    plan/        scheduling, state allocation, three-address emission
-    runtime/     artifact + descriptors, instance lifecycle, UI tree, soundfiles,
-                 foreign symbol registry
-    backend/
-      interp/    bytecode + dispatch loop
-      llvm/      optional; LLVM IR emission + ORC JIT
-    query/       memoized query engine, revisions, invalidation, arena lifetimes, snapshot
-    live/        instance hand-off, state migration, crossfade
-  app/           the program; the only unbounded dependencies
-    editor/      text pane: buffer, highlighting, cursor-preserving splices
-    boxview/     derived layout, wires, selection, structural edits
+    runtime/     interpreter, state migration, soundfiles, foreign symbol registry
+    query/       memoized query engine, revisions, invalidation, snapshots
+  app/           worker publication, live artifacts; application dependencies
+    editor/      text widget, buffers, shared history, cursor-preserving splices
+    boxview/     derived layout, wires, occurrence selection
     controls/    UI tree -> ImGui widgets
-    host/        audio device, soundfile decoding, snapshot plumbing
+    audio/       audio device, soundfile decoding, callback hand-off
   test/
     conformance/ driven by lib/faust corpora, including parsers for the reference
                  `.sig` and `.fir` dumps and the `.ir` harness protocol
     property/    the six invariants above
-    fuzz/
   lib/           every dependency, as a submodule
     faust/               oracle only, never linked
     tree-sitter-faust/   test only: acceptance oracle
@@ -609,29 +619,38 @@ Every embedded file is byte-identical to the submodule, and *eject* is the only 
 **miniaudio** for device I/O, chosen for two reasons: its data callback maps onto `compute` with no adapter, and `ma_decoder` handles wav, flac and mp3 in-tree, so soundfile decoding needs no further dependency.
 
 **The text buffer is a contract, not a widget.**
-Text is the source of truth, undo is a text-level operation, the buffer *is* the VFS overlay's top layer, and the compiler writes to it too, through splices.
+Source bytes are authoritative for the authored program.
+The UI owns the buffers and a Workspace history over text, selection, and control values; immutable buffer copies form the worker VFS overlay.
+Structural edits and expansion return the same rewrite type.
+The UI previews its replacement term or splices it through Workspace, using the same source check and history for every structural edit.
 Six requirements: byte-addressed splices applied as one undoable unit preserving the cursor; undo over a previous *state*, not a delta; byte-offset cursor mapping both directions; readable buffers; an undo unit that **spans files** (per-file stacks are not a weaker version of this but a wrong one — undo in one file can silently discard a newer edit in another); and an undo unit that carries **non-text state**, since a control value is neither text nor derived from it.
 Entries stay cheap because they share their unchanged parts: an untouched file is a refcount, not a copy.
 An inverse can be wrong; a shared pointer to an immutable value cannot.
 
-What the contract rules out is an editor *widget* that owns the undo stack and works in lines and columns, since half the requirements would then belong to something that does not know about splices.
-A host that already owns a text buffer with byte-range edits meets the first four unchanged.
+The multiline ImGui widget edits a draft and commits one byte-range replacement per changed frame through Workspace.
+Its private undo shortcuts are disabled; global undo and redo restore Workspace state, including cursor and selection, into the active widget.
+Incomplete source remains editable while the last good audio continues.
+Save writes the active buffer; embedded library buffers save as a local file beside the root program.
 
-**The compile thread publishes an immutable view snapshot** after each compile — `{revision, per-file ref trees, per-file token vectors, diagnostic set, UI tree}`.
-The UI thread owns the buffers and all ImGui state, never blocks on the compile thread and never calls a query; it renders the newest snapshot, which may lag the buffer by one compile.
-Highlighting reads the token vectors out of that snapshot, so one source of truth says what the text means and nothing re-lexes the buffer.
-**A snapshot may hold only permanent ids** — so the evaluated view copies a materialized render list out at publish time rather than holding box ids across frames.
+**The worker publishes owned view snapshots** containing request and document revisions, independent syntax pools, file text, ref trees, token vectors, diagnostics, and lifted expansions.
+The UI never calls a query and does not wait for compilation during a frame; it renders the newest completed snapshot while showing current buffer bytes.
+Only the latest request can publish, and the UI checks its ticket again before adoption and audio hand-off.
+Structural edits require source bytes matching the snapshot.
+Materialization also requires the selection's document revision, so a dependency edit invalidates a pending evaluation even if the selected file's text is unchanged.
+Occurrence highlights use the snapshot's source spans and are hidden while its text is stale.
+Opening files, tracing controls, and requesting expansions also go through the worker.
 
 **The box view has no coordinates.**
-Position is derived: each node lays its children out in a fixed pattern by kind and computes its bounding box bottom-up in one pass, memoized per value id.
+Position is derived: each node lays its children out in a fixed pattern by kind and computes its bounding box bottom-up.
+Expanded layout is keyed by source occurrence as well as value, so opening one repeated stage does not open all of them.
 Wires only ever connect siblings inside one composition node, so there is no edge routing and no layout solver.
 
-The deeper reason is that derived layout keeps the lens **asymmetric**.
-A transformation whose two sides both hold private state is a *symmetric lens* [R13], needing a persistent **complement** for what each side knows and the other does not, kept consistent under every edit.
-The complement is empty only because nothing is persisted — a rule the view obeys, not a fact about layout.
-Selection is re-resolved from a byte offset after every reparse; expansion keys on `(value id, environment id)`, the eval memo key, rather than on a ref that shifts every keystroke.
-Save any of it to disk and the complement stops being empty.
-Hence no node-editor library: `imgui-node-editor` manages free-positioned graphs with user-owned persisted coordinates, exactly the state this design refuses to hold.
+Derived layout adds no independent layout data to the synchronized document.
+An asymmetric lens can still preserve information hidden from its view: source comments and formatting already provide such information [R13].
+Persisting coordinates would be a document-model choice, not by itself a change to a symmetric lens.
+Selection carries a chain of source refs and is re-resolved from its byte offset after a reparse.
+Expansion refs belong to their source snapshot and are cleared on document edits; same-source publications retain them.
+The derived layout needs no free-positioned node-editor library.
 
 Interaction is keyboard-first, with the mouse for navigation.
 Arrow keys walk the term structurally.
@@ -646,21 +665,27 @@ Delete removes a stage; typing a composition operator wraps the selection; Enter
 
 - **[R4]** Zirun Zhu, Zhixuan Yang, Hsiang-Shang Ko, Zhenjiang Hu.
   *Retentive Lenses.*
-  2020, arXiv:2001.02031. — The Text/Term framing.
+  2020, arXiv:2001.02031. — The Text/Term framing and edit-updated correspondence links.
+  [Paper](https://arxiv.org/pdf/2001.02031).
   Adds **Retentiveness** to Correctness and Hippocraticness, and enriches `get` to return links that `put` consumes.
   Its motivating example is a comment-carrying CST with a `Paren` constructor against a paren-free AST.
 - **[R5]** J. Nathan Foster, Alexandre Pilkiewicz, Benjamin C. Pierce.
   *Quotient Lenses.*
-  ICFP 2008. — Source of the **canonizer** and its RECANONIZE law, used for the printer; rejected as the overall framing, since its `put` canonizes then reprints.
+  ICFP 2008. — Laws modulo chosen equivalences, with canonizers and representative selection.
+  [Paper](https://www.cis.upenn.edu/~bcpierce/papers/quotient-lenses.pdf).
 - **[R11]** Davi M. J. Barbosa, Julien Cretin, Nate Foster, Michael Greenberg, Benjamin C. Pierce.
   *Matching Lenses: Alignment and View Update.*
-  ICFP 2010. — *Keyed* versus *similarity* alignment, for state migration.
+  ICFP 2010. — Alignment policies and their separation from view update.
+  [Paper](https://www.cis.upenn.edu/~bcpierce/papers/alignment.pdf).
 - **[R13]** Martin Hofmann, Benjamin C. Pierce, Daniel Wagner.
   *Symmetric Lenses.*
-  POPL 2011. — The **complement**, and the cost of private state on both sides.
+  POPL 2011. — Complements and synchronization when both sides contain private information.
+  [Paper](https://www.cis.upenn.edu/~bcpierce/papers/symmetric.pdf).
 - **[R3]** Mikaël Mayer, Viktor Kunčak, Ravi Chugh.
   *Bidirectional Evaluation with Direct Manipulation.*
-  OOPSLA 2018, arXiv:1809.04209. — Editing through the evaluated view, narrowed here to the unique-provenance case plus a disambiguation prompt.
+  OOPSLA 2018, arXiv:1809.04209. — Update semantics for evaluated views, with correctness depending on the merge policy.
+  FaustLens uses explicit materialization.
+  [Paper](https://arxiv.org/html/1809.04209v1).
 
 **Syntax, sugar and printing**
 
@@ -675,15 +700,17 @@ Delete removes a stage; typing a composition operator wraps the selection; Enter
   Haskell Symposium 2010.
 - **[R10]** Kazutaka Matsuda, Meng Wang.
   *FliPpr: A Prettier Invertible Printing System.*
-  ESOP 2013; *A System for Deriving Parsers from Pretty-Printers*, New Generation Computing 2018. — Would give PutGet by construction; rejected because both give up error recovery.
+  ESOP 2013; *A System for Deriving Parsers from Pretty-Printers*, New Generation Computing 2018. — Derives a consistent CFG parser from a printer.
+  Integrating recovery, source references, and retained-fragment edits would require additional work.
+  [Paper](https://research-information.bris.ac.uk/ws/files/160992789/Meng_Wang_FliPpr_A_System_for_Deriving_Parsers_from_Pretty_Printers.pdf).
 - **[R6]** Sebastian Erdweg, Tamás Szabó, André Pacak.
   *Concise, Type-Safe, and Efficient Structural Diffing* (truediff).
-  PLDI 2021. — Hash-matched alignment in the splice; not used for state migration, which has no tree identity surviving a reparse.
+  PLDI 2021. — Heuristic alignment for splice callers without explicit occurrence links; not used for state migration, which has no tree identity surviving a reparse.
 
 **Live programming with incomplete programs**
 
 - **[R12]** Cyrus Omar et al. *Total Type Error Localization and Recovery with Holes.*
-  POPL 2024; *Live Functional Programming with Typed Holes*, POPL 2019. — "No meaningless editor states."
+  POPL 2024; *Live Functional Programming with Typed Holes*, POPL 2019. — Typed-hole semantics as a reference for partial programs, not a theorem established by this parser's recovery nodes.
   Evaluation *around* holes is not adopted here.
 
 **Error recovery in generated parsers**

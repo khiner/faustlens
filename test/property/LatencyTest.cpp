@@ -71,15 +71,15 @@ std::string Line(const app::Live::Timings &t) {
     std::snprintf(
         buf, sizeof buf,
         "parse %.1f evaluate %.1f propagate %.1f lower %.1f artifact %.1f "
-        "instance %.1f init %.1f migrate %.1f release %.1f = %.1f ms",
-        t.Parse, t.Evaluate, t.Propagate, t.Lower, t.Artifact, t.Instance, t.Init, t.Migrate, t.Release, t.Total
+        "instance %.1f init %.1f match %.1f = %.1f ms",
+        t.Parse, t.Evaluate, t.Propagate, t.Lower, t.Artifact, t.Instance, t.Init, t.Migrate, t.Total
     );
     return buf;
 }
 
 } // namespace
 
-TEST_CASE("edit-to-audio latency, broken out by stage") {
+TEST_CASE("compile preparation latency, broken out by stage") {
     // `osc` shows a reload's fixed cost next to a program with almost none of its own.
     for (const std::string &name : {"zita_rev1", "freeverb", "harpe", "osc"}) {
         const Profile p = Measure(name);
@@ -87,7 +87,7 @@ TEST_CASE("edit-to-audio latency, broken out by stage") {
             p.Name << " (" << p.Fields << " fields, " << p.Instructions << " instructions)\n    first: " << Line(p.First) << "\n    edit:  " << Line(p.Edit)
         );
         const app::Live::Timings &t = p.Edit;
-        const double parts = t.Parse + t.Evaluate + t.Propagate + t.Lower + t.Artifact + t.Instance + t.Init + t.Migrate + t.Release;
+        const double parts = t.Parse + t.Evaluate + t.Propagate + t.Lower + t.Artifact + t.Instance + t.Init + t.Migrate;
         CHECK(parts <= t.Total + 0.001);
         CHECK(parts >= t.Total * 0.9);
     }

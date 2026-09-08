@@ -17,6 +17,22 @@
 using namespace faustlens;
 using namespace faustlens::test;
 
+TEST_CASE("lifting requires every symbolic slot to have a visible binder") {
+    Session s;
+    const StrId x = s.Terms.InternStr("fl_slot2");
+    const BoxId ambient = s.Boxes.NewSlot(x);
+    const BoxId local = s.Boxes.NewSlot(s.Terms.InternStr("y"));
+    const BoxId body = s.Boxes.Make(BoxKind::Par, {ambient, local});
+    const BoxId lambda = s.Boxes.Make(BoxKind::Symbolic, {local, body});
+    CHECK_FALSE(Lift(s.Terms, s.Boxes, ambient));
+    const std::vector<SlotName> names{{s.Boxes.Get(ambient).Aux, x}};
+    const auto lifted = Lift(s.Terms, s.Boxes, lambda, names);
+    REQUIRE(lifted);
+    CHECK(PrintTerm(s.Terms, lifted.Term) == "\\(fl_slot2_1).(fl_slot2,fl_slot2_1)");
+    const BoxId escaped = s.Boxes.Make(BoxKind::Par, {lambda, body});
+    CHECK_FALSE(Lift(s.Terms, s.Boxes, escaped, names));
+}
+
 TEST_CASE("the Box-to-Term lift: print it, read it back, and it is the same circuit") {
     namespace fs = std::filesystem;
     size_t lifted = 0, declined = 0, round_tripped = 0;

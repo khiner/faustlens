@@ -2,14 +2,10 @@
 
 #include "imgui.h"
 
-#include <algorithm>
-#include <span>
 #include <string>
 
 namespace faustlens::boxview {
 namespace {
-
-bool Contains(std::span<const ValueId> path, ValueId v) { return std::ranges::contains(path, v); }
 
 void Inside(ImDrawList *dl, const Node &n, float ox, float oy, const Palette &pal) {
     if (n.Ports.empty()) return;
@@ -22,9 +18,7 @@ void Inside(ImDrawList *dl, const Node &n, float ox, float oy, const Palette &pa
     for (const Port &p : n.Ports) dl->AddCircleFilled({ox + p.X, oy + p.Y}, 3.0f, pal.Port);
 }
 
-} // namespace
-
-void Draw(ImDrawList *dl, const Node &n, float ox, float oy, const Node *selected, std::span<const ValueId> path, const Palette &pal) {
+bool DrawNode(ImDrawList *dl, const Node &n, float ox, float oy, const Node *selected, const Palette &pal) {
     const Rect &b = n.Bounds;
     // Node identity for the box an edit lands on, value equality for the rest.
     const bool is_selected = &n == selected;
@@ -33,22 +27,23 @@ void Draw(ImDrawList *dl, const Node &n, float ox, float oy, const Node *selecte
     if (n.Kids.empty()) {
         const ImVec2 tl{ox + b.X, oy + b.Y}, br{ox + b.Right(), oy + b.Bottom()};
         dl->AddRectFilled(tl, br, n.Evaluated ? pal.Evaluated : pal.Stage, 3);
-        const unsigned edge = is_selected ? pal.Selected : is_occurrence ? pal.Occurrence : Contains(path, n.Term) ? pal.Enclosing : pal.Outline;
+        const unsigned edge = is_selected ? pal.Selected : is_occurrence ? pal.Occurrence : pal.Outline;
         dl->AddRect(tl, br, edge, 3, 0, is_selected ? 2.0f : 1.0f);
         const ImVec2 size = ImGui::CalcTextSize(n.Label.c_str());
         // A `route`'s label sits at the top, since the middle holds its wires.
         const float ty = n.Ports.empty() ? tl.y + (b.H - size.y) / 2 : tl.y + 2;
         dl->AddText({tl.x + (b.W - size.x) / 2, ty}, pal.Text, n.Label.c_str());
         Inside(dl, n, ox, oy, pal);
-        return;
+        return is_selected;
     }
 
     for (const Link &l : Wires(n)) dl->AddLine({ox + l.X0, oy + l.Y0}, {ox + l.X1, oy + l.Y1}, pal.Wire);
 
-    for (const Node &k : n.Kids) Draw(dl, k, ox, oy, selected, path, pal);
+    bool encloses = is_selected;
+    for (const Node &k : n.Kids) encloses |= DrawNode(dl, k, ox, oy, selected, pal);
 
     // Outlined only on the selection path, so no nested frames otherwise.
-    if (is_selected || is_occurrence || Contains(path, n.Term)) {
+    if (encloses || is_occurrence) {
         dl->AddRect(
             {ox + b.X - 2, oy + b.Y - 2}, {ox + b.Right() + 2, oy + b.Bottom() + 2},
             is_selected       ? pal.Selected :
@@ -57,6 +52,11 @@ void Draw(ImDrawList *dl, const Node &n, float ox, float oy, const Node *selecte
             4, 0, is_selected ? 2.0f : 1.0f
         );
     }
+    return encloses;
 }
+
+} // namespace
+
+void Draw(ImDrawList *dl, const Node &n, float ox, float oy, const Node *selected, const Palette &pal) { DrawNode(dl, n, ox, oy, selected, pal); }
 
 } // namespace faustlens::boxview

@@ -1,7 +1,6 @@
 // State continuity across a live reload, compared against an instance that never reloaded.
 #include "Live.h"
 #include "query/Query.h"
-#include "query/Snapshot.h"
 #include "runtime/Interp.h"
 #include "runtime/Migrate.h"
 #include "signal/Plan.h"
@@ -52,9 +51,7 @@ std::unique_ptr<Instance> Build(const std::string &src) {
     i->Ui = g.Ui("r");
 
     // The ref tree is rebuilt on every reparse, so take the offsets before the old one goes.
-    const Snapshot snap = Publish(i->Session, {"/r.dsp"});
-    REQUIRE(snap.File("/r.dsp") != nullptr);
-    i->At = app::FieldOffsets(i->Plan, snap.File("/r.dsp"));
+    i->At = app::FieldOffsets(i->Plan, i->Session.TermsOf("/r.dsp").Refs);
 
     i->Dsp.emplace(i->Plan, i->Ui);
     i->Dsp->Init(44100);
@@ -62,6 +59,56 @@ std::unique_ptr<Instance> Build(const std::string &src) {
 }
 
 } // namespace
+
+TEST_CASE("prepared audio transfers the state at the callback boundary and serializes swaps") {
+    Session s;
+    app::Live live;
+    s.SetBuffer("/r.dsp", "process=(+ : *(0.9)) ~ _;");
+    REQUIRE(live.Reload(s, "/r.dsp").Compiled);
+    const auto initial = live.Current;
+    auto &host = live.Host;
+    host.Chunk = 16;
+    host.DeviceIn = host.DeviceOut = 1;
+    host.SampleRate = 1000; // five-frame fade, without a physical device
+    host.Current = host.MakeVoice(*initial->Dsp).release();
+    host.Running = true;
+    float impulse[16] = {1}, output[16] = {};
+    host.Process(impulse, output, 4);
+
+    s.SetBuffer("/r.dsp", "process=(+ : *(0.8)) ~ _;");
+    auto prepared = app::Live::Build(s, "/r.dsp", live.Current, {}, 1000, live.Sound);
+    REQUIRE(prepared.Next);
+    const auto next = prepared.Next;
+    // State changes after preparation, before publication.
+    host.Process(nullptr, output, 4);
+    const double before = output[3];
+    REQUIRE(live.Accept(prepared).Swapped);
+
+    s.SetBuffer("/r.dsp", "process=(+ : *(0.7)) ~ _;");
+    auto third = app::Live::Build(s, "/r.dsp", live.Current, {}, 1000, live.Sound);
+    REQUIRE(third.Next);
+    CHECK(live.Accept(third).Deferred);
+    CHECK(live.Current == next);
+    host.Process(nullptr, output, 6);
+    // The sixth frame is entirely the new instance; a preparation-time copy would lag four samples.
+    CHECK(output[5] == doctest::Approx(before * std::pow(0.8, 6)).epsilon(1e-6));
+    CHECK(live.Collect().size() == 1);
+    REQUIRE(live.Accept(third).Swapped);
+    host.Process(nullptr, output, 6);
+    CHECK(output[5] == doctest::Approx(before * std::pow(0.8, 6) * std::pow(0.7, 6)).epsilon(1e-6));
+    CHECK(live.Collect().size() == 1);
+}
+
+TEST_CASE("offline reload preserves the existing sample rate") {
+    Session s;
+    app::Live live;
+    s.SetBuffer("/r.dsp", "process=_*0.5;");
+    REQUIRE(live.Reload(s, "/r.dsp").Compiled);
+    live.Current->Dsp->Init(48000);
+    s.SetBuffer("/r.dsp", "process=_*0.25;");
+    REQUIRE(live.Reload(s, "/r.dsp").Compiled);
+    CHECK(live.Current->Dsp->SampleRate == 48000);
+}
 
 TEST_CASE("a no-op edit is sample-identical across the reload") {
     const std::string src = "process = (+ : *(0.9)) ~ _;";

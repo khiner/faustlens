@@ -87,17 +87,10 @@ Edit RewireDrag(Terms &terms, const FileView &f, const boxview::Selection &route
     return wired ? ctx.Disconnect(at, in, out) : ctx.Connect(at, in, out);
 }
 
-bool Apply(Session &session, Workspace &ws, const std::string &path, const FileView &view, const Edit &e) {
-    if (e.Target == NoRef) return false;
-    const Buffer *b = ws.Find(path);
-    // `view`'s refs address `view.text`, and mean nothing against other bytes.
-    if (b == nullptr || view.Text != b->Text()) return false;
-    const SpliceContext ctx(session.Terms, view.Text, view.Refs, view.Tokens);
-    const EditScript script = ctx.Splice(e.Target, e.Value);
-    if (script.empty()) return false; // an identity edit owes no revision
-    if (!ws.Edit(path, script)) return false;
-    session.SetBuffer(path, ws.Find(path)->Text());
-    return true;
+bool Apply(const Terms &terms, Workspace &ws, const FileView &view, const Edit &e) {
+    const Buffer *b = ws.Find(view.Path);
+    if (!e || !b || view.Text != b->Text()) return false;
+    return ws.Edit(view.Path, SpliceContext(terms, view.Text, view.Refs, view.Tokens).Splice(e));
 }
 
 } // namespace faustlens::app

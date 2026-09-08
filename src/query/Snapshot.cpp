@@ -65,10 +65,30 @@ std::optional<uint32_t> OffsetOf(const FileView &f, ValueId v) {
     return std::nullopt;
 }
 
+namespace {
+
+bool PlainDefinition(const Terms &t, ValueId definition) {
+    const auto clauses = t.Children(definition);
+    if (clauses.size() != 1) return false;
+    const auto parts = t.Children(clauses.front());
+    if (parts.empty()) return false;
+    std::vector<StrId> names;
+    for (size_t i = 0; i + 1 < parts.size(); ++i) {
+        if (t.KindOf(parts[i]) != Kind::Ident) return false;
+        const StrId name = t.Get(parts[i]).Payload;
+        if (std::ranges::contains(names, name)) return false;
+        names.push_back(name);
+    }
+    return true;
+}
+
+} // namespace
+
 ValueId ProcessBody(const Terms &t, ValueId program) {
     if (program == NoTerm) return NoTerm;
     for (const ValueId stmt : t.Children(program)) {
         if (t.KindOf(stmt) != Kind::Definition || t.Lexeme(stmt) != "process") continue;
+        if (!PlainDefinition(t, stmt)) return NoTerm;
         const auto kids = t.Children(t.Child(stmt, 0));
         return kids.empty() ? NoTerm : kids.back();
     }
@@ -80,6 +100,7 @@ RefId ProcessBodyRef(const Terms &t, const FileView &f) {
     for (const RefId stmt : f.Refs.Children(f.Refs.Root())) {
         const ValueId v = f.Refs.Refs[stmt].ValueId;
         if (t.KindOf(v) != Kind::Definition || t.Lexeme(v) != "process") continue;
+        if (!PlainDefinition(t, v)) return NoRef;
         const auto clauses = f.Refs.Children(stmt);
         if (clauses.empty()) return NoRef;
         const auto parts = f.Refs.Children(clauses.front());

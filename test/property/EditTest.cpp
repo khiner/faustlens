@@ -24,22 +24,48 @@ struct Check {
     const CorpusFile &F;
     Loaded &L;
     Sweep &Sw;
-    size_t Budget = ReparseBudget;
+    size_t Budget = 96;
 
     // `retain` answers the first ref inside the target whose bytes the script dropped.
     template<class Retain> bool Run(const char *what, RefId at, const Edit &e, Retain retain) {
         const TermRef &t = L.R.Refs.Refs[e.Target];
-        const EditScript script = L.Ctx->Splice(e.Target, e.Value);
+        const EditScript script = L.Ctx->Splice(e);
         ++Sw.A;
         if (const char *why = BadScript(script, t)) return Fail(what, at, why);
         if (const RefId lost = retain(script); lost != NoRef)
             return Fail(what, at, std::format("ref {} ({}) lost its bytes", lost, KindName(L.Terms.KindOf(L.R.Refs.Refs[lost].ValueId))));
         if (!CommentsSalvaged(L, F, script, Sw.B)) return Fail(what, at, "comment lost");
-        if (Budget == 0) return true;
+        if (Budget == 0 || at % std::max<size_t>(1, L.R.Refs.Refs.size() / 96) != 0) return true;
         --Budget;
-        Terms fresh;
-        const ParseResult r = Parse(fresh, ApplyScript(F.Text, script));
+        ValueId expected = e.Value;
+        std::vector<uint32_t> target_path;
+        for (RefId child = e.Target, parent = L.Parent[child]; parent != NoRef; child = parent, parent = L.Parent[child]) {
+            const ValueId old = L.R.Refs.Refs[parent].ValueId;
+            const TermValue node = L.Terms.Get(old);
+            const auto original = L.Terms.Children(old);
+            std::vector<ValueId> kids(original.begin(), original.end());
+            const auto refs = L.R.Refs.Children(parent);
+            for (uint32_t k = 0; k < refs.size(); ++k)
+                if (refs[k] == child) {
+                    kids[k] = expected;
+                    target_path.push_back(k);
+                }
+            expected = L.Terms.Make(L.Terms.KindOf(old), node.Form, node.Variants, node.Payload, kids);
+        }
+        const std::string text = ApplyScript(F.Text, script);
+        const ParseResult r = Parse(L.Terms, text);
         if (!r.Diags.empty()) return Fail(what, at, std::format("spliced text does not parse ({})", CodeName(r.Diags[0].Code)));
+        if (r.Root != expected) return Fail(what, at, "spliced text parses to a different program");
+        RefId target = r.Refs.Root();
+        for (auto it = target_path.rbegin(); it != target_path.rend(); ++it) target = r.Refs.Children(target)[*it];
+        for (const SourceLink &link : e.Links) {
+            RefId dest = target;
+            for (const uint32_t index : link.Path) dest = r.Refs.Children(dest)[index];
+            const TermRef &old = L.R.Refs.Refs[link.Source], &now = r.Refs.Refs[dest];
+            const std::string_view bytes(F.Text.data() + old.OuterBegin, old.OuterEnd - old.OuterBegin);
+            const std::string_view retained(text.data() + now.OuterBegin, now.OuterEnd - now.OuterBegin);
+            if (retained.find(bytes) == std::string_view::npos) return Fail(what, at, "linked bytes missing at their destination occurrence");
+        }
         return true;
     }
 
@@ -172,7 +198,7 @@ TEST_CASE("Hippocraticness: an identity edit from the catalogue is byte-identica
                 sw.Failures.push_back(std::format("{} ref {}: retext to its own text built a different value", f.Relative, i));
                 break;
             }
-            if (!l.Ctx->Splice(e.Target, e.Value).empty()) {
+            if (!l.Ctx->Splice(e).empty()) {
                 sw.Failures.push_back(std::format("{} ref {}: retext to its own text changed bytes", f.Relative, i));
                 break;
             }
@@ -188,7 +214,7 @@ TEST_CASE("Hippocraticness: an identity edit from the catalogue is byte-identica
             const Edit e = ed.Connect(i, in, out);
             if (!e) continue;
             ++sw.B;
-            if (!l.Ctx->Splice(e.Target, e.Value).empty()) {
+            if (!l.Ctx->Splice(e).empty()) {
                 sw.Failures.push_back(std::format("{} ref {}: connecting a wired pair changed bytes", f.Relative, i));
                 break;
             }

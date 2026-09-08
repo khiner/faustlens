@@ -9,6 +9,33 @@
 using namespace faustlens;
 using namespace faustlens::test;
 
+TEST_CASE("moved comments are not also salvaged at their old location") {
+    File f("process = (1 /*A*/) , (2 /*B*/);");
+    const RefId root = f.RefFor("(1 /*A*/) , (2 /*B*/)");
+    const auto kids = f.R.Refs.Children(root);
+    const ValueId swapped = f.Terms.Make(Kind::Par, {f.R.Refs.Refs[kids[1]].ValueId, f.R.Refs.Refs[kids[0]].ValueId});
+    for (bool explicit_links : {false, true}) {
+        const Edit edit{root, swapped, nullptr, {{{0}, kids[1]}, {{1}, kids[0]}}};
+        const auto script = explicit_links ? f.Ctx->Splice(edit) : f.Ctx->Splice(root, swapped);
+        const std::string out = ApplyScript(f.Src, script);
+        CAPTURE(out);
+        CHECK(out == "process = (2 /*B*/),(1 /*A*/);");
+    }
+}
+
+TEST_CASE("links distinguish a swap and a copy even when all values are equal") {
+    File f("process = (1 /*A*/) , (1 /*B*/);");
+    const RefId root = f.RefFor("(1 /*A*/) , (1 /*B*/)");
+    const auto kids = f.R.Refs.Children(root);
+    const ValueId value = f.R.Refs.Refs[root].ValueId;
+    CHECK(f.After({root, value, nullptr, {{{0}, kids[1]}, {{1}, kids[0]}}}) == "process = (1 /*B*/),(1 /*A*/);");
+    const std::string copied = f.After({root, value, nullptr, {{{0}, kids[0]}, {{1}, kids[0]}}});
+    const size_t first = copied.find("(1 /*A*/)");
+    REQUIRE(first != std::string::npos);
+    CHECK(copied.find("(1 /*A*/)", first + 1) != std::string::npos);
+    CHECK(copied.find("/*B*/") != std::string::npos);
+}
+
 namespace {
 
 // `a : b` rewritten to `a : x : b`, rebuilt so the replaced region is the connective.

@@ -29,36 +29,72 @@ struct SpliceSink : Sink {
     std::string_view S;
     const RefTree &Refs;
     const TermRef &Target;
-    uint32_t Cursor = 0;
+    struct Piece {
+        uint32_t Begin = 0, End = 0;
+        std::string Text;
+        bool Retained = false;
+    };
+    std::span<const SourceLink> Links;
+    bool Explicit = false;
+    std::vector<uint32_t> Path, NextChild;
+    Ctx Destination;
+    std::vector<Piece> Pieces;
+    std::vector<std::pair<uint32_t, uint32_t>> Retained;
+    uint32_t ClaimCursor = 0, Cursor = 0;
     std::string Pending;
-    size_t Anchor = 0; // the start of `pending`'s final token
+    size_t Anchor = 0;
     EditScript Script;
 
-    SpliceSink(const SpliceContext &context, RefId t)
-        : Sc(context), S(context.Src), Refs(context.Refs), Target(context.Refs.Refs[t]), Cursor(Target.OuterBegin) {}
+    SpliceSink(const SpliceContext &context, RefId t, std::span<const SourceLink> links = {}, bool explicit_links = false)
+        : Sc(context), S(context.Src), Refs(context.Refs), Target(context.Refs.Refs[t]), Links(links), Explicit(explicit_links), ClaimCursor(Target.OuterBegin),
+          Cursor(Target.OuterBegin) {}
 
-    void Print(std::string_view text) override { Append(text); }
+    void Enter(ValueId, const Ctx &ctx) override {
+        if (!NextChild.empty()) Path.push_back(NextChild.back()++);
+        NextChild.push_back(0);
+        Destination = ctx;
+    }
+    void Leave() override {
+        NextChild.pop_back();
+        if (!Path.empty()) Path.pop_back();
+    }
+    void Print(std::string_view text) override { Pieces.push_back({0, 0, std::string(text), false}); }
+
+    void Keep(uint32_t begin, uint32_t end) {
+        Pieces.push_back({begin, end, {}, true});
+        Retained.emplace_back(begin, end);
+        ClaimCursor = std::max(ClaimCursor, end);
+    }
 
     bool Retain(ValueId v, bool needs_parens) override {
         const RefId r = Claim(v);
         if (r == NoRef) return false;
         const TermRef &ref = Refs.Refs[r];
-        // The outer span keeps the user's own parens, bytes the printer would not re-derive.
         if (ref.OuterBegin != ref.SpanBegin || ref.OuterEnd != ref.SpanEnd) {
-            RetainSpan(ref.OuterBegin, ref.OuterEnd);
+            Keep(ref.OuterBegin, ref.OuterEnd);
             return true;
         }
-        if (needs_parens) {
-            Append("(");
-            RetainSpan(ref.SpanBegin, ref.SpanEnd);
-            Append(")");
-            return true;
-        }
-        RetainSpan(ref.SpanBegin, ref.SpanEnd);
+        // An expression's operators can expose commas below the root. Reusing those
+        // bytes in an argument must restore the expression grammar around the whole fragment.
+        const bool grammar_changes = Destination.Level == Level::Argument && Sc.Ctxs[r].Level == Level::Expression && RowOf(Sc.Terms, v).Level != 0;
+        if (needs_parens || grammar_changes) Print("(");
+        Keep(ref.SpanBegin, ref.SpanEnd);
+        if (needs_parens || grammar_changes) Print(")");
         return true;
     }
 
     EditScript Finish() {
+        std::ranges::sort(Retained);
+        std::vector<std::pair<uint32_t, uint32_t>> regions;
+        for (const auto &[begin, end] : Retained) {
+            if (regions.empty() || begin > regions.back().second) regions.emplace_back(begin, end);
+            else regions.back().second = std::max(regions.back().second, end);
+        }
+        Retained = std::move(regions);
+        for (const Piece &piece : Pieces) {
+            if (piece.Retained) RetainSpan(piece.Begin, piece.End);
+            else Append(piece.Text);
+        }
         Flush(Target.OuterEnd);
         return std::move(Script);
     }
@@ -66,6 +102,14 @@ struct SpliceSink : Sink {
     // The first ref for `v` in the target span at or after the cursor, else the first in
     // it. Refs are not consumed.
     RefId Claim(ValueId v) const {
+        if (Explicit) {
+            for (const SourceLink &link : Links) {
+                if (link.Path != Path || link.Source >= Refs.Refs.size()) continue;
+                const TermRef &ref = Refs.Refs[link.Source];
+                if (ref.ValueId == v && ref.OuterBegin >= Target.OuterBegin && ref.OuterEnd <= Target.OuterEnd) return link.Source;
+            }
+            return NoRef;
+        }
         const std::vector<RefId> *list = Sc.Claims(v);
         if (list == nullptr) return NoRef;
         // Both bounds inclusive: an ancestor can share the target's start offset, and the
@@ -79,7 +123,7 @@ struct SpliceSink : Sink {
         for (auto it = begin; it != end; ++it) {
             if (Refs.Refs[*it].OuterEnd > Target.OuterEnd) continue;
             if (first == NoRef) first = *it;
-            if (Refs.Refs[*it].OuterBegin >= Cursor) return *it;
+            if (Refs.Refs[*it].OuterBegin >= ClaimCursor) return *it;
         }
         return first;
     }
@@ -134,6 +178,10 @@ struct SpliceSink : Sink {
         std::string before, after;
         for (auto it = first; it != tokens.end() && it->Begin < end; ++it) {
             if (!IsComment(it->Kind)) continue;
+            // A moved or copied region carries its own comments. Salvage only comments
+            // which no retained fragment will emit, regardless of emission order.
+            const auto kept = std::ranges::upper_bound(Retained, it->Begin, {}, &std::pair<uint32_t, uint32_t>::first);
+            if (kept != Retained.begin() && std::prev(kept)->second >= it->End) continue;
             const std::string_view comment = S.substr(it->Begin, it->End - it->Begin);
             if (it->Begin < pivot) {
                 before += ' ';
@@ -198,5 +246,22 @@ EditScript SpliceContext::Splice(RefId target, ValueId new_root, const Ctx &ctx0
 }
 
 EditScript SpliceContext::Splice(RefId target, ValueId new_root) const { return Splice(target, new_root, At(target)); }
+
+EditScript SpliceContext::Splice(const Edit &edit) const {
+    if (edit.Target >= Refs.Refs.size()) return {};
+    const auto unchanged = [&](const SourceLink &link) {
+        RefId r = edit.Target;
+        for (const uint32_t index : link.Path) {
+            const auto kids = Refs.Children(r);
+            if (index >= kids.size()) return false;
+            r = kids[index];
+        }
+        return r == link.Source;
+    };
+    if (edit.Value == Refs.Refs[edit.Target].ValueId && std::ranges::all_of(edit.Links, unchanged)) return {};
+    SpliceSink sink(*this, edit.Target, edit.Links, true);
+    Render(Terms, edit.Value, At(edit.Target), sink);
+    return sink.Finish();
+}
 
 } // namespace faustlens

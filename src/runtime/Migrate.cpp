@@ -28,13 +28,11 @@ uint32_t Slot(const Field &f, int32_t iota, uint32_t k) {
 }
 
 // Copies the common window relative to the write head, so a lengthened delay keeps its history.
-bool Copy(const Field &of, std::span<const Scalar> from, int32_t old_iota, const Field &nf, std::span<Scalar> to, int32_t new_iota) {
+void Copy(const Field &of, std::span<const Scalar> from, int32_t old_iota, const Field &nf, std::span<Scalar> to, int32_t new_iota) {
     const uint32_t n = std::min(of.Extent, nf.Extent);
     for (uint32_t k = 0; k < n; ++k) to[Slot(nf, new_iota, k)] = from[Slot(of, old_iota, k)];
-    if (nf.Extent <= of.Extent) return nf.Extent != of.Extent;
     // A rotated ring's untouched slots are not the ones `Clear` zeroed.
     for (uint32_t k = n; k < nf.Extent; ++k) to[Slot(nf, new_iota, k)] = Scalar{};
-    return true;
 }
 
 // Ties break on offset, not field index, so the result is independent of lowering order.
@@ -56,10 +54,9 @@ uint32_t Distance(uint32_t a, uint32_t b) { return a < b ? b - a : a - b; }
 
 } // namespace
 
-Migration
-Migrate(const Plan &old_plan, const Interp &from, std::span<const uint32_t> old_at, const Plan &new_plan, Interp &to, std::span<const uint32_t> new_at) {
-    Migration m;
-    const int32_t old_iota = IotaOf(old_plan, from), new_iota = IotaOf(new_plan, to);
+StateTransfer MatchState(const Plan &old_plan, std::span<const uint32_t> old_at, const Plan &new_plan, std::span<const uint32_t> new_at) {
+    StateTransfer transfer;
+    Migration &m = transfer.Counts;
 
     // Keyed on hash and kind: one node can own both a delay line and a `Perm`.
     std::map<std::pair<uint64_t, FieldKind>, std::vector<uint32_t>> by_hash;
@@ -90,7 +87,8 @@ Migrate(const Plan &old_plan, const Interp &from, std::span<const uint32_t> old_
         }
         old_taken[pick] = 1;
         ++m.Exact;
-        m.Resized += Copy(old_plan.Fields[pick], from.FieldState(pick), old_iota, nf, to.FieldState(f), new_iota);
+        m.Resized += old_plan.Fields[pick].Extent != nf.Extent;
+        transfer.Fields.emplace_back(pick, f);
     }
 
     std::vector<Pair> pairs;
@@ -111,11 +109,25 @@ Migrate(const Plan &old_plan, const Interp &from, std::span<const uint32_t> old_
         old_taken[p.OldField] = 1;
         new_taken[p.NewField] = 1;
         ++m.Shaped;
-        m.Resized += Copy(old_plan.Fields[p.OldField], from.FieldState(p.OldField), old_iota, new_plan.Fields[p.NewField], to.FieldState(p.NewField), new_iota);
+        m.Resized += old_plan.Fields[p.OldField].Extent != new_plan.Fields[p.NewField].Extent;
+        transfer.Fields.emplace_back(p.OldField, p.NewField);
     }
     for (const uint32_t f : unmatched)
         if (!new_taken[f]) ++m.Fresh;
-    return m;
+    return transfer;
+}
+
+void TransferState(const StateTransfer &transfer, const Interp &from, Interp &to) {
+    const int32_t old_iota = IotaOf(from.Plan, from), new_iota = IotaOf(to.Plan, to);
+    for (const auto &[old_field, new_field] : transfer.Fields)
+        Copy(from.Plan.Fields[old_field], from.FieldState(old_field), old_iota, to.Plan.Fields[new_field], to.FieldState(new_field), new_iota);
+}
+
+Migration
+Migrate(const Plan &old_plan, const Interp &from, std::span<const uint32_t> old_at, const Plan &new_plan, Interp &to, std::span<const uint32_t> new_at) {
+    const StateTransfer transfer = MatchState(old_plan, old_at, new_plan, new_at);
+    TransferState(transfer, from, to);
+    return transfer.Counts;
 }
 
 } // namespace faustlens

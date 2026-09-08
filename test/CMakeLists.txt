@@ -52,6 +52,8 @@ add_executable(faustlens_tests
     unit/ControlsTest.cpp
     unit/StoreTest.cpp
     unit/WorkspaceTest.cpp
+    unit/CompilerTest.cpp
+    unit/TextTest.cpp
     unit/MigrateTest.cpp
     unit/ReloadTest.cpp)
 target_link_libraries(faustlens_tests PRIVATE faustlens faustlens_app doctest)
@@ -63,6 +65,12 @@ target_compile_definitions(faustlens_tests PRIVATE
     FAUSTLENS_MINIAUDIO_DIR="${CMAKE_SOURCE_DIR}/lib/miniaudio")
 
 add_test(NAME unit COMMAND faustlens_tests)
+
+if(FAUSTLENS_GUI)
+    add_executable(faustlens_widget_tests main.cpp unit/TextWidgetTest.cpp ../app/editor/Draw.cpp)
+    target_link_libraries(faustlens_widget_tests PRIVATE faustlens_app imgui doctest)
+    add_test(NAME widget COMMAND faustlens_widget_tests)
+endif()
 
 # --- differential acceptance oracle against tree-sitter-faust ---------------
 # An independently written grammar, so accept/reject parity over the corpora

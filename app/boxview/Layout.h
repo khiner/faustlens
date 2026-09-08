@@ -1,5 +1,4 @@
-// Geometry is a pure function of Term, never persisted: saved coordinates would make
-// text <-> diagram a symmetric lens.
+// Geometry is derived from source occurrences and their optional evaluated projections.
 #pragma once
 
 #include "syntax/Term.h"
@@ -60,17 +59,19 @@ struct Link {
 // one point.
 std::vector<Link> Wires(const Node &);
 
-// Sizes memoize per value id, which hash-consing makes sound.
+// Expanded sizes depend on the source occurrence as well as its value.
 struct Layout {
     const Terms &Terms;
     Metrics Metrics;
-    std::unordered_map<ValueId, Node> Sized;
+    std::unordered_map<uint64_t, Node> Sized;
+    const RefTree *Refs = nullptr;
     // Must stay fixed for the layout's lifetime or the size memo goes stale.
-    std::unordered_map<ValueId, ValueId> Expansions;
+    std::unordered_map<RefId, ValueId> Expansions;
 
     Layout(const faustlens::Terms &t, boxview::Metrics mx) : Terms(t), Metrics(mx) {}
 
     Node Run(ValueId root);
+    Node Run(const RefTree &, RefId root);
 
     // A path, not a value, since one value can be drawn in several boxes.
     static bool HitPath(const Node &, float x, float y, std::vector<uint32_t> &path);
@@ -88,7 +89,7 @@ struct Layout {
     // `reach` is how far from a port's centre still counts, in `Metrics`' unit.
     static Endpoint PortAt(const Node &, float x, float y, float reach);
 
-    const Node &Measure(ValueId);
+    const Node &Measure(ValueId, RefId = NoRef);
     // Bounds are relative until this runs, so one measure serves every occurrence.
     static void Place(Node &, float dx, float dy);
     Node Leaf(ValueId) const;

@@ -1,13 +1,14 @@
+#include "Compiler.h"
 #include "Edits.h"
-#include "Expand.h"
 #include "Live.h"
 #include "Trace.h"
 #include "boxview/Draw.h"
 #include "boxview/Layout.h"
 #include "boxview/Select.h"
 #include "controls/Draw.h"
+#include "editor/Draw.h"
 #include "editor/Workspace.h"
-#include "query/Query.h"
+#include "files/Vfs.h"
 #include "query/Snapshot.h"
 
 #include "imgui.h"
@@ -17,14 +18,14 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <filesystem>
-#include <format>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <print>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace faustlens;
@@ -50,200 +51,224 @@ struct PortDrag {
 };
 
 struct App {
-    Session Session;
-    std::string Path; // compiled from and drawn
-    std::string Focus; // what the source pane shows
+    std::string Path, Focus;
     app::Workspace Ws;
     std::map<std::string, std::string> OnDisk;
-    Snapshot Snap;
+    app::Live Live;
+    app::Compiler Compiler;
+    std::unique_ptr<app::Compiler::Publication> View = std::make_unique<app::Compiler::Publication>();
+    uint64_t Requested = 0, DocumentRevision = 1;
+    bool AudioAccepted = false, AudioAttempted = false;
     boxview::Selection Sel;
     InlineField Field;
     PortDrag Drag;
-    std::vector<ValueId> Open;
+    std::vector<RefId> Open;
     bool ResolveSelection = false;
-    // What the edit catalogue refused, and what an external write did.
-    std::string Refused, Conflict;
-    // Consumed at frame end: opening a file republishes the snapshot being drawn.
-    std::string WantFile;
-    // What the tab bar last agreed with, so a `focus` change elsewhere can force it.
-    std::string TabFocus;
-    // Not a `Selection`: a library slider is no stage of `process`.
+    std::string Refused, Conflict, WantFile, Opening, TabFocus;
+    std::vector<std::string> Touched;
+    std::optional<RefId> WantMaterialize;
+    std::optional<uint32_t> WantTrace;
     app::Trace Traced;
     bool Reveal = false;
-
-    app::Live Live;
-    // Why the audio is older than what is on screen.
-    std::string Stale;
-    // Why no device opened, which outlives the failed `Host::Start` that reported it.
-    std::string AudioError;
+    std::map<std::string, app::TextDraft> Drafts;
+    std::string Stale, AudioError;
     app::Live::Result Last;
     std::map<std::string, std::filesystem::file_time_type> Watching;
 
-    void Load(const std::string &p) {
-        Path = Focus = p;
-        std::string text = ReadFile(Path).value_or(std::string());
-        OnDisk[Path] = text;
-        // Opening is not an edit, so it records no undo step.
-        Ws.Open(Path, std::move(text));
-        Session.SetBuffer(Path, Ws.Find(Path)->Text());
-        Republish();
+    faustlens::Terms &Terms() { return View->Terms; }
+    const Snapshot &Snap() const { return View->Snap; }
+    bool Fresh(const FileView &f) const {
+        const auto *b = Ws.Find(f.Path);
+        return b && b->Text() == f.Text;
+    }
+    bool Dirty(const std::string &p) const {
+        const auto *b = Ws.Find(p);
+        const auto saved = OnDisk.find(p);
+        return b && saved != OnDisk.end() && b->Text() != saved->second;
     }
 
-    // On demand: publishing every import would copy `stdfaust.lib` per keystroke.
+    void Queue(bool edited = false) {
+        if (edited) {
+            ++DocumentRevision;
+            if (const auto *b = Ws.Find(Focus)) Sel.Caret = b->Cursor;
+            ResolveSelection = true;
+            Refused.clear();
+            Traced = {};
+            Open.clear();
+            WantMaterialize.reset();
+            Field = {};
+            Drag = {};
+        }
+        app::Compiler::Request request;
+        request.Root = Path;
+        for (const auto &[path, buffer] : Ws.Files) request.Buffers.emplace(path, buffer.Shared);
+        request.OpenFiles = Ws.Paths();
+        if (!Opening.empty() && !Ws.IsOpen(Opening)) request.OpenFiles.push_back(Opening);
+        request.Touched = std::exchange(Touched, {});
+        request.Current = Live.Current;
+        request.Controls = Ws.Controls;
+        request.SampleRate = Live.SampleRate();
+        request.DocumentRevision = DocumentRevision;
+        request.ViewRevision = View->DocumentRevision;
+        if (const auto *f = Snap().File(Path)) request.ViewText = f->Text;
+        request.Expanded = Open;
+        request.Materialize = WantMaterialize;
+        request.TraceLabel = WantTrace;
+        Requested = Compiler.Submit(std::move(request));
+    }
+
+    void Load(const std::string &p) {
+        Path = Focus = std::filesystem::absolute(p).lexically_normal().string();
+        const auto read = ReadFile(Path);
+        const std::string text = read.value_or(std::string());
+        OnDisk[Path] = text;
+        Ws.Open(Path, text);
+        if (!read) Refused = read.error();
+        Queue();
+    }
+
     void OpenFile(const std::string &p) {
         if (Ws.IsOpen(p)) {
             Focus = p;
+            Sel = {};
+            Sel.Caret = Ws.Find(p)->Cursor;
+            ResolveSelection = true;
+            if (Traced && Traced.Path == p) Reveal = true;
+        } else {
+            Opening = p;
+            Queue();
+        }
+    }
+
+    void Save() {
+        const auto *buffer = Ws.Find(Focus);
+        if (!buffer) return;
+        const auto target = std::filesystem::path(Focus).is_absolute() ? std::filesystem::path(Focus) : std::filesystem::path(Path).parent_path() / Focus;
+        std::ofstream file(target, std::ios::binary | std::ios::trunc);
+        file.write(buffer->Text().data(), std::streamsize(buffer->Text().size()));
+        file.close();
+        if (!file) {
+            Refused = "could not save " + target.string();
             return;
         }
-        {
-            const std::optional<std::string_view> text = Session.Vfs.Read(p);
-            if (!text) return;
-            Ws.Open(p, std::string(*text));
-            OnDisk[p] = std::string(*text);
-        }
-        Focus = p;
-        Publish();
+        OnDisk[Focus] = buffer->Text();
+        std::error_code error;
+        Watching[target.string()] = std::filesystem::last_write_time(target, error);
+        Conflict.clear();
+        Refused.clear();
     }
 
-    bool Dirty(const std::string &p) const {
-        const app::Buffer *b = Ws.Find(p);
-        const auto it = OnDisk.find(p);
-        return b != nullptr && it != OnDisk.end() && b->Text() != it->second;
-    }
-
-    // Rebuilt after every compile: an edit can add or remove an import.
-    void Watch() {
-        Watching.clear();
-        for (const std::string &p : Session.Parsed()) {
-            std::error_code ec;
-            const auto when = std::filesystem::last_write_time(p, ec);
-            if (!ec) Watching.emplace(p, when);
-        }
-    }
-
-    void Publish() {
-        Session.Process(Path);
-        Snap = ::Publish(Session, Ws.Paths());
-    }
-
-    // A splice takes the source its links were computed against, so a lagging
-    // snapshot corrupts the file.
     void Sync() {
-        for (const std::string &p : Ws.Paths()) {
-            const FileView *f = Snap.File(p);
-            const app::Buffer *b = Ws.Find(p);
-            if (f == nullptr || b == nullptr || f->Text != b->Text()) {
-                Publish();
+        Compiler.Retire(Live.Collect());
+        if (auto ready = Compiler.Poll()) {
+            if (ready->Ticket != Requested) {
+                Compiler.Retire(std::move(ready));
                 return;
             }
+            for (const FileView &f : ready->Snap.Files)
+                if (!Ws.IsOpen(f.Path)) {
+                    Ws.Open(f.Path, f.Text);
+                    OnDisk[f.Path] = f.Text;
+                }
+            if (!Opening.empty() && Ws.IsOpen(Opening)) OpenFile(std::exchange(Opening, {}));
+            Refused = ready->Refused;
+            if (ready->Traced) {
+                Traced = std::move(*ready->Traced);
+                if (Traced) {
+                    WantFile = Traced.Path;
+                    Reveal = true;
+                }
+            }
+            WantMaterialize.reset();
+            WantTrace.reset();
+            for (const auto &p : ready->AvailableFiles) {
+                if (Watching.contains(p)) continue;
+                std::error_code error;
+                const auto when = std::filesystem::last_write_time(p, error);
+                if (!error) Watching.emplace(p, when);
+            }
+            Compiler.Retire(std::exchange(View, std::move(ready)));
+            AudioAccepted = false;
+            ResolveSelection = true;
+            if (const auto *b = Ws.Find(Focus)) Sel.Caret = b->Cursor;
+            if (View->Materialized) {
+                if (const auto *f = Snap().File(Path); f && app::Apply(Terms(), Ws, *f, *View->Materialized)) Queue(true);
+                View->Materialized.reset();
+            }
         }
-    }
-
-    void Republish() {
-        Publish();
-        Reload();
-    }
-
-    void Reload() {
-        const app::Live::Result r = Live.Reload(Session, Path, Ws.Controls);
-        Last = r;
-        if (r.Compiled && !Live.Host.Running && Live.Current.get()) {
+        if (View->Ticket != Requested || AudioAccepted) return;
+        Last = Live.Accept(View->Audio, Ws.Controls);
+        if (Last.Deferred) return;
+        AudioAccepted = true;
+        Stale = Last.Compiled ? std::string() : Last.Why;
+        if (Live.Current && !AudioAttempted) {
+            AudioAttempted = true;
             auto started = Live.Host.Start(*Live.Current->Dsp);
-            AudioError = started ? std::string() : std::move(started).error();
+            AudioError = started ? std::string() : started.error();
+            controls::Apply(Ws.Controls, Live.Current->Plan, Live.Current->Ui, *Live.Current->Dsp);
         }
-        Stale = r.Compiled ? std::string() : r.Why;
-        Watch();
     }
 
-    // A clean buffer takes an external write, a dirty one reports a conflict.
     void PollForEdits() {
-        Live.Collect();
-        bool moved = false;
+        bool changed = false;
         for (auto &[p, when] : Watching) {
-            std::error_code ec;
-            const auto now = std::filesystem::last_write_time(p, ec);
-            if (ec || now == when) continue;
+            std::error_code error;
+            const auto now = std::filesystem::last_write_time(p, error);
+            if (error || now == when) continue;
+            when = now;
             if (Ws.IsOpen(p) && Dirty(p)) {
-                when = now; // reported once, not once per frame
                 Conflict = "changed on disk, and this buffer has unsaved edits";
                 continue;
             }
-            moved = true;
-            if (Ws.IsOpen(p)) {
-                if (const std::optional<std::string_view> t = Session.Vfs.Read(p)) {
-                    Session.Touch(p);
-                    Ws.Open(p, std::string(*t));
-                    OnDisk[p] = Ws.Find(p)->Text();
-                    Session.SetBuffer(p, Ws.Find(p)->Text());
+            if (auto *b = Ws.Find(p)) {
+                if (const auto read = ReadFile(p)) {
+                    const uint32_t cursor = b->Cursor, anchor = b->Anchor;
+                    Ws.Open(p, *read);
+                    Ws.Find(p)->SetSelection(cursor, anchor);
+                    OnDisk[p] = *read;
                 }
-            } else {
-                Session.Touch(p);
             }
+            Touched.push_back(p);
+            changed = true;
         }
-        if (!moved) return;
-        Conflict.clear();
-        Republish();
+        if (changed) Queue(true);
     }
 
     void ApplyEdit(const Edit &e) {
-        const FileView *f = Snap.File(Focus);
-        if (f == nullptr) return;
-        if (e.Target == NoRef) {
-            Refused = e.Declined == nullptr ? "" : e.Declined;
+        const FileView *f = Snap().File(Focus);
+        if (!f || !Fresh(*f)) return;
+        if (!e) {
+            Refused = e.Declined ? e.Declined : "";
             return;
         }
-        Refused.clear();
-        // Expansion is keyed on a value id, and the rewrite replaces the value.
-        std::erase(Open, f->Refs.Refs[e.Target].ValueId);
-        // The cursor rides the script, which is how the selection survives.
-        app::Buffer *b = Ws.Find(Focus);
-        if (b == nullptr) return;
+        auto *b = Ws.Find(Focus);
         b->SetCursor(Sel.Caret);
-        if (!app::Apply(Session, Ws, Focus, *f, e)) return;
-        Sel.Caret = b->Cursor;
-        ResolveSelection = true;
-        Republish();
+        if (!app::Apply(Terms(), Ws, *f, e)) return;
+        Queue(true);
     }
 
-    void ToggleExpand() {
-        const ValueId v = Sel.Value();
-        if (v == NoTerm) return;
-        if (std::erase(Open, v) != 0) {
-            Refused.clear();
-            return;
-        }
-        const app::Expansion e = app::Expand(Session, v);
-        if (!e) {
-            Refused = e.Declined == nullptr ? "" : e.Declined;
-            return;
-        }
-        Refused = e.Ambiguous ? "this is evaluated in more than one context; showing the first" : std::string();
-        Open.push_back(v);
+    void ExpandSelection(bool materialize) {
+        const FileView *f = Snap().File(Path);
+        if (!f || Focus != Path || !Fresh(*f)) return;
+        const RefId ref = boxview::SelectedRef(*f, Sel);
+        if (ref == NoRef) return;
+        if (materialize) {
+            WantMaterialize = ref;
+            Ws.Find(Path)->SetCursor(Sel.Caret);
+        } else if (std::erase(Open, ref) == 0) Open.push_back(ref);
+        Queue();
     }
 
     void Undo(bool redo) {
-        const app::Workspace::Step u = redo ? Ws.Redo() : Ws.Undo();
-        if (!u) return;
-        if (u.Texts.empty()) {
-            // A control move derives nothing below text, so the store goes
-            // straight in. `Apply` is total, so no half-written reset is audible.
-            if (Artifact *a = Live.Current.get()) controls::Apply(Ws.Controls, a->Plan, a->Ui, *a->Dsp);
-            return;
-        }
-        for (const std::string &p : u.Texts) Session.SetBuffer(p, Ws.Find(p)->Text());
-        if (const app::Buffer *b = Ws.Find(Focus)) Sel.Caret = b->Cursor;
-        ResolveSelection = true;
-        Republish();
+        const auto step = redo ? Ws.Redo() : Ws.Undo();
+        if (!step) return;
+        if (Live.Current) controls::Apply(Ws.Controls, Live.Current->Plan, Live.Current->Ui, *Live.Current->Dsp);
+        if (!step.Texts.empty()) Queue(true);
     }
 
-    // The file is requested rather than opened: opening republishes mid-frame.
-    void TraceBack(uint32_t widget_label) {
-        const Artifact *a = Live.Current.get();
-        if (a == nullptr) return;
-        Traced = app::TraceControl(Session, a->Plan, widget_label);
-        if (!Traced) return;
-        WantFile = Traced.Path;
-        Reveal = true;
+    void TraceBack(uint32_t label) {
+        WantTrace = label;
+        Queue();
     }
 };
 
@@ -254,7 +279,7 @@ std::vector<uint32_t> PathToNode(const boxview::Node &root, const boxview::Node 
     return path;
 }
 
-std::optional<uint32_t> SourcePane(App &app, const FileView &f, std::span<const Span> marks, std::optional<Span> here) {
+std::optional<uint32_t> SourcePane(App &app, const FileView *f, std::span<const Span> marks, bool selection) {
     std::optional<uint32_t> clicked;
     ImGui::Begin("source");
     std::string want;
@@ -263,69 +288,54 @@ std::optional<uint32_t> SourcePane(App &app, const FileView &f, std::span<const 
     if (ImGui::BeginTabBar("##files")) {
         for (const std::string &p : app.Ws.Paths()) {
             const std::string label = std::filesystem::path(p).filename().string() + (app.Dirty(p) ? " *" : "");
-            bool open = true;
             const ImGuiTabItemFlags flags = moved && p == app.Focus ? ImGuiTabItemFlags_SetSelected : 0;
-            if (ImGui::BeginTabItem((label + "###" + p).c_str(), p == app.Path ? nullptr : &open, flags)) {
+            if (ImGui::BeginTabItem((label + "###" + p).c_str(), nullptr, flags)) {
                 if (app.Focus != p && !moved) want = p;
                 ImGui::EndTabItem();
             }
-            // Closing the program's own file would close the program.
-            if (!open && p != app.Path) want = app.Path;
         }
         if (ImGui::BeginTabItem("+")) {
-            for (const std::string &p : app.Session.Parsed()) {
-                if (app.Ws.IsOpen(p)) continue;
-                if (ImGui::Selectable(p.c_str())) want = p;
-            }
+            for (const std::string &p : app.View->AvailableFiles)
+                if (!app.Ws.IsOpen(p) && ImGui::Selectable(p.c_str())) want = p;
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
     if (!want.empty() && want != app.Focus) app.WantFile = want;
-    ImGui::Text("%s%s", f.Path.c_str(), app.Dirty(f.Path) ? " *" : "");
+    ImGui::TextUnformatted(app.Focus.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Save")) app.Save();
     if (!app.Conflict.empty()) ImGui::TextWrapped("%s", app.Conflict.c_str());
+    if (app.View->Ticket != app.Requested) ImGui::TextUnformatted("compiling...");
+    if (f && app.Fresh(*f)) {
+        size_t shown = 0;
+        for (const Diagnostic &diagnostic : app.Snap().Diags) {
+            if (shown++ == 4) break;
+            ImGui::TextWrapped("%s: %s", CodeName(diagnostic.Code).data(), diagnostic.Payload.c_str());
+        }
+    }
     ImGui::Separator();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    const float line_h = ImGui::GetTextLineHeight();
-    std::optional<uint32_t> target;
-    if (app.Reveal && !marks.empty()) target = here ? here->Begin : marks.front().Begin;
-    uint32_t offset = 0;
-    while (offset <= f.Text.size()) {
-        const size_t nl = f.Text.find('\n', offset);
-        const size_t end = nl == std::string::npos ? f.Text.size() : nl;
-        const std::string_view row(f.Text.data() + offset, end - offset);
-        const ImVec2 at = ImGui::GetCursorScreenPos();
-        for (const Span &sp : marks) {
-            if (sp.End <= offset || sp.Begin > end) continue;
-            const uint32_t b = std::max<uint32_t>(sp.Begin, offset);
-            const uint32_t e = std::min<uint32_t>(sp.End, uint32_t(end));
-            const float x0 = ImGui::CalcTextSize(f.Text.data() + offset, f.Text.data() + b).x;
-            const float x1 = ImGui::CalcTextSize(f.Text.data() + offset, f.Text.data() + e).x;
-            // Only one occurrence is where a key press lands, so it is brighter.
-            const bool selected = !here || (here->Begin == sp.Begin && here->End == sp.End);
-            dl->AddRectFilled({at.x + x0, at.y}, {at.x + x1, at.y + line_h}, selected ? 0x552F5A80 : 0x222F5A80);
+    if (auto *buffer = app.Ws.Find(app.Focus)) {
+        auto &draft = app.Drafts[app.Focus];
+        draft.Sync(*buffer);
+        const uint32_t before = draft.Cursor;
+        const bool fresh = f && app.Fresh(*f);
+        if (fresh && app.Reveal && (selection || !marks.empty())) {
+            buffer->SetCursor(selection ? app.Sel.Caret : marks.front().Begin);
+            draft.Sync(*buffer);
         }
-        ImGui::TextUnformatted(row.data(), row.data() + row.size());
-        // Scrolled against the line just drawn: computing from `line_h` lands short.
-        if (target && *target >= offset && *target <= end) {
-            target.reset();
-            app.Reveal = false;
-            ImGui::SetScrollHereY(0.35f);
-        }
-        if (ImGui::IsItemClicked()) {
-            const float dx = ImGui::GetIO().MousePos.x - at.x;
-            uint32_t col = 0;
-            while (col < row.size() && ImGui::CalcTextSize(row.data(), row.data() + col + 1).x < dx) ++col;
-            clicked = offset + col;
-        }
-        if (nl == std::string::npos) break;
-        offset = uint32_t(nl) + 1;
+        ImGui::PushID(app.Focus.c_str());
+        const bool changed = app::DrawText("##program", draft, ImGui::GetContentRegionAvail(), fresh ? marks : std::span<const Span>{}, app.Reveal);
+        ImGui::PopID();
+        app.Reveal = false;
+        if (draft.Commit(app.Ws, app.Focus)) app.Queue(true);
+        else if (!changed && draft.Cursor != before && fresh) clicked = draft.Cursor;
     }
     ImGui::End();
     return clicked;
 }
 
-// Returned rather than applied: applying republishes the snapshot being drawn.
+// Commit intents after both views have read the current selection.
 struct Intent {
     std::optional<Edit> Edit;
     bool Undo = false, Redo = false;
@@ -340,8 +350,13 @@ Intent HandleKeys(App &app, const FileView &f) {
     constexpr ImGuiInputFlags Global = ImGuiInputFlags_RouteGlobal;
     // Never short-circuited: `Shortcut` registers the route as a side effect, so
     // a call skipped by `||` lapses for the frame.
-    const bool undo = ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, Global);
-    const bool redo = ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, Global);
+    const auto keys = app::ReadWorkspaceKeys();
+    if (keys.Save) app.Save();
+    if (keys.Undo || keys.Redo) {
+        (keys.Redo ? in.Redo : in.Undo) = true;
+        return in;
+    }
+    if (ImGui::GetIO().WantTextInput || !app.Fresh(f)) return in;
     const bool out = ImGui::Shortcut(ImGuiKey_UpArrow, ImGuiInputFlags_RouteFocused);
     const bool into = ImGui::Shortcut(ImGuiKey_DownArrow, ImGuiInputFlags_RouteFocused);
     const bool expand = ImGui::Shortcut(ImGuiKey_Space, Global);
@@ -349,29 +364,23 @@ Intent HandleKeys(App &app, const FileView &f) {
     const bool remove = ImGui::Shortcut(ImGuiKey_Delete, Global) | ImGui::Shortcut(ImGuiKey_Backspace, Global);
     const bool edit_text = ImGui::Shortcut(ImGuiKey_Enter, Global) | ImGui::Shortcut(ImGuiKey_KeypadEnter, Global);
 
-    if (undo || redo) {
-        (redo ? in.Redo : in.Undo) = true;
-        return in;
-    }
     if (out) boxview::SelectOut(app.Sel, f);
     if (into) boxview::SelectIn(app.Sel, f);
-    if (expand) app.ToggleExpand();
-    if (materialize) in.Edit = app::Materialize(app.Session, f, app.Sel);
-    if (remove) in.Edit = app::EditFor(app.Session.Terms, f, app.Sel, app::Key::Remove);
+    if (expand) app.ExpandSelection(false);
+    if (materialize) app.ExpandSelection(true);
+    if (remove) in.Edit = app::EditFor(app.Terms(), f, app.Sel, app::Key::Remove);
     if (edit_text) {
-        const std::string_view text = app::TextOf(app.Session.Terms, f, app.Sel);
+        const std::string_view text = app::TextOf(app.Terms(), f, app.Sel);
         if (!text.empty() && text.size() < sizeof app.Field.Text) {
             app.Field = {};
             app.Field.Open = app.Field.Focus = true;
             text.copy(app.Field.Text, text.size());
         }
     }
-    // The connectives are characters, not chords, so `WantTextInput` stands in for routing.
     const ImGuiIO &io = ImGui::GetIO();
-    if (io.WantTextInput) return in;
     for (int i = 0; i < io.InputQueueCharacters.Size && !in.Edit; ++i) {
         const app::Key key = app::KeyForChar(io.InputQueueCharacters[i]);
-        if (key != app::Key::None) in.Edit = app::EditFor(app.Session.Terms, f, app.Sel, key);
+        if (key != app::Key::None) in.Edit = app::EditFor(app.Terms(), f, app.Sel, key);
     }
     return in;
 }
@@ -395,13 +404,14 @@ void HelpPane(App &app) {
     ImGui::TextWrapped("With `a` selected:");
     for (const app::Connective &c : app::Connectives()) {
         const char key[2] = {c.Char, 0};
-        row(key, app::ComposeExample(app.Session.Terms, c.Edit).c_str());
+        row(key, app::ComposeExample(app.Terms(), c.Edit).c_str());
     }
 
     ImGui::SeparatorText("edit");
     row("delete", "remove the stage");
     row("enter", "a literal or label");
-    row("cmd-z", "undo / redo, moves included");
+    row("cmd-z", "undo / redo, text and controls included");
+    row("cmd-s", "save the current source file");
 
     ImGui::SeparatorText("evaluate");
     row("space", "expand, read-only");
@@ -409,8 +419,8 @@ void HelpPane(App &app) {
 
     ImGui::Spacing();
     ImGui::TextWrapped(
-        "Every edit is a term rewrite plus a splice, so the source changes on each "
-        "and the box view has no private edit path."
+        "Text and diagram edits share one history. Diagram edits rewrite terms "
+        "and splice the result into the source."
     );
     ImGui::End();
 }
@@ -435,7 +445,7 @@ std::optional<Edit> DrawField(App &app, const FileView &f, const boxview::Node *
         return {};
     }
     if (!entered && !(app.Field.Armed && !active)) return {};
-    const Edit e = app::EditForText(app.Session.Terms, f, app.Sel, app.Field.Text);
+    const Edit e = app::EditForText(app.Terms(), f, app.Sel, app.Field.Text);
     app.Field = {};
     return e;
 }
@@ -461,7 +471,7 @@ void ControlPane(App &app) {
     }
     if (!app.AudioError.empty()) ImGui::TextWrapped("%s", app.AudioError.c_str());
     if (!host.Warning.empty()) ImGui::TextWrapped("%s", host.Warning.c_str());
-    if (app.Last.Compiled) ImGui::Text("%.1f ms to reload%s", app.Last.Timings.Total, app.Last.Unchanged ? ", unchanged" : "");
+    if (app.Last.Compiled) ImGui::Text("%.1f ms to prepare%s", app.Last.Timings.Total, app.Last.Unchanged ? ", unchanged" : "");
     // The channel mapping is positional, so a mismatched count is silence on one
     // side or a dropped channel on the other.
     if (host.Running && (host.DeviceIn != dsp.Inputs() || host.DeviceOut != dsp.Outputs()))
@@ -567,17 +577,16 @@ int main(int argc, char **argv) {
 
         app.Sync();
         // Usually the same file: `f` is compiled and drawn, `src` is shown.
-        const FileView *f = app.Snap.File(app.Path);
-        const FileView *src = app.Snap.File(app.Focus);
+        const FileView *f = app.Snap().File(app.Path);
+        const FileView *src = app.Snap().File(app.Focus);
         if (f && src) {
-            const ValueId body = ProcessBody(app.Session.Terms, f->Root);
-            boxview::Layout layout(app.Session.Terms, boxview::Metrics{});
-            layout.Expansions = app::ExpandAll(app.Session, app.Open);
-            const boxview::Node root = layout.Run(body);
+            boxview::Layout layout(app.Terms(), boxview::Metrics{});
+            layout.Expansions = app.View->Expanded;
+            const boxview::Node root = layout.Run(f->Refs, ProcessBodyRef(app.Terms(), *f));
             // A byte offset resolves against the drawn tree, so re-resolve here.
             if (app.ResolveSelection) {
                 app.ResolveSelection = false;
-                app.Sel = boxview::SelectAt(*src, root, app.Sel.Caret);
+                app.Sel = boxview::SelectAt(*src, root, src == f ? ProcessBodyRef(app.Terms(), *f) : NoRef, app.Sel.Caret);
             }
 
             ImGui::Begin("diagram");
@@ -591,7 +600,7 @@ int main(int argc, char **argv) {
             const ImVec2 at = ImGui::GetCursorScreenPos();
             const ImVec2 m = ImGui::GetIO().MousePos;
             const float mx = m.x - at.x, my = m.y - at.y;
-            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (app.Fresh(*f) && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 // A port is inside a stage, so it is asked first.
                 const boxview::Layout::Endpoint end = boxview::Layout::PortAt(root, mx, my, boxview::PortReach);
                 std::vector<uint32_t> hit;
@@ -600,7 +609,7 @@ int main(int argc, char **argv) {
                     app.OpenFile(app.Path);
                     src = f;
                     if (end) app.Drag = {true, hit, end.Port->Input, end.Port->Channel, m};
-                    app.Sel = boxview::SelectPath(*f, root, ProcessBodyRef(app.Session.Terms, *f), hit);
+                    app.Sel = boxview::SelectPath(*f, root, ProcessBodyRef(app.Terms(), *f), hit);
                     app.Traced = {};
                     app.Reveal = true;
                 }
@@ -611,41 +620,41 @@ int main(int argc, char **argv) {
                 if (end && end.Port->Input != app.Drag.Input && PathToNode(root, *end.Node) == app.Drag.At) {
                     const uint32_t in = app.Drag.Input ? app.Drag.Channel : end.Port->Channel;
                     const uint32_t out = app.Drag.Input ? end.Port->Channel : app.Drag.Channel;
-                    intent.Edit = app::RewireDrag(app.Session.Terms, *src, app.Sel, in, out);
+                    intent.Edit = app::RewireDrag(app.Terms(), *src, app.Sel, in, out);
                 }
                 app.Drag = {};
             }
 
-            const std::vector<ValueId> path = boxview::Layout::PathTo(root, app.Sel.Value());
-            const ValueId selected = path.empty() ? NoTerm : app.Sel.Value();
+            const ValueId selected = app.Sel.Value();
             // The occurrence, not the value: one box of many is where an edit lands.
-            const boxview::Node *here = path.empty() ? nullptr : boxview::SelectedNode(*src, root, ProcessBodyRef(app.Session.Terms, *src), app.Sel);
-            boxview::Draw(ImGui::GetWindowDrawList(), root, at.x, at.y, here, path);
+            const boxview::Node *here =
+                selected == NoTerm || src != f ? nullptr : boxview::SelectedNode(*src, root, ProcessBodyRef(app.Terms(), *src), app.Sel);
+            boxview::Draw(ImGui::GetWindowDrawList(), root, at.x, at.y, here);
             if (app.Drag.Active) ImGui::GetWindowDrawList()->AddLine(app.Drag.From, m, boxview::Palette{}.Link, 1.5f);
             ImGui::Dummy({root.Bounds.W, root.Bounds.H});
             ImGui::End();
 
-            if (const std::optional<Edit> e = DrawField(app, *src, here, at)) intent.Edit = e;
+            if (app.Fresh(*src))
+                if (const std::optional<Edit> e = DrawField(app, *src, here, at)) intent.Edit = e;
 
-            // `marks` is every occurrence, `at_ref` the one an edit rewrites.
-            const RefId sr = boxview::SelectedRef(*src, app.Sel);
-            std::optional<Span> at_ref;
-            if (!app.Traced && sr != NoRef) at_ref = Span{src->Refs.Refs[sr].SpanBegin, src->Refs.Refs[sr].SpanEnd};
             const std::vector<Span> marks = app.Traced ? app::TraceMarks(*src, app.Traced) : Marks(*src, selected);
-            if (const auto clicked = SourcePane(app, *src, marks, at_ref)) {
-                app.Sel = boxview::SelectAt(*src, root, *clicked);
+            if (const auto clicked = SourcePane(app, src, marks, !app.Traced && boxview::SelectedRef(*src, app.Sel) != NoRef)) {
+                app.Sel = boxview::SelectAt(*src, root, src == f ? ProcessBodyRef(app.Terms(), *f) : NoRef, *clicked);
                 app.Traced = {};
                 app.Reveal = false;
             }
 
-            // Last, because each of these republishes and invalidates `f`.
+            // Source-bound edits reject a snapshot made stale by typing in this frame.
             if (intent.Undo || intent.Redo) app.Undo(intent.Redo);
             else if (intent.Edit) app.ApplyEdit(*intent.Edit);
-            else if (!app.WantFile.empty()) {
-                app.OpenFile(app.WantFile);
-                // The caret's byte belongs to the file that is no longer shown.
-                app.Sel = {};
-            }
+        } else {
+            SourcePane(app, src, {}, false);
+            const auto keys = app::ReadWorkspaceKeys();
+            if (keys.Save) app.Save();
+            if (keys.Undo || keys.Redo) app.Undo(keys.Redo);
+        }
+        if (!app.WantFile.empty()) {
+            app.OpenFile(app.WantFile);
             app.WantFile.clear();
         }
         HelpPane(app);
@@ -669,6 +678,7 @@ int main(int argc, char **argv) {
     }
 
     // Before the window goes, while the instance it runs is still alive.
+    app.Compiler.Stop();
     app.Live.Host.Stop();
 
     SDL_WaitForGPUIdle(gpu);

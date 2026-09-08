@@ -148,13 +148,12 @@ Node Layout::Route(ValueId id, const Wiring &w) const {
     return n;
 }
 
-const Node &Layout::Measure(ValueId id) {
-    if (const auto it = Sized.find(id); it != Sized.end()) return it->second;
-    // Only a stop against a cyclic `Expansions` map: a cycle draws an empty node.
-    Sized.emplace(id, Node{});
+const Node &Layout::Measure(ValueId id, RefId ref) {
+    const uint64_t key = (uint64_t(ref) << 32) | id;
+    if (const auto it = Sized.find(key); it != Sized.end()) return it->second;
 
     Node out;
-    const auto ex = Expansions.find(id);
+    const auto ex = ref == NoRef ? Expansions.end() : Expansions.find(ref);
     if (ex != Expansions.end() && ex->second != NoTerm && ex->second != id) {
         // The evaluated form's layout under the source's term, so it collapses back.
         out = Measure(ex->second);
@@ -165,8 +164,9 @@ const Node &Layout::Measure(ValueId id) {
         out = Leaf(id);
     } else {
         const std::span<const ValueId> kids = Terms.Children(id);
-        const Node a = Measure(kids[0]);
-        const Node b = Measure(kids[1]);
+        const auto refs = Refs && ref != NoRef ? Refs->Children(ref) : std::span<const RefId>{};
+        const Node a = Measure(kids[0], refs.empty() ? NoRef : refs[0]);
+        const Node b = Measure(kids[1], refs.empty() ? NoRef : refs[1]);
         out.Term = id;
         out.Kind = kind;
         out.Kids = {a, b};
@@ -186,8 +186,8 @@ const Node &Layout::Measure(ValueId id) {
         if (kind == Kind::RecComp) out.Bounds.H += Metrics.Feedback;
     }
 
-    Sized[id] = std::move(out);
-    return Sized[id];
+    Sized[key] = std::move(out);
+    return Sized[key];
 }
 
 void Layout::Place(Node &n, float dx, float dy) {
@@ -203,6 +203,13 @@ void Layout::Place(Node &n, float dx, float dy) {
 Node Layout::Run(ValueId root) {
     if (root == NoTerm) return {};
     return Measure(root);
+}
+
+Node Layout::Run(const RefTree &refs, RefId root) {
+    Refs = &refs;
+    Sized.clear();
+    if (root >= refs.Refs.size()) return {};
+    return Measure(refs.Refs[root].ValueId, root);
 }
 
 bool Layout::HitPath(const Node &n, float x, float y, std::vector<uint32_t> &path) {

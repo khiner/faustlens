@@ -112,7 +112,7 @@ struct File {
 
     std::string After(const Edit &e) const {
         REQUIRE_MESSAGE(e.Target != NoRef, std::string(e.Declined == nullptr ? "declined" : e.Declined));
-        return SpliceTo(e.Target, e.Value);
+        return ApplyScript(Src, Ctx->Splice(e));
     }
 };
 

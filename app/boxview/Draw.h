@@ -3,8 +3,6 @@
 #include "boxview/Layout.h"
 #include "syntax/Term.h"
 
-#include <span>
-
 struct ImDrawList;
 
 namespace faustlens::boxview {
@@ -28,6 +26,6 @@ inline constexpr float PortReach = 7.0f;
 
 // `selected` is an occurrence in the drawn tree, not a value -- one value can be drawn
 // in several boxes.
-void Draw(ImDrawList *, const Node &, float ox, float oy, const Node *selected, std::span<const ValueId> path, const Palette & = {});
+void Draw(ImDrawList *, const Node &, float ox, float oy, const Node *selected, const Palette & = {});
 
 } // namespace faustlens::boxview

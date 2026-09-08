@@ -14,13 +14,13 @@ struct Buffer {
     // Never null. Shared and immutable so recording a snapshot is a refcount, and
     // the pointer is the whole snapshot.
     std::shared_ptr<const std::string> Shared;
-    uint32_t Cursor = 0;
+    uint32_t Cursor = 0, Anchor = 0;
 
     explicit Buffer(std::string t = {}) : Shared(std::make_shared<const std::string>(std::move(t))) {}
 
     const std::string &Text() const { return *Shared; }
     void SetCursor(uint32_t offset);
-    void Restore(std::shared_ptr<const std::string> t, uint32_t at);
+    void SetSelection(uint32_t cursor, uint32_t anchor);
 
     // Neither records anything undoable. The caller snapshots via `Workspace`.
     void Replace(uint32_t begin, uint32_t end, std::string_view with);

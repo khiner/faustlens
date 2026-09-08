@@ -76,7 +76,10 @@ struct Host::Device {
 
 Host::Host() = default;
 
-Host::~Host() { Stop(); }
+Host::~Host() {
+    Stop();
+    Collect();
+}
 
 std::unique_ptr<Host::Voice> Host::MakeVoice(Interp &dsp) const {
     auto v = std::make_unique<Voice>();
@@ -122,6 +125,7 @@ void Host::Process(const float *in, float *out, uint32_t frames) {
             // `Swap` guaranteed room, so this is unreachable. Dropping it leaks.
             Incoming.store(next, std::memory_order_release);
         } else {
+            if (Current && next->From == Current->Dsp) TransferState(next->Transfer, *Current->Dsp, *next->Dsp);
             Fading = Current;
             Current = next;
             FadeDone = 0;
@@ -154,8 +158,8 @@ void Host::Process(const float *in, float *out, uint32_t frames) {
     }
 }
 
-bool Host::Swap(Interp &next) {
-    if (!Running) return false;
+bool Host::Swap(Interp &next, const Interp *from, const StateTransfer &transfer) {
+    if (!Running || Incoming.load(std::memory_order_acquire) != nullptr) return false;
     // Counted before publishing, so the audio thread's retires cannot fail: an untaken
     // hand-off, the one fading, and the one replaced.
     size_t free_slots = 0;
@@ -163,8 +167,9 @@ bool Host::Swap(Interp &next) {
     if (free_slots < 3) return false;
 
     std::unique_ptr<Voice> v = MakeVoice(next);
-    if (Voice *stale = Incoming.exchange(v.release(), std::memory_order_acq_rel))
-        if (!Retire(stale)) delete stale;
+    v->From = from;
+    v->Transfer = transfer;
+    Incoming.store(v.release(), std::memory_order_release);
     return true;
 }
 

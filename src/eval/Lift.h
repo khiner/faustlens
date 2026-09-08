@@ -7,6 +7,11 @@
 
 namespace faustlens {
 
+struct SlotName {
+    uint32_t Slot;
+    StrId Name;
+};
+
 struct Lifted {
     ValueId Term = NoTerm;
     const char *Declined = nullptr;
@@ -15,6 +20,7 @@ struct Lifted {
     explicit operator bool() const { return Term != NoTerm; }
 };
 
-Lifted Lift(Terms &, const Boxes &, BoxId);
+// Ambient slots must name visible source binders. Any other free slot is declined.
+Lifted Lift(Terms &, const Boxes &, BoxId, std::span<const SlotName> ambient = {});
 
 } // namespace faustlens

@@ -6,7 +6,6 @@
 #include "editor/Buffer.h"
 
 #include <map>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -15,9 +14,8 @@ namespace faustlens::app {
 struct Workspace {
     // One moment of the editable state, sharing its texts with the buffers.
     struct State {
-        std::map<std::string, std::shared_ptr<const std::string>> Texts;
-        std::map<std::string, uint32_t> Cursors;
-        std::shared_ptr<const controls::Values> Controls;
+        std::map<std::string, Buffer> Files;
+        controls::Values Controls;
     };
 
     std::map<std::string, Buffer> Files;

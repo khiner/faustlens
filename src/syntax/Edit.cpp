@@ -10,15 +10,18 @@
 namespace faustlens {
 namespace {
 
-// The one non-trivia token of `text`, or `Tok::Eof` where it is not exactly one.
+// Inline fields trim surrounding whitespace but never accept comments or lexer errors.
+std::string_view Trim(std::string_view text) {
+    const auto begin = text.find_first_not_of(" \t\r\n\v\f");
+    if (begin == std::string_view::npos) return {};
+    return text.substr(begin, text.find_last_not_of(" \t\r\n\v\f") - begin + 1);
+}
+
 Tok SoleToken(std::string_view text) {
-    Tok found = Tok::Eof;
-    for (const Token &t : Lex(text).Tokens) {
-        if (t.Kind == Tok::Eof || IsTrivia(t.Kind)) continue;
-        if (found != Tok::Eof) return Tok::Eof;
-        found = t.Kind;
-    }
-    return found;
+    const LexResult lex = Lex(text);
+    if (!lex.Diags.empty() || lex.Tokens.size() != 2) return Tok::Eof;
+    const Token &t = lex.Tokens.front();
+    return t.Begin == 0 && t.End == text.size() && !IsTrivia(t.Kind) ? t.Kind : Tok::Eof;
 }
 
 // A signed literal is one leaf only inside a `waveform`. Elsewhere `-` is a `BinOp`.
@@ -57,15 +60,6 @@ bool DecimalInt(const Terms &t, ValueId v, uint32_t *out) {
     return std::from_chars(s.data(), s.data() + s.size(), *out).ec == std::errc();
 }
 
-// The entry index of the (in, out) pair, or `entries.size()` where there is none.
-size_t FindPair(const Terms &t, std::span<const ValueId> entries, uint32_t in, uint32_t out) {
-    for (size_t i = 0; i + 1 < entries.size(); i += 2) {
-        uint32_t a = 0, b = 0;
-        if (DecimalInt(t, entries[i], &a) && DecimalInt(t, entries[i + 1], &b) && a == in && b == out) return i;
-    }
-    return entries.size();
-}
-
 // Every `Par` below `v`, not just the right spine a comma list forms.
 void FlattenPar(const Terms &t, ValueId v, std::vector<ValueId> &out) {
     if (t.KindOf(v) != Kind::Par) {
@@ -75,6 +69,43 @@ void FlattenPar(const Terms &t, ValueId v, std::vector<ValueId> &out) {
     FlattenPar(t, t.Child(v, 0), out);
     FlattenPar(t, t.Child(v, 1), out);
 }
+
+struct LinkedTerm {
+    ValueId Value;
+    std::vector<SourceLink> Links;
+};
+
+LinkedTerm Original(const EditContext &ed, RefId r) { return {ed.ValueOf(r), {{{}, r}}}; }
+
+LinkedTerm Join(EditContext &ed, Kind kind, uint8_t form, LinkedTerm a, LinkedTerm b) {
+    const ValueId v = ed.Terms.Make(kind, form, 0, 0, {a.Value, b.Value});
+    if (a.Links.size() == 1 && a.Links[0].Path.empty() && b.Links.size() == 1 && b.Links[0].Path.empty()) {
+        const RefId parent = ed.Parent(a.Links[0].Source);
+        if (parent != NoRef && ed.ValueOf(parent) == v) {
+            const auto kids = ed.Refs.Children(parent);
+            if (kids.size() == 2 && kids[0] == a.Links[0].Source && kids[1] == b.Links[0].Source) return Original(ed, parent);
+        }
+    }
+    for (auto &link : a.Links) link.Path.insert(link.Path.begin(), 0);
+    for (auto &link : b.Links) {
+        link.Path.insert(link.Path.begin(), 1);
+        a.Links.push_back(std::move(link));
+    }
+    return {v, std::move(a.Links)};
+}
+
+LinkedTerm FoldLinked(EditContext &ed, Kind kind, uint8_t form, std::vector<LinkedTerm> terms) {
+    if (RowOf(kind).Assoc == Assoc::Right) {
+        LinkedTerm out = std::move(terms.back());
+        for (size_t i = terms.size() - 1; i-- > 0;) out = Join(ed, kind, form, std::move(terms[i]), std::move(out));
+        return out;
+    }
+    LinkedTerm out = std::move(terms.front());
+    for (size_t i = 1; i < terms.size(); ++i) out = Join(ed, kind, form, std::move(out), std::move(terms[i]));
+    return out;
+}
+
+Edit Replacement(RefId target, LinkedTerm term) { return {target, term.Value, nullptr, std::move(term.Links)}; }
 
 } // namespace
 
@@ -86,18 +117,6 @@ EditContext::EditContext(faustlens::Terms &t, const RefTree &tree) : Terms(t), R
     ParentOf.assign(Refs.Refs.size(), NoRef);
     for (RefId r = 0; r < Refs.Refs.size(); ++r)
         for (const RefId c : Refs.Children(r)) ParentOf[c] = r;
-}
-
-ValueId EditContext::Fold(Kind comp, uint8_t form, std::span<const ValueId> chain) {
-    if (chain.size() == 1) return chain.front();
-    if (RowOf(comp).Assoc == Assoc::Right) {
-        ValueId v = chain.back();
-        for (size_t i = chain.size() - 1; i-- > 0;) v = Terms.Make(comp, form, 0, 0, {chain[i], v});
-        return v;
-    }
-    ValueId v = chain.front();
-    for (size_t i = 1; i < chain.size(); ++i) v = Terms.Make(comp, form, 0, 0, {v, chain[i]});
-    return v;
 }
 
 Edit EditContext::Compose(RefId sel, Kind comp, uint8_t form, Side side, ValueId stage) {
@@ -113,15 +132,16 @@ Edit EditContext::Compose(RefId sel, Kind comp, uint8_t form, Side side, ValueId
         if (kids.size() == 2) {
             const bool sel_is_left = kids[0] == sel;
             if (sel_is_left == (RowOf(comp).Assoc == Assoc::Right)) {
-                std::vector<ValueId> chain{ValueOf(kids[0]), ValueOf(kids[1])};
+                std::vector<LinkedTerm> chain{Original(*this, kids[0]), Original(*this, kids[1])};
                 const size_t at = (sel_is_left ? 0 : 1) + (side == Side::After ? 1 : 0);
-                chain.insert(chain.begin() + long(at), stage);
-                return {up, Fold(comp, form, chain)};
+                chain.insert(chain.begin() + long(at), LinkedTerm{stage, {}});
+                return Replacement(up, FoldLinked(*this, comp, form, std::move(chain)));
             }
         }
     }
-    const ValueId self = ValueOf(sel);
-    return {sel, Terms.Make(comp, form, 0, 0, {side == Side::After ? self : stage, side == Side::After ? stage : self})};
+    LinkedTerm a = Original(*this, sel), b{stage, {}};
+    if (side == Side::Before) std::swap(a, b);
+    return Replacement(sel, Join(*this, comp, form, std::move(a), std::move(b)));
 }
 
 Edit EditContext::Delete(RefId sel) {
@@ -131,10 +151,11 @@ Edit EditContext::Delete(RefId sel) {
     if (!IsComposition(KindAt(up))) return {NoRef, NoTerm, "only a stage of a composition can be removed"};
     const auto kids = Refs.Children(up);
     if (kids.size() != 2) return {NoRef, NoTerm, "only a stage of a composition can be removed"};
-    return {up, ValueOf(kids[0] == sel ? kids[1] : kids[0])};
+    return Replacement(up, Original(*this, kids[0] == sel ? kids[1] : kids[0]));
 }
 
 Edit EditContext::Retext(RefId sel, std::string_view text) {
+    text = Trim(text);
     if (sel >= Refs.Refs.size()) return {NoRef, NoTerm, "nothing is selected"};
     const ValueId self = ValueOf(sel);
     const Kind kind = Terms.KindOf(self);
@@ -151,7 +172,10 @@ Edit EditContext::Retext(RefId sel, std::string_view text) {
         const TermValue node = Terms.Get(self);
         const auto span = Terms.Children(self);
         const std::vector<ValueId> kids(span.begin(), span.end());
-        return {sel, Terms.Make(kind, node.Form, node.Variants, Terms.InternStr(text), kids)};
+        Edit edit{sel, Terms.Make(kind, node.Form, node.Variants, Terms.InternStr(text), kids)};
+        const auto refs = Refs.Children(sel);
+        for (uint32_t i = 0; i < refs.size(); ++i) edit.Links.push_back({{i}, refs[i]});
+        return edit;
     }
     return {NoRef, NoTerm, "this node has no text of its own"};
 }
@@ -164,38 +188,49 @@ std::vector<ValueId> EditContext::Entries(RefId route) const {
     return out;
 }
 
-Edit EditContext::Rewire(RefId route, std::span<const ValueId> entries) {
-    const ValueId self = ValueOf(route);
-    const ValueId ins = Terms.Child(self, 0), outs = Terms.Child(self, 1);
-    std::vector<ValueId> kids{ins, outs};
+std::vector<RefId> EditContext::EntryRefs(RefId route) const {
+    std::vector<RefId> refs;
+    const auto walk = [&](auto &&self, RefId r) -> void {
+        if (KindAt(r) != Kind::Par) refs.push_back(r);
+        else
+            for (const RefId child : Refs.Children(r)) self(self, child);
+    };
+    const auto kids = Refs.Children(route);
+    if (kids.size() > 2) walk(walk, kids[2]);
+    return refs;
+}
+
+Edit EditContext::Rewire(RefId route, uint32_t in, uint32_t out, bool connect) {
+    if (route >= Refs.Refs.size() || KindAt(route) != Kind::Route) return {NoRef, NoTerm, "not a route"};
+    const auto entries = EntryRefs(route);
+    if (entries.size() % 2 != 0) return {NoRef, NoTerm, "its entries do not pair up"};
+    size_t at = 0;
+    for (; at < entries.size(); at += 2) {
+        uint32_t a = 0, b = 0;
+        if (DecimalInt(Terms, ValueOf(entries[at]), &a) && DecimalInt(Terms, ValueOf(entries[at + 1]), &b) && a == in && b == out) break;
+    }
+    if (connect && at != entries.size()) return {route, ValueOf(route)};
+    if (!connect && at == entries.size()) return {NoRef, NoTerm, "no such connection"};
+
+    std::vector<LinkedTerm> chain;
+    for (size_t i = 0; i < entries.size(); ++i)
+        if (connect || i < at || i >= at + 2) chain.push_back(Original(*this, entries[i]));
+    if (connect)
+        for (const uint32_t channel : {in, out}) chain.push_back({Terms.MakeLeaf(Kind::Int, Terms.InternStr(std::to_string(channel))), {}});
+
+    const auto refs = Refs.Children(route);
+    std::vector<ValueId> kids{ValueOf(refs[0]), ValueOf(refs[1])};
+    std::vector<SourceLink> links{{{0}, refs[0]}, {{1}, refs[1]}};
     // No entries is `route(n,m)`, distinct from an empty list.
-    if (!entries.empty()) kids.push_back(Fold(Kind::Par, 0, entries));
-    return {route, Terms.Make(Kind::Route, kids)};
-}
-
-const char *EditContext::PairedEntries(RefId route, std::vector<ValueId> &out) const {
-    if (route >= Refs.Refs.size() || KindAt(route) != Kind::Route) return "not a route";
-    out = Entries(route);
-    return out.size() % 2 == 0 ? nullptr : "its entries do not pair up";
-}
-
-Edit EditContext::Connect(RefId route, uint32_t in, uint32_t out) {
-    std::vector<ValueId> entries;
-    if (const char *why = PairedEntries(route, entries)) return {NoRef, NoTerm, why};
-    // Already wired: the same value back, so the splice is empty.
-    if (FindPair(Terms, entries, in, out) != entries.size()) return {route, ValueOf(route)};
-    entries.push_back(Terms.MakeLeaf(Kind::Int, Terms.InternStr(std::to_string(in))));
-    entries.push_back(Terms.MakeLeaf(Kind::Int, Terms.InternStr(std::to_string(out))));
-    return Rewire(route, entries);
-}
-
-Edit EditContext::Disconnect(RefId route, uint32_t in, uint32_t out) {
-    std::vector<ValueId> entries;
-    if (const char *why = PairedEntries(route, entries)) return {NoRef, NoTerm, why};
-    const size_t at = FindPair(Terms, entries, in, out);
-    if (at == entries.size()) return {NoRef, NoTerm, "no such connection"};
-    entries.erase(entries.begin() + long(at), entries.begin() + long(at) + 2);
-    return Rewire(route, entries);
+    if (!chain.empty()) {
+        auto folded = FoldLinked(*this, Kind::Par, 0, std::move(chain));
+        kids.push_back(folded.Value);
+        for (auto &link : folded.Links) {
+            link.Path.insert(link.Path.begin(), 2);
+            links.push_back(std::move(link));
+        }
+    }
+    return {route, Terms.Make(Kind::Route, kids), nullptr, std::move(links)};
 }
 
 Wiring RouteWiring(const Terms &t, ValueId v) {

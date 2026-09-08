@@ -2,6 +2,7 @@
 // Not a tree diff: interned values make matching a lookup.
 #pragma once
 
+#include "syntax/Edit.h"
 #include "syntax/Printer.h"
 #include "syntax/Term.h"
 #include "syntax/Token.h"
@@ -18,7 +19,7 @@ struct Replacement {
     std::string Text;
 };
 
-// Disjoint, in source order, and never covering a retained span.
+// Disjoint and in source order. A moved span is copied to its destination.
 using EditScript = std::vector<Replacement>;
 
 std::string ApplyScript(std::string_view src, const EditScript &);
@@ -41,6 +42,8 @@ struct SpliceContext {
     // Every replacement lies inside `target`'s outer span.
     EditScript Splice(RefId target, ValueId new_root) const;
     EditScript Splice(RefId target, ValueId new_root, const Ctx &ctx0) const;
+    // Explicit links determine which occurrences survive, move, or are copied.
+    EditScript Splice(const Edit &) const;
 
     // Every ref carrying this value, sorted by `OuterBegin`. Null where none.
     const std::vector<RefId> *Claims(ValueId) const;

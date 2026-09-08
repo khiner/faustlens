@@ -2,11 +2,7 @@
 
 namespace faustlens::app {
 
-void Workspace::Open(const std::string &path, std::string text) {
-    const auto it = Files.find(path);
-    if (it == Files.end()) Files.emplace(path, Buffer(std::move(text)));
-    else it->second.Restore(std::make_shared<const std::string>(std::move(text)), 0);
-}
+void Workspace::Open(const std::string &path, std::string text) { Files.insert_or_assign(path, Buffer(std::move(text))); }
 
 std::vector<std::string> Workspace::Paths() const {
     std::vector<std::string> out;
@@ -15,16 +11,8 @@ std::vector<std::string> Workspace::Paths() const {
     return out;
 }
 
-Workspace::State Workspace::Now() const {
-    State s;
-    for (const auto &[path, buffer] : Files) {
-        s.Texts.emplace(path, buffer.Shared);
-        s.Cursors.emplace(path, buffer.Cursor);
-    }
-    // `Committed`, not `Controls`: to the history a drag in flight has not happened.
-    s.Controls = std::make_shared<const controls::Values>(Committed);
-    return s;
-}
+// A drag in flight is not part of history until CommitGesture.
+Workspace::State Workspace::Now() const { return {Files, Committed}; }
 
 void Workspace::Push() {
     UndoStack.push_back(Now());
@@ -33,17 +21,13 @@ void Workspace::Push() {
 
 std::vector<std::string> Workspace::Restore(const State &s) {
     std::vector<std::string> moved;
-    for (const auto &[path, text] : s.Texts) {
-        Buffer *b = Find(path);
-        if (b == nullptr) continue;
-        // Pointer identity: a splice reproducing the bytes still moved the file.
-        if (text != b->Shared) moved.push_back(path);
-        const auto at = s.Cursors.find(path);
-        b->Restore(text, at == s.Cursors.end() ? 0 : at->second);
+    for (const auto &[path, buffer] : s.Files) {
+        if (Buffer *b = Find(path)) {
+            if (buffer.Shared != b->Shared) moved.push_back(path);
+            *b = buffer;
+        }
     }
-    // Replaced, not merged: an unmentioned path is a control that had not moved.
-    if (s.Controls) Controls = *s.Controls;
-    else Controls.clear();
+    Controls = s.Controls;
     Committed = Controls;
     return moved;
 }

@@ -1,5 +1,4 @@
-// The four retentive-lens obligations over the corpus: tokens tile every byte, PutGet,
-// Retentiveness, idempotent normalization.
+// Corpus checks for token coverage, printing, inferred retention, and identity edits.
 #include "property/Corpus.h"
 #include "property/Retentive.h"
 #include "syntax/Edit.h"
@@ -112,7 +111,7 @@ TEST_CASE("the corpus parses, and the pinned rejections are rejected") {
     CHECK(rejected == 22);
 }
 
-TEST_CASE("PutGet over the whole corpus") {
+TEST_CASE("printer round trips over the whole corpus") {
     std::vector<std::string> failures;
     size_t checked = 0;
     for (const CorpusFile &f : WholeCorpus()) {
@@ -130,7 +129,7 @@ TEST_CASE("PutGet over the whole corpus") {
         }
     }
     for (const std::string &s : failures) MESSAGE(s);
-    MESSAGE("PutGet over ", checked, " files");
+    MESSAGE("printer round trips over ", checked, " files");
     CHECK(failures.empty());
 }
 
@@ -265,8 +264,8 @@ TEST_CASE("Retentiveness: rewriting to a value from outside the target stays ins
     CHECK(m.A > 1000);
 }
 
-TEST_CASE("normalization idempotence") {
-    // Reprinted bytes come out canonically parenthesized, so a second splice changes nothing.
+TEST_CASE("identity splices after a structural edit") {
+    // Reparse the edited document and verify that writing each unchanged subtree is a no-op.
     std::vector<std::string> failures;
     size_t files = 0;
     for (const CorpusFile &f : WholeCorpus()) {
@@ -301,6 +300,6 @@ TEST_CASE("normalization idempotence") {
         }
     }
     for (const std::string &s : failures) MESSAGE(s);
-    MESSAGE("idempotence over ", files, " spliced files");
+    MESSAGE("identity splices over ", files, " edited files");
     CHECK(failures.empty());
 }

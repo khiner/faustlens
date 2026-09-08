@@ -353,6 +353,15 @@ BoxId Evaluator::Implant(BoxId box, std::span<const std::string> path, BoxId slo
     }
 }
 
+EnvId Evaluator::SymbolicEnvironment(ValueId lambda, EnvId env) {
+    const uint64_t key = (uint64_t(lambda) << 32) | env;
+    if (const auto it = SymbolicEnvs.find(key); it != SymbolicEnvs.end()) return it->second;
+    const StrId name = Terms.Get(Terms.Child(lambda, 0)).Payload;
+    const EnvId inner = Envs.PushValue(env, name, BindKind::Value, Boxes.NewSlot(name));
+    SymbolicEnvs.emplace(key, inner);
+    return inner;
+}
+
 BoxId Evaluator::ToSymbolic(BoxId b) {
     if (const auto it = Symbolic.find(b); it != Symbolic.end()) return it->second;
     BoxId out = b;
@@ -376,8 +385,8 @@ BoxId Evaluator::ToSymbolic(BoxId b) {
             // Applying to a slot is what normalises an unapplied definition.
             const std::vector<ValueId> kids = TermKids(abstr);
             const StrId name = Terms.Get(kids[0]).Payload;
-            const BoxId slot = Boxes.NewSlot(name);
-            const EnvId inner = Envs.PushValue(env, name, BindKind::Value, slot);
+            const EnvId inner = SymbolicEnvironment(abstr, env);
+            const BoxId slot = Envs.LookupLocal(inner, name)->Id;
             const BoxId body = ToSymbolic(Eval(kids[1], inner));
             out = Boxes.Make(BoxKind::Symbolic, {slot, body});
             break;

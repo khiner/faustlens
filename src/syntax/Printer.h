@@ -1,4 +1,4 @@
-// `Sink` intercepts nodes mid-descent, so a retentive printer cannot reorder.
+// `Sink` can retain a source fragment instead of printing a subtree.
 #pragma once
 
 #include "syntax/Prec.h"
@@ -22,6 +22,7 @@ struct Sink {
     virtual void Print(std::string_view) = 0;
     // Every node, in pre-order.
     virtual void Enter(ValueId, const Ctx &) {}
+    virtual void Leave() {}
     // True where the node already carries parens, so descent restarts at top level.
     virtual bool AlreadyGrouped(ValueId) { return false; }
     // True means the sink emitted the node itself and descent stops there.

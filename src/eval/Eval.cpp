@@ -89,12 +89,7 @@ void Evaluator::ClearMemo() {
     Memo.clear();
     PmMemo.clear();
     Symbolic.clear();
-    EvaluatedEnvs.clear();
-}
-
-Evaluator::Evaluated Evaluator::EvaluatedIn(ValueId v) const {
-    const auto it = EvaluatedEnvs.find(v);
-    return it == EvaluatedEnvs.end() ? Evaluated{} : it->second;
+    SymbolicEnvs.clear();
 }
 
 // Resolves against the nearest enclosing file, so a deeply nested `component` still reaches it.
@@ -385,14 +380,6 @@ BoxId Evaluator::Eval(ValueId t, EnvId env) {
     SubjectNow = saved;
     --Depth;
     Memo[key] = r;
-    // Looked up now rather than held across `RealEval`, which inserts.
-    Evaluated &seen = EvaluatedEnvs[t];
-    if (seen.Envs++ == 0) {
-        seen.Env = env;
-        seen.Box = r;
-    } else if (r != seen.Box) {
-        seen.Ambiguous = true;
-    }
     return r;
 }
 

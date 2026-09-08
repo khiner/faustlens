@@ -47,6 +47,8 @@ struct Evaluator {
     BoxId Eval(ValueId, EnvId);
     // Closures and pattern matchers become symbolic boxes: propagation normal form.
     BoxId ToSymbolic(BoxId);
+    // The lexical body context used when normalizing a unary lambda symbolically.
+    EnvId SymbolicEnvironment(ValueId lambda, EnvId);
     // `process` is a name, not a keyword.
     BoxId EvalEntry(EnvId, StrId name);
 
@@ -58,17 +60,8 @@ struct Evaluator {
     // Call whenever any file environment moved.
     void ClearMemo();
 
-    // The environment a value was evaluated under, recorded on the memo miss. First writer wins.
-    struct Evaluated {
-        EnvId Env = NilEnv;
-        uint32_t Envs = 0; // zero where the program never reached this value
-        BoxId Box = NoBox; // what the first environment gave
-        bool Ambiguous = false; // and some other environment gave something else
-    };
-    Evaluated EvaluatedIn(ValueId) const;
-
     std::unordered_map<uint64_t, BoxId> Memo;
-    std::unordered_map<ValueId, Evaluated> EvaluatedEnvs;
+    std::unordered_map<uint64_t, EnvId> SymbolicEnvs;
     std::unordered_map<uint64_t, BoxId> PmMemo; // on (rules, env)
     std::unordered_map<BoxId, BoxId> Symbolic;
     Resolver Resolve;

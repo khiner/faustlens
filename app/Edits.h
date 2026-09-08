@@ -4,7 +4,6 @@
 
 #include "boxview/Select.h"
 #include "editor/Workspace.h"
-#include "query/Query.h"
 #include "query/Snapshot.h"
 #include "syntax/Edit.h"
 
@@ -51,8 +50,7 @@ Edit EditForText(Terms &, const FileView &, const boxview::Selection &, std::str
 // where the pair is absent, disconnect where present.
 Edit RewireDrag(Terms &, const FileView &, const boxview::Selection &route, uint32_t in, uint32_t out);
 
-// Splice, apply as one undoable step, and tell the session. Refuses if `view` is not
-// that file's buffer.
-bool Apply(Session &, Workspace &, const std::string &path, const FileView &view, const Edit &);
+// Commit one structural edit through Workspace. Refs must still address the buffer's bytes.
+bool Apply(const Terms &, Workspace &, const FileView &, const Edit &);
 
 } // namespace faustlens::app

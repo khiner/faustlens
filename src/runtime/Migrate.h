@@ -23,6 +23,15 @@ struct Migration {
     int Resized = 0; // matched, and the length rule applied
 };
 
+struct StateTransfer {
+    Migration Counts;
+    std::vector<std::pair<uint32_t, uint32_t>> Fields; // old, new
+};
+
+// Matching allocates off the audio thread. Applying only copies preselected fields.
+StateTransfer MatchState(const Plan &, std::span<const uint32_t> old_at, const Plan &, std::span<const uint32_t> new_at);
+void TransferState(const StateTransfer &, const Interp &from, Interp &to);
+
 // Copies `from`'s state into `to`. `old_at`/`new_at` are per-field source offsets from
 // build time.
 Migration

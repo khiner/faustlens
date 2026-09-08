@@ -70,6 +70,7 @@ if(FAUSTLENS_GUI)
         lib/imgui/imgui_draw.cpp
         lib/imgui/imgui_tables.cpp
         lib/imgui/imgui_widgets.cpp
+        lib/imgui/misc/cpp/imgui_stdlib.cpp
         lib/imgui/backends/imgui_impl_sdl3.cpp
         lib/imgui/backends/imgui_impl_sdlgpu3.cpp)
     target_include_directories(imgui PUBLIC lib/imgui lib/imgui/backends)

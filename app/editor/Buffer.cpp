@@ -4,11 +4,11 @@
 
 namespace faustlens::app {
 
-void Buffer::SetCursor(uint32_t offset) { Cursor = std::min<uint32_t>(offset, uint32_t(Shared->size())); }
+void Buffer::SetCursor(uint32_t offset) { SetSelection(offset, offset); }
 
-void Buffer::Restore(std::shared_ptr<const std::string> t, uint32_t at) {
-    Shared = std::move(t);
-    SetCursor(at);
+void Buffer::SetSelection(uint32_t cursor, uint32_t anchor) {
+    Cursor = std::min<uint32_t>(cursor, uint32_t(Shared->size()));
+    Anchor = std::min<uint32_t>(anchor, uint32_t(Shared->size()));
 }
 
 uint32_t Buffer::Move(uint32_t offset, const EditScript &script) {
@@ -28,7 +28,7 @@ uint32_t Buffer::Move(uint32_t offset, const EditScript &script) {
 void Buffer::Apply(const EditScript &script) {
     if (script.empty()) return;
     Shared = std::make_shared<const std::string>(ApplyScript(*Shared, script));
-    SetCursor(Move(Cursor, script));
+    SetSelection(Move(Cursor, script), Move(Anchor, script));
 }
 
 void Buffer::Replace(uint32_t begin, uint32_t end, std::string_view with) {

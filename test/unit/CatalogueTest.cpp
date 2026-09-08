@@ -11,6 +11,58 @@
 using namespace faustlens;
 using namespace faustlens::test;
 
+TEST_CASE("inline fields trim whitespace and reject comments and malformed tokens") {
+    File f("process = hslider(\"gain\",0,0,1,0.1);");
+    const RefId number = f.RefFor("0.1");
+    for (const char *input : {"2 //note", "2 /*note*/", "2 /*", "2 3"}) {
+        CAPTURE(input);
+        CHECK_FALSE(f.Ed->Retext(number, input));
+    }
+    const Edit e = f.Ed->Retext(number, " \t2.5 \n");
+    REQUIRE(e);
+    CHECK(f.Terms.Lexeme(e.Value) == "2.5");
+    const auto parsed = Parse(f.Terms, f.After(e));
+    REQUIRE(parsed.Diags.empty());
+    const ValueId widget = ClauseBody(f.Terms, parsed.Root);
+    CHECK(f.Terms.Child(widget, 3) == e.Value);
+    const RefId label = f.RefFor("hslider(\"gain\",0,0,1,0.1)");
+    for (const char *input : {"\"new\" //note", "\"new\" /*note*/", "\"unterminated", "\"a\" \"b\""}) {
+        CAPTURE(input);
+        CHECK_FALSE(f.Ed->Retext(label, input));
+    }
+    const Edit renamed = f.Ed->Retext(label, " \"new\" \t");
+    REQUIRE(renamed);
+    CHECK(f.Terms.Lexeme(renamed.Value) == "\"new\"");
+    const auto relabelled = Parse(f.Terms, f.After(renamed));
+    REQUIRE(relabelled.Diags.empty());
+    CHECK(ClauseBody(f.Terms, relabelled.Root) == renamed.Value);
+}
+
+TEST_CASE("deleting an equal stage retains the chosen sibling occurrence") {
+    File f("process = (1 /*left*/) , (1 /*right*/);");
+    const RefId root = f.RefFor("(1 /*left*/) , (1 /*right*/)");
+    const auto kids = f.R.Refs.Children(root);
+    const std::string out = f.After(f.Ed->Delete(kids[0]));
+    const auto p = Parse(f.Terms, out);
+    REQUIRE(p.Diags.empty());
+    CHECK(out.find("(1 /*right*/)") != std::string::npos);
+    CHECK(out.find("(1 /*left*/)") == std::string::npos);
+    CHECK(ClauseBody(f.Terms, p.Root) == f.R.Refs.Refs[kids[1]].ValueId);
+}
+
+TEST_CASE("deleting inside a function argument preserves its argument boundary") {
+    for (const char *source : {"process = f((_ <: _,_ : +));", "process = f((_ <: _,_ : +),0);"}) {
+        File f(source);
+        const RefId split = f.RefFor("_ <: _,_ : +");
+        const Edit e = f.Ed->Delete(f.R.Refs.Children(split)[0]);
+        const auto p = Parse(f.Terms, f.After(e));
+        REQUIRE(p.Diags.empty());
+        const ValueId call = ClauseBody(f.Terms, p.Root);
+        CHECK(f.Terms.Children(call).size() == f.Terms.Children(ClauseBody(f.Terms, f.R.Root)).size());
+        CHECK(f.Terms.Child(call, 1) == e.Value);
+    }
+}
+
 TEST_CASE("insert into a sequence: `a : b` becomes `a : x : b`") {
     File f("process = a : b;");
     const ValueId x = f.Terms.MakeLeaf(Kind::Ident, f.Terms.InternStr("x"));

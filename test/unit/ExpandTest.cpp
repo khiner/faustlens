@@ -1,18 +1,15 @@
 #include "Expand.h"
+#include "Edits.h"
 #include "boxview/Layout.h"
 #include "boxview/Select.h"
-#include "eval/Lift.h"
-#include "property/Corpus.h"
+#include "conformance/BoxCompare.h"
 #include "query/Query.h"
 #include "query/Snapshot.h"
 #include "syntax/Printer.h"
 #include "syntax/Splice.h"
-#include "unit/Diagram.h"
 
 #include "doctest.h"
 
-#include <filesystem>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -38,56 +35,77 @@ struct Fixture {
 
     const FileView &F() const { return *Snap.File(Path); }
     ValueId Body() const { return ProcessBody(S.Terms, F().Root); }
-    ValueId ValueOf(std::string_view needle) const { return ValueAt(F(), uint32_t(Src.find(needle))); }
-    boxview::Selection At(std::string_view needle) const { return boxview::SelectAt(F(), Root, uint32_t(Src.find(needle))); }
+    boxview::Selection At(std::string_view needle) const { return boxview::SelectAt(F(), Root, ProcessBodyRef(S.Terms, F()), uint32_t(Src.find(needle))); }
 
-    Edit Materialize(std::string_view needle) { return app::Materialize(S, F(), At(needle)); }
-    EditScript Script(const Edit &e) const { return SpliceContext(S.Terms, F().Text, F().Refs, F().Tokens).Splice(e.Target, e.Value); }
+    RefId Ref(std::string_view needle) const { return Innermost(F(), uint32_t(Src.find(needle))); }
+    Edit ExpandBody() { return app::Expand(S, F(), ProcessBodyRef(S.Terms, F())); }
+
+    Edit Materialize(std::string_view needle) { return app::Expand(S, F(), boxview::SelectedRef(F(), At(needle))); }
+    EditScript Script(const Edit &e) const { return SpliceContext(S.Terms, F().Text, F().Refs, F().Tokens).Splice(e); }
 };
 
 } // namespace
 
-TEST_CASE("how often a drawn stage was evaluated under more than one environment") {
-    size_t stages = 0, once = 0, several = 0, never = 0;
-    std::map<std::string, size_t> several_by_kind;
+TEST_CASE("materialization preserves scope, symbolic parameters, and call specialization") {
+    for (const auto &[source, needle] : std::vector<std::pair<std::string, std::string>>{
+             {"a=1; b=a with {a=2;}; process=b,a;", ",a"},
+             {"process(x)=x*2;", "*2"},
+             {"process(x,y)=x+y;", "+y"},
+             {"process= f; f(x)=x*2;", " f;"},
+             {"f(x)=x*2; process=f(1),f(3);", "f(3)"},
+             {"process(fl_slot1)=fl_slot1,\\(y).(y+fl_slot1);", "\\(y)"},
+         }) {
+        Fixture p("/scope.dsp", source);
+        app::Workspace ws;
+        ws.Open(p.Path, source);
+        const BoxId before = p.S.Process(p.Path);
+        REQUIRE_FALSE(p.S.Boxes.IsError(before));
+        size_t at = source.find(needle);
+        if (needle == ",a" || needle == " f;") ++at;
+        auto selected = boxview::SelectAt(p.F(), p.Root, ProcessBodyRef(p.S.Terms, p.F()), uint32_t(at));
+        const Edit edit = app::Expand(p.S, p.F(), boxview::SelectedRef(p.F(), selected));
+        CAPTURE(source);
+        REQUIRE_MESSAGE(edit, (edit.Declined ? edit.Declined : ""));
+        REQUIRE(app::Apply(p.S.Terms, ws, p.F(), edit));
+        p.S.SetBuffer(p.Path, ws.Find(p.Path)->Text());
+        const BoxId after = p.S.Process(p.Path);
+        REQUIRE_FALSE(p.S.Boxes.IsError(after));
+        const auto equal = Isomorphic({p.S.Boxes, p.S.Terms}, before, {p.S.Boxes, p.S.Terms}, after);
+        CHECK_MESSAGE(equal.has_value(), (equal ? "" : equal.error()));
+        if (needle == ",a") CHECK(ws.Find(p.Path)->Text().ends_with("process=b,1;"));
+        if (needle == "*2") CHECK(ws.Find(p.Path)->Text() == "process(x)=x,2 : *;");
+    }
+}
 
-    ForEachDiagram([&](Session &s, const FileView &f, ValueId, const boxview::Node &root) {
-        s.Process(f.Path);
-        Walk(root, [&](const boxview::Node &n) {
-            ++stages;
-            const Evaluator::Evaluated e = s.Eval.EvaluatedIn(n.Term);
-            if (e.Envs == 0) ++never;
-            else if (!e.Ambiguous) ++once;
-            else {
-                ++several;
-                several_by_kind[std::string(KindName(s.Terms.KindOf(n.Term)))] += 1;
-            }
-        });
-    });
-
-    for (const auto &[kind, n] : several_by_kind) MESSAGE("  several: ", kind, ": ", n);
-    MESSAGE(stages, " drawn stages: ", once, " whose environments agree, ", several, " where they differ, ", never, " never reached");
-    // Taking the first environment is a rule, not a guess.
-    CHECK(stages == 5992);
-    CHECK(never == 0);
-    CHECK(several == 16);
+TEST_CASE("opening one of two equal stages does not open the other occurrence") {
+    Fixture p("/one.dsp", "a=_*2; process=a,a;");
+    const RefId body = ProcessBodyRef(p.S.Terms, p.F());
+    const auto refs = p.F().Refs.Children(body);
+    boxview::Layout layout(p.S.Terms, {});
+    const Edit expanded = app::Expand(p.S, p.F(), refs[0]);
+    REQUIRE(expanded);
+    layout.Expansions = {{refs[0], expanded.Value}};
+    const auto root = layout.Run(p.F().Refs, body);
+    REQUIRE(root.Kids.size() == 2);
+    CHECK_FALSE(root.Kids[0].Kids.empty());
+    CHECK(root.Kids[1].Kids.empty());
 }
 
 TEST_CASE("expanding a node shows what it evaluates to") {
     Fixture p("/expand.dsp", "gain = 2; process = _ * gain;");
-    // `gain` is beta-reduced away, which is the evaluated view's lossiness.
-    const Evaluator::Evaluated e = p.S.Eval.EvaluatedIn(p.Body());
-    REQUIRE(e.Envs == 1);
-    const Lifted out = Lift(p.S.Terms, p.S.Boxes, p.S.Eval.Eval(p.Body(), e.Env));
-    REQUIRE(out.Term != NoTerm);
-    CHECK(PrintTerm(p.S.Terms, out.Term) == "_,2 : *");
+    const auto out = p.ExpandBody();
+    REQUIRE(out);
+    CHECK(PrintTerm(p.S.Terms, out.Value) == "_,2 : *");
 }
 
-TEST_CASE("a stage the program never reached has no evaluated form") {
-    Fixture const p("/unreached.dsp", "unused = 1 : 2; process = _;");
-    const ValueId unused = p.ValueOf("1 : 2");
-    REQUIRE(unused != NoTerm);
-    CHECK(p.S.Eval.EvaluatedIn(unused).Envs == 0);
+TEST_CASE("unused definitions can be expanded in their lexical scope") {
+    Fixture p("/unused.dsp", "unused = 2+3; f(x)=x*2; process = _;");
+    const auto constant = app::Expand(p.S, p.F(), p.Ref("+3"));
+    REQUIRE(constant);
+    CHECK(PrintTerm(p.S.Terms, constant.Value) == "5");
+    const auto function = app::Expand(p.S, p.F(), p.Ref("*2"));
+    REQUIRE(function);
+    CHECK(PrintTerm(p.S.Terms, function.Value) == "x,2 : *");
 }
 
 TEST_CASE("expansion is in place: the node stays, its children are the evaluated form") {
@@ -95,13 +113,13 @@ TEST_CASE("expansion is in place: the node stays, its children are the evaluated
     const ValueId stage = p.At("*(gain)").Value();
     REQUIRE(stage != NoTerm);
 
-    const app::Expansion e = app::Expand(p.S, stage);
-    REQUIRE(e.Term != NoTerm);
-    CHECK_FALSE(e.Ambiguous);
+    const RefId ref = boxview::SelectedRef(p.F(), p.At("*(gain)"));
+    const Edit e = app::Expand(p.S, p.F(), ref);
+    REQUIRE(e.Value != NoTerm);
 
     boxview::Layout opened(p.S.Terms, boxview::Metrics{});
-    opened.Expansions = {{stage, e.Term}};
-    const boxview::Node after = opened.Run(p.Body());
+    opened.Expansions = {{ref, e.Value}};
+    const boxview::Node after = opened.Run(p.F().Refs, ProcessBodyRef(p.S.Terms, p.F()));
 
     // Still drawn under its own term, so selection and linking are unchanged.
     const boxview::Node *node = boxview::Layout::Find(after, stage);
@@ -117,19 +135,19 @@ TEST_CASE("an expansion is recomputed, because the environment is what changed")
     // The drawn value does not move when its definitions do, so a value-keyed cache would stale.
     Fixture p("/recompute.dsp", "gain = 2; process = _ * gain;");
     const ValueId body = p.Body();
-    CHECK(PrintTerm(p.S.Terms, app::Expand(p.S, body).Term) == "_,2 : *");
+    CHECK(PrintTerm(p.S.Terms, p.ExpandBody().Value) == "_,2 : *");
 
     p.S.SetBuffer(p.Path, "gain = 3; process = _ * gain;");
     p.S.Process(p.Path);
     p.Snap = Publish(p.S, {p.Path});
     REQUIRE(p.Body() == body);
-    CHECK(PrintTerm(p.S.Terms, app::Expand(p.S, body).Term) == "_,3 : *");
+    CHECK(PrintTerm(p.S.Terms, p.ExpandBody().Value) == "_,3 : *");
 }
 
-TEST_CASE("expanding what the program does not reach is declined with a reason") {
+TEST_CASE("an invalid unused expression is declined for its evaluation error") {
     Fixture p("/decline.dsp", "unused = 1 : 2; process = _;");
-    const app::Expansion e = app::Expand(p.S, p.ValueOf("1 : 2"));
-    CHECK(e.Term == NoTerm);
+    const Edit e = app::Expand(p.S, p.F(), p.Ref(": 2"));
+    CHECK(e.Value == NoTerm);
     CHECK(e.Declined != nullptr);
 }
 

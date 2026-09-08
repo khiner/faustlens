@@ -1,4 +1,4 @@
-// Term rewrites, never bytes. Each answers with one ref and one value, or declines.
+// Term rewrites and correspondence to the source occurrences they preserve.
 #pragma once
 
 #include "syntax/Term.h"
@@ -10,11 +10,17 @@
 
 namespace faustlens {
 
+struct SourceLink {
+    std::vector<uint32_t> Path; // child indices from the replacement root
+    RefId Source = NoRef;
+};
+
 struct Edit {
     RefId Target = NoRef;
     ValueId Value = NoTerm;
     // Why, where `Target` is `NoRef`. Shown to the user as-is.
     const char *Declined = nullptr;
+    std::vector<SourceLink> Links;
 
     explicit operator bool() const { return Target != NoRef; }
 };
@@ -51,19 +57,16 @@ struct EditContext {
     Edit Retext(RefId sel, std::string_view text);
 
     // One (input, output) pair added or removed, both 1-based as in the source.
-    Edit Connect(RefId route, uint32_t in, uint32_t out);
-    Edit Disconnect(RefId route, uint32_t in, uint32_t out);
+    Edit Connect(RefId route, uint32_t in, uint32_t out) { return Rewire(route, in, out, true); }
+    Edit Disconnect(RefId route, uint32_t in, uint32_t out) { return Rewire(route, in, out, false); }
 
     // The route's entries as the flat channel list they denote.
     std::vector<ValueId> Entries(RefId route) const;
 
     ValueId ValueOf(RefId r) const { return Refs.Refs[r].ValueId; }
     Kind KindAt(RefId r) const { return Terms.KindOf(ValueOf(r)); }
-    // Entries as the flat channel list, or the reason there is no rewire to be had.
-    const char *PairedEntries(RefId route, std::vector<ValueId> &out) const;
-    // Folded in the connective's own associativity, so a reparse round-trips.
-    ValueId Fold(Kind, uint8_t form, std::span<const ValueId>);
-    Edit Rewire(RefId route, std::span<const ValueId> entries);
+    Edit Rewire(RefId route, uint32_t in, uint32_t out, bool connect);
+    std::vector<RefId> EntryRefs(RefId route) const;
 };
 
 // A route's channel counts and (input, output) pairs, all 1-based. What the rewires

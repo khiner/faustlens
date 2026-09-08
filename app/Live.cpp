@@ -6,6 +6,8 @@
 
 namespace faustlens::app {
 
+double Live::SampleRate() const { return Host.Running ? Host.SampleRate : Current ? Current->Dsp->SampleRate : 44100; }
+
 namespace {
 
 // Milliseconds since `at`, which is advanced to now.
@@ -37,93 +39,106 @@ std::expected<std::unique_ptr<Artifact>, std::string> Compile(Session &s, const 
     a->Diags = CheckPaths(a->Ui);
     a->Hash = Hash(a->Plan);
 
-    const Snapshot snap = Publish(s, {path});
-    a->At = FieldOffsets(a->Plan, snap.File(path));
+    a->At = FieldOffsets(a->Plan, s.TermsOf(path).Refs);
     t.Artifact = Since(at);
     return a;
 }
 
 } // namespace
 
-std::vector<uint32_t> FieldOffsets(const Plan &p, const FileView *f) {
+std::vector<uint32_t> FieldOffsets(const Plan &p, const RefTree &refs) {
     std::vector<uint32_t> out;
     out.reserve(p.Fields.size());
     for (const Field &fl : p.Fields) {
         uint32_t first = Nowhere;
-        if (f != nullptr && fl.Origin != NoTerm)
-            for (const Span &sp : Marks(*f, fl.Origin)) first = std::min(first, sp.Begin);
+        if (fl.Origin != NoTerm)
+            for (const TermRef &ref : refs.Refs)
+                if (ref.ValueId == fl.Origin) first = std::min(first, ref.SpanBegin);
         out.push_back(first);
     }
     return out;
 }
 
-void Live::Collect() {
-    for (const Interp *done : Host.Collect()) std::erase_if(Retiring, [done](const std::unique_ptr<Artifact> &a) { return a->Dsp.get() == done; });
+std::vector<std::shared_ptr<Artifact>> Live::Collect() {
+    std::vector<std::shared_ptr<Artifact>> garbage;
+    for (const Interp *done : Host.Collect())
+        std::erase_if(Retiring, [&](std::shared_ptr<Artifact> &a) {
+            if (a->Dsp.get() != done) return false;
+            garbage.push_back(std::move(a));
+            return true;
+        });
+    return garbage;
 }
 
-Live::Result Live::Reload(Session &s, const std::string &path, const controls::Values &controls) {
-    Collect();
-    Result r;
+Live::Prepared Live::Build(
+    Session &s, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &controls, double sample_rate, audio::Decoder &sound
+) {
+    Prepared prepared;
+    prepared.Base = std::move(base);
+    Result &r = prepared.Status;
     const auto began = std::chrono::steady_clock::now();
     auto compiled = Compile(s, path, r.Timings);
-    // The total spans every exit below, so it is stamped on the way out.
-    const auto done = [&]() -> Result & {
+    const auto done = [&]() {
         r.Timings.Total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
-        return r;
+        return std::move(prepared);
     };
-    auto at = std::chrono::steady_clock::now();
     if (!compiled) {
         r.Why = std::move(compiled).error();
         return done();
     }
-    std::unique_ptr<Artifact> next = *std::move(compiled);
+    auto next = std::move(*compiled);
     r.Compiled = true;
-
-    // An unchanged program never reaches the audio thread, so the output is identical.
-    if (Current && Current->Hash == next->Hash) {
+    if (prepared.Base && prepared.Base->Hash == next->Hash) {
         r.Unchanged = true;
         return done();
     }
-
+    auto at = std::chrono::steady_clock::now();
     next->Dsp = std::make_unique<Interp>(next->Plan, next->Ui);
-    // The decode cache outlives the artifact, so an edit does not re-decode.
-    next->Dsp->LoadSoundfiles(&Sound);
+    next->Dsp->LoadSoundfiles(&sound);
     r.Timings.Instance = Since(at);
-
-    if (!Current) {
-        // Only a device knows the rate, so 44100 stands in where none is open.
-        next->Dsp->Init(Host.Running ? Host.SampleRate : 44100);
-        // Over the declared inits `Init` just wrote.
-        controls::Apply(controls, next->Plan, next->Ui, *next->Dsp);
-        r.Timings.Init = Since(at);
-        Current = std::move(next);
-        return done();
-    }
-
-    next->Dsp->Init(Current->Dsp->SampleRate);
+    next->Dsp->Init(sample_rate);
     controls::Apply(controls, next->Plan, next->Ui, *next->Dsp);
     r.Timings.Init = Since(at);
-    r.Migration = Migrate(Current->Plan, *Current->Dsp, Current->At, next->Plan, *next->Dsp, next->At);
-    r.Timings.Migrate = Since(at);
-
-    if (!Host.Running) {
-        // No device, so nothing else can be reading the old instance.
-        std::unique_ptr<Artifact> gone = std::move(Current);
-        Current = std::move(next);
-        gone.reset();
-        r.Timings.Release += Since(at);
-        return done();
+    if (prepared.Base) {
+        prepared.Transfer = MatchState(prepared.Base->Plan, prepared.Base->At, next->Plan, next->At);
+        r.Migration = prepared.Transfer.Counts;
+        r.Timings.Migrate = Since(at);
     }
-    if (!Host.Swap(*next->Dsp)) {
-        // Backpressure, not failure: the audio thread has not let go of enough
-        // instances yet, so the old one keeps playing.
-        r.Why = "the audio thread has not released the last swap yet";
-        return done();
-    }
-    r.Swapped = true;
-    Retiring.push_back(std::move(Current));
-    Current = std::move(next);
+    prepared.Next = std::move(next);
     return done();
+}
+
+Live::Result Live::Accept(Prepared &prepared, const controls::Values &controls) {
+    Result r = prepared.Status;
+    if (!r.Compiled) return r;
+    if (prepared.Base.get() != Current.get()) {
+        r.Compiled = false;
+        r.Why = "the running program changed during compilation";
+        return r;
+    }
+    if (r.Unchanged || !prepared.Next) return r;
+    auto &next = prepared.Next;
+    // Controls may have moved while the worker initialized the instance.
+    controls::Apply(controls, next->Plan, next->Ui, *next->Dsp);
+    if (Host.Running) {
+        if (!Host.Swap(*next->Dsp, Current ? Current->Dsp.get() : nullptr, prepared.Transfer)) {
+            r.Deferred = true;
+            r.Why = "waiting for the audio swap boundary";
+            return r;
+        }
+        r.Swapped = true;
+        if (Current) Retiring.push_back(std::move(Current));
+    } else if (Current) {
+        TransferState(prepared.Transfer, *Current->Dsp, *next->Dsp);
+    }
+    Current = std::move(next);
+    return r;
+}
+
+Live::Result Live::Reload(Session &s, const std::string &path, const controls::Values &controls) {
+    Collect();
+    auto prepared = Build(s, path, Current, controls, SampleRate(), Sound);
+    return Accept(prepared, controls);
 }
 
 } // namespace faustlens::app

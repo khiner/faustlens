@@ -3,7 +3,7 @@
 A from-scratch Faust compiler built around bidirectional editing: a box graph and a text editor showing the same program, either one editable, updating each other as you type, with audio running throughout.
 
 Named for the *lens* of bidirectional programming: the text and the diagram are two views of one program, related by a `get` that renders and a `put` that splices edits back into the source.
-It is a *retentive* lens specifically — an edit keeps the bytes of everything it did not change, comments and formatting included.
+Structural edits retain the linked source occurrences, including their comments and formatting, while splicing the changed syntax into the document.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) describes the design.
 
@@ -17,6 +17,15 @@ ninja -C build
 build/test/faustlens_tests        # unit, conformance and property suites
 build/test/faustlens_acceptance   # differential accept/reject oracle vs tree-sitter-faust
 ```
+
+## Editing
+
+Run `build/app/faustlens_gui path/to/program.dsp`.
+Type in the source pane or select a diagram stage to edit it structurally.
+Cmd-Z and Cmd-Shift-Z undo and redo text, diagram edits, and control gestures through one history.
+Cmd-S saves the active file.
+Compilation runs in the background; incomplete edits leave the last good program playing.
+Space expands a selected stage as a read-only preview, and M materializes that expansion into source.
 
 ## The oracle
 

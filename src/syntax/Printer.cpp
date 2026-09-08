@@ -38,6 +38,10 @@ struct Printer {
 
     void Render(ValueId v, const Ctx &ctx) {
         Sink.Enter(v, ctx);
+        struct Exit {
+            faustlens::Sink &Sink;
+            ~Exit() { Sink.Leave(); }
+        } exit{Sink};
         const bool parens = NeedsParens(T, v, ctx);
         const bool grouped = parens || Sink.AlreadyGrouped(v);
         if (Sink.Retain(v, parens)) return;

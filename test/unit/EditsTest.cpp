@@ -20,7 +20,6 @@ struct Open {
 
     explicit Open(std::string text) {
         Ws.Open(Path, std::move(text));
-        Session.SetBuffer(Path, Text());
         Publish();
     }
 
@@ -28,6 +27,7 @@ struct Open {
     Buffer &Buffer() { return *Ws.Find(Path); }
 
     void Publish() {
+        Session.SetBuffer(Path, Text());
         Session.Process(Path);
         Snap = ::faustlens::Publish(Session, {Path});
     }
@@ -47,22 +47,16 @@ struct Open {
         REQUIRE(body != NoTerm);
         boxview::Layout layout(Session.Terms, boxview::Metrics{});
         const boxview::Node root = layout.Run(body);
-        Sel = boxview::SelectAt(View(), root, uint32_t(at));
+        Sel = boxview::SelectAt(View(), root, ProcessBodyRef(Session.Terms, View()), uint32_t(at));
     }
 
-    bool Do(Key key) {
-        const Edit e = EditFor(Session.Terms, View(), Sel, key);
-        const bool ok = Apply(Session, Ws, Path, View(), e);
+    bool Commit(const Edit &e) {
+        const bool ok = Apply(Session.Terms, Ws, View(), e);
         if (ok) Publish();
         return ok;
     }
-
-    bool Drag(uint32_t in, uint32_t out) {
-        const Edit e = RewireDrag(Session.Terms, View(), Sel, in, out);
-        const bool ok = Apply(Session, Ws, Path, View(), e);
-        if (ok) Publish();
-        return ok;
-    }
+    bool Do(Key key) { return Commit(EditFor(Session.Terms, View(), Sel, key)); }
+    bool Drag(uint32_t in, uint32_t out) { return Commit(RewireDrag(Session.Terms, View(), Sel, in, out)); }
 };
 
 } // namespace
@@ -139,7 +133,7 @@ TEST_CASE("the inline field commits through the catalogue, and declines") {
     CHECK(bad.Target == NoRef);
     CHECK(bad.Declined != nullptr);
     const Edit good = EditForText(f.Session.Terms, f.View(), f.Sel, "0.01");
-    REQUIRE(Apply(f.Session, f.Ws, f.Path, f.View(), good));
+    REQUIRE(Apply(f.Session.Terms, f.Ws, f.View(), good));
     CHECK(f.Text() == "process = hslider(\"gain\", 0, 0, 1, 0.01);\n");
 }
 
@@ -152,9 +146,8 @@ TEST_CASE("an edit script is refused against bytes its links do not address") {
     // The view is allowed to lag the buffer by one compile.
     f.Buffer().Replace(0, 0, "// a line the view has never seen\n");
     const std::string before = f.Text();
-    CHECK_FALSE(Apply(f.Session, f.Ws, f.Path, f.View(), e));
+    CHECK_FALSE(Apply(f.Session.Terms, f.Ws, f.View(), e));
     CHECK(f.Text() == before);
-    f.Session.SetBuffer(f.Path, f.Text());
     f.Publish();
     f.SelectAt("b");
     CHECK(f.Do(Key::Sequence));
@@ -166,7 +159,7 @@ TEST_CASE("an identity edit writes nothing and costs no revision") {
     f.SelectAt("0.1");
     const uint64_t before = f.Session.Revision;
     const Edit same = EditForText(f.Session.Terms, f.View(), f.Sel, "0.1");
-    CHECK_FALSE(Apply(f.Session, f.Ws, f.Path, f.View(), same));
+    CHECK_FALSE(Apply(f.Session.Terms, f.Ws, f.View(), same));
     CHECK(f.Session.Revision == before);
     CHECK(f.Ws.UndoStack.size() == 0);
 }
