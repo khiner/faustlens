@@ -281,7 +281,16 @@ TEST_CASE("native corpus responses and final state match the interpreter at full
         const auto plan = program.Lower();
         REQUIRE(plan);
         const auto ui = program.Ui("native");
-        auto interp = MakeExecutor<Interp>(*plan, ui), native = MakeExecutor<Native>(*plan, ui);
+        auto compiled = arm64::Program::Compile(*plan, ui);
+        REQUIRE(compiled);
+        const auto bytes = (*compiled)->Encode();
+        auto decoded = arm64::Program::Decode(bytes);
+        REQUIRE(decoded);
+        REQUIRE((*decoded)->Encode() == bytes);
+        auto code = NativeCode::Publish(*decoded);
+        REQUIRE(code);
+        auto interp = MakeExecutor<Interp>(*plan, ui);
+        auto native = Native::Create(*code);
         HarnessSound sound;
         interp->LoadSoundfiles(&sound);
         native->LoadSoundfiles(&sound);

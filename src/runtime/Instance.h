@@ -1,5 +1,6 @@
 #pragma once
 
+#include "runtime/Layout.h"
 #include "runtime/Registry.h"
 #include "runtime/Soundfile.h"
 #include "signal/Ui.h"
@@ -8,15 +9,16 @@
 
 namespace faustlens {
 
-// Retain values read by another band or defined conditionally across invocations.
-struct RegisterLayout {
-    std::vector<Reg> Slot, Persistent;
-    std::vector<Nature> Types;
-    std::vector<uint8_t> Init;
-    explicit RegisterLayout(const Plan &);
-};
-
 struct Instance {
+private:
+    std::unique_ptr<const InstanceLayout> OwnedLayout;
+    const InstanceLayout &Layout;
+
+public:
+    const RegisterLayout &Registers = Layout.Registers;
+    const std::vector<uint32_t> &FieldAt = Layout.FieldAt;
+    const std::vector<uint8_t> &InitWritesField = Layout.InitWritesField;
+
     struct Zone {
         uint32_t Label = 0;
         UiKind Kind = UiKind::Button;
@@ -26,10 +28,7 @@ struct Instance {
 
     const Plan &Plan;
     const Registry &Registry;
-    RegisterLayout Registers;
     std::vector<Scalar> Values, State;
-    std::vector<uint32_t> FieldAt;
-    std::vector<uint8_t> InitWritesField;
     std::vector<Zone> Zones;
     std::vector<const faustlens::Symbol *> Symbol;
     std::vector<std::shared_ptr<const Soundfile>> Sound;
@@ -37,8 +36,9 @@ struct Instance {
     double SampleRate = 44100;
     int32_t Frames = 0;
 
-    // Plan and Registry must outlive the instance.
-    Instance(const faustlens::Plan &, const UiNode &, const faustlens::Registry & = Registry::Builtin());
+    // Plan, Registry, and a supplied layout must outlive the instance.
+    // A supplied layout must describe this Plan.
+    Instance(const faustlens::Plan &, const UiNode &, const faustlens::Registry & = Registry::Builtin(), const InstanceLayout * = nullptr);
     virtual ~Instance() = default;
     Instance(const Instance &) = delete;
     Instance &operator=(const Instance &) = delete;

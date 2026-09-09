@@ -73,18 +73,24 @@ add_library(faustlens_signal
 target_include_directories(faustlens_signal PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(faustlens_signal PUBLIC faustlens_eval)
 
+add_library(faustlens_layout runtime/Layout.cpp)
+target_link_libraries(faustlens_layout PUBLIC faustlens_signal)
+
+add_library(faustlens_arm64 arm64/Compile.cpp arm64/Artifact.cpp)
+target_link_libraries(faustlens_arm64 PUBLIC faustlens_layout)
+
 add_library(faustlens_runtime
     runtime/Registry.cpp
     runtime/Soundfile.cpp
     runtime/Instance.cpp)
 target_include_directories(faustlens_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(faustlens_runtime PUBLIC faustlens_signal)
+target_link_libraries(faustlens_runtime PUBLIC faustlens_layout)
 
 add_library(faustlens_compiler INTERFACE)
-target_link_libraries(faustlens_compiler INTERFACE faustlens_signal)
+target_link_libraries(faustlens_compiler INTERFACE faustlens_arm64)
 
 add_library(faustlens_native runtime/Native.cpp runtime/Executable.cpp)
-target_link_libraries(faustlens_native PUBLIC faustlens_runtime)
+target_link_libraries(faustlens_native PUBLIC faustlens_runtime faustlens_arm64)
 
 add_library(faustlens_interp EXCLUDE_FROM_ALL runtime/Interp.cpp)
 target_link_libraries(faustlens_interp PUBLIC faustlens_runtime)
@@ -111,5 +117,6 @@ target_link_libraries(faustlens INTERFACE
 target_compile_options(faustlens_eval PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_signal PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_runtime PRIVATE -ffp-contract=off -fno-fast-math)
+target_compile_options(faustlens_arm64 PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_native PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_interp PRIVATE -ffp-contract=off -fno-fast-math)

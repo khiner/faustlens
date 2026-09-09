@@ -26,7 +26,7 @@ Native compilation must be self-contained in the editor, with a small footprint 
 Term preserves source forms such as `a+b`, `(a,b) : +`, numeric lexemes, and operator spellings.
 Evaluation desugars Term into Box, then propagation constructs Signal.
 Analysis and lowering produce a Plan shared by both execution paths.
-The native backend compiles Plan instructions to ARM64, and the interpreter executes them directly.
+The native backend compiles Plan instructions to an immutable ARM64 artifact, and the interpreter executes Plan instructions directly.
 Both use the same instance state, lifecycle, controls, and DSP state transfer.
 [NATIVE.md](NATIVE.md) defines the native execution contract and acceptance budgets.
 
@@ -235,9 +235,11 @@ Failed compilation preserves the last good audio while the editors continue disp
 
 ## Library boundaries
 
-`faustlens_compiler` contains parsing, file resolution, evaluation, signal analysis, and Plan lowering.
+`faustlens_compiler` provides parsing, file resolution, evaluation, signal analysis, Plan lowering, and ARM64 compilation.
+`faustlens_arm64` generates code and serializes artifacts using the shared layout in `faustlens_layout`.
 `faustlens_runtime` provides shared instance state, controls, foreign bindings, and soundfile storage.
-`faustlens_native` and `faustlens_interp` provide execution.
+`faustlens_native` binds and publishes ARM64 artifacts and creates instances sharing executable code.
+`faustlens_interp` executes Plan instructions directly.
 `faustlens_migrate` provides optional DSP state transfer.
 `faustlens_lens` contains printing, source splicing, structural edits, evaluation lifting, and source snapshots.
 Standalone native builds include the compiler and shared runtime and require only the embedded Faust libraries as third-party source data.

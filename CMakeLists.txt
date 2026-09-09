@@ -17,6 +17,7 @@ option(FAUSTLENS_TESTS "Build the test binaries" ${PROJECT_IS_TOP_LEVEL})
 option(FAUSTLENS_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 option(FAUSTLENS_GUI "Build the SDL3 + Dear ImGui front end" ${PROJECT_IS_TOP_LEVEL})
+option(FAUSTLENS_CLI "Build the standalone ARM64 compiler" ${PROJECT_IS_TOP_LEVEL})
 option(FAUSTLENS_BENCHMARKS "Build DSP benchmarks against the pinned Faust compiler" OFF)
 
 if(FAUSTLENS_SANITIZE)
@@ -59,6 +60,7 @@ endif()
 include(cmake/Jit.cmake)
 
 add_subdirectory(src EXCLUDE_FROM_ALL)
+add_subdirectory(cli)
 if(FAUSTLENS_GUI OR FAUSTLENS_TESTS OR FAUSTLENS_BENCHMARKS)
     add_subdirectory(app)
 endif()

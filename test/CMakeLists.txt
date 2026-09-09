@@ -54,7 +54,8 @@ add_executable(faustlens_tests
     unit/TextTest.cpp
     unit/MigrateTest.cpp
     unit/ReloadTest.cpp
-    unit/NativeTest.cpp)
+    unit/NativeTest.cpp
+    unit/ArtifactTest.cpp)
 target_link_libraries(faustlens_tests PRIVATE faustlens faustlens_app doctest)
 target_include_directories(faustlens_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(faustlens_tests PRIVATE
@@ -97,4 +98,16 @@ if(EXISTS "${TSF_DIR}/src/parser.c" AND EXISTS "${TS_DIR}/lib/src/lib.c")
     add_test(NAME acceptance COMMAND faustlens_acceptance)
 else()
     message(WARNING "tree-sitter submodules missing; acceptance oracle not built")
+endif()
+
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    add_executable(faustlens_artifact_test runtime/ArtifactRunner.cpp)
+    target_link_libraries(faustlens_artifact_test PRIVATE faustlens_native)
+    add_dependencies(faustlens_artifact_test faustlens_cli)
+    faustlens_sign_jit(faustlens_artifact_test)
+    add_test(NAME artifact_compile COMMAND faustlens_cli
+        "${CMAKE_CURRENT_SOURCE_DIR}/runtime/artifact.dsp" -o "${CMAKE_CURRENT_BINARY_DIR}/artifact.f64")
+    set_tests_properties(artifact_compile PROPERTIES FIXTURES_SETUP artifact)
+    add_test(NAME artifact_run COMMAND faustlens_artifact_test "${CMAKE_CURRENT_BINARY_DIR}/artifact.f64")
+    set_tests_properties(artifact_run PROPERTIES FIXTURES_REQUIRED artifact)
 endif()

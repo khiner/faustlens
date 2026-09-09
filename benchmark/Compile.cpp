@@ -43,17 +43,30 @@ int main(int argc, char **argv) {
     emit(Band::Sample, Op::Output, 0, {value}, false);
     const UiNode ui;
     std::unique_ptr<Native> native;
-    std::vector<double> elapsed;
+    std::vector<double> elapsed, emission, publication, instantiation;
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](auto begin, auto end) { return std::chrono::duration<double, std::milli>(end - begin).count(); };
     for (int k = 0; k < 11; ++k) {
-        const auto start = std::chrono::steady_clock::now();
-        auto compiled = Native::Compile(plan, ui);
-        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        if (!compiled) {
-            std::cerr << compiled.error() << '\n';
+        const auto start = Clock::now();
+        auto program = arm64::Program::Compile(plan, ui);
+        const auto emitted = Clock::now();
+        if (!program) {
+            std::cerr << program.error() << '\n';
             return 2;
         }
-        elapsed.push_back(ms);
-        native = std::move(*compiled);
+        auto code = NativeCode::Publish(*program);
+        const auto published = Clock::now();
+        if (!code) {
+            std::cerr << code.error() << '\n';
+            return 2;
+        }
+        auto instance = Native::Create(*code);
+        const auto instantiated = Clock::now();
+        emission.push_back(ms(start, emitted));
+        publication.push_back(ms(emitted, published));
+        instantiation.push_back(ms(published, instantiated));
+        elapsed.push_back(ms(start, instantiated));
+        native = std::move(instance);
     }
     Interp interp(plan, ui);
     interp.Init(48000);
@@ -67,7 +80,8 @@ int main(int argc, char **argv) {
     for (int k = 0; k < 17; ++k)
         if (std::bit_cast<uint64_t>(a[k]) != std::bit_cast<uint64_t>(b[k])) return 3;
     const double first = elapsed[0];
-    std::ranges::sort(elapsed);
+    for (auto *times : {&elapsed, &emission, &publication, &instantiation}) std::ranges::sort(*times);
     std::cout << std::setprecision(17) << "{\"shape\":" << std::quoted(shape) << ",\"instructions\":" << count << ",\"code_bytes\":" << native->CodeBytes()
-              << ",\"first_ms\":" << first << ",\"p50_ms\":" << elapsed[5] << ",\"p95_ms\":" << elapsed[10] << ",\"exact\":true}\n";
+              << ",\"first_ms\":" << first << ",\"p50_ms\":" << elapsed[5] << ",\"p95_ms\":" << elapsed[10] << ",\"emit_p95_ms\":" << emission[10]
+              << ",\"publish_p95_ms\":" << publication[10] << ",\"instantiate_p95_ms\":" << instantiation[10] << ",\"exact\":true}\n";
 }

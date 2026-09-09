@@ -12,47 +12,9 @@ constexpr std::memory_order Relaxed = std::memory_order_relaxed;
 std::atomic_ref<double> UiAt(Scalar &s) { return std::atomic_ref<double>(s.D); }
 } // namespace
 
-RegisterLayout::RegisterLayout(const Plan &p) : Slot(p.Regs, NoReg), Types(p.Regs, Nature::Real) {
-    std::vector<int> defined(p.Regs, -1);
-    std::vector<bool> retained(p.Regs, false), initialized(p.Regs, false);
-    for (size_t b = 0; b < p.Bands.size(); ++b) {
-        int guards = 0;
-        for (const Instr &i : p.Bands[b]) {
-            for (Reg r : p.Args(i))
-                if (defined[r] >= 0 && defined[r] != int(b)) retained[r] = true;
-            if (Op(i.Op) == Op::GuardBegin) ++guards;
-            if (Op(i.Op) == Op::GuardEnd) --guards;
-            if (i.Dst == NoReg) continue;
-            defined[i.Dst] = int(b);
-            Types[i.Dst] = i.Nature;
-            initialized[i.Dst] = b == size_t(Band::Init);
-            // Guarded definitions can retain their previous value across calls.
-            if (guards) retained[i.Dst] = true;
-        }
-    }
-    for (Reg r = 0; r < p.Regs; ++r)
-        if (retained[r]) {
-            Slot[r] = uint32_t(Persistent.size());
-            Persistent.push_back(r);
-            Init.push_back(initialized[r]);
-        }
-}
-
-Instance::Instance(const faustlens::Plan &p, const UiNode &ui, const faustlens::Registry &reg)
-    : Plan(p), Registry(reg), Registers(p), Values(Registers.Persistent.size()) {
-    FieldAt.resize(p.Fields.size());
-    uint32_t at = 0;
-    for (size_t f = 0; f < p.Fields.size(); ++f) {
-        FieldAt[f] = at;
-        at += std::max<uint32_t>(1, p.Fields[f].Extent);
-    }
-    State.assign(at, Scalar{});
-
-    InitWritesField.assign(p.Fields.size(), 0);
-    for (const Instr &i : p.Band(Band::Init)) {
-        if (Op(i.Op) == Op::StoreField && i.Imm < p.Fields.size()) InitWritesField[i.Imm] = 1;
-    }
-
+Instance::Instance(const faustlens::Plan &p, const UiNode &ui, const faustlens::Registry &reg, const InstanceLayout *layout)
+    : OwnedLayout(layout ? nullptr : std::make_unique<InstanceLayout>(p)), Layout(layout ? *layout : *OwnedLayout), Plan(p), Registry(reg),
+      Values(Registers.Persistent.size()), State(Layout.StateSize) {
     Symbol.assign(p.Foreign.size(), nullptr);
     for (size_t i = 0; i < p.Foreign.size(); ++i) {
         const ForeignDesc &d = p.Foreign[i];

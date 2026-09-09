@@ -2,7 +2,15 @@
 
 On Apple Silicon, the macOS editor compiles Plan instructions to ARM64 machine code.
 Other platforms execute Plan instructions through the interpreter.
-Generated code contains host addresses and runs in the compiling process.
+Compilation produces an immutable `arm64::Program` containing code, entry offsets, symbolic relocations, Plan data, UI descriptors, and instance layout.
+It allocates no DSP state or executable memory.
+`NativeCode::Publish` resolves math, soundfile, and foreign bindings for the current process.
+`Native::Create` allocates independent state and controls while sharing published code and immutable layout.
+
+`Program::Encode` writes the little-endian, versioned FaustLens `.f64` artifact format.
+`Program::Decode` loads it without recompilation or access to the original source.
+Artifacts are executable inputs and require the same trust as native libraries.
+The format is specific to the FaustLens runtime ABI and is not a system-linker object file.
 
 ## Execution contract
 
@@ -39,7 +47,7 @@ Floating-point reassociation and implicit FMA contraction are disabled.
 
 Execution preserves the calling thread's rounding and denormal settings.
 Arithmetic tests cover all four rounding modes with gradual underflow and denormal flushing.
-The 94-program corpus compares full-precision output and final state with the interpreter, including split blocks and reinitialization.
+The 94-program corpus round-trips artifacts and compares full-precision output and final state with the interpreter, including split blocks and reinitialization.
 Finite bits, signed zero, and infinity signs must match.
 NaN payloads are unspecified.
 Shared tests cover semantic rules, controls, lifecycle, state transfer, and typed foreign calls.
@@ -48,7 +56,7 @@ Unrounded upstream benchmark traces supplement the six-decimal oracle and requir
 ## Platform and ownership
 
 Executable storage uses one 8 MiB virtual `MAP_JIT` arena, with physical pages committed on use.
-Code is immutable and reused only after instance destruction.
+Published code remains allocated until its last owner, including DSP instances, releases it.
 Writes use thread-local JIT write protection and instruction-cache invalidation before publication.
 
 macOS builds sign the editor, native tests, and benchmark executables with Hardened Runtime and the `allow-jit` entitlement.
@@ -76,7 +84,7 @@ Compilation uses eleven samples and edit latency uses nine, with nearest-rank pe
 These samples measure throughput and edit latency, with audio-device latency excluded.
 Unrounded comparison runs for at least one second and changes gain during the trace.
 Compilation scaling covers 1,000 and 10,000 instructions in arithmetic chains, simultaneous live values, and math calls.
-Scaling checks exact execution, large spill offsets, and distant branches.
+Scaling checks exact execution, large spill offsets, and distant branches, and reports emission, publication, and instantiation times separately.
 
 Cold preparation ends with an initialized interpreter instance.
 Native compilation includes executable-memory publication and reports the first allocation separately.
@@ -100,9 +108,10 @@ Stripped executables measure the interpreter alone and with native code generati
 
 ## Recorded validation
 
-[benchmark/native.json](benchmark/native.json) records 96 isolated runs on an Apple M5 Max with macOS 26.5.2 and Homebrew Clang 23.1.0.
-All 24 DSP cases, six compilation cases, and footprint, memory, and edit-latency budgets passed.
-The initial subset report is preserved in [benchmark/baseline.json](benchmark/baseline.json).
+[benchmark/artifact.json](benchmark/artifact.json) records 96 isolated runs with separate emission, publication, and instantiation measurements.
+All 24 DSP cases, six compilation cases, and footprint, memory, and edit-latency budgets passed on an Apple M5 Max.
+Earlier reports remain in [benchmark/native.json](benchmark/native.json) and [benchmark/baseline.json](benchmark/baseline.json).
 
-Release and ASan/UBSan validation passed 301 unit/property/conformance cases and two parser acceptance cases.
-Release validation also passed the widget test and hardened signature checks for the editor, tests, and benchmarks.
+Release validation passed 306 unit/property/conformance cases, parser acceptance, widget interaction, and artifact compilation and execution in separate processes.
+ASan/UBSan validation passed the full headless suite.
+Hardened signature checks passed for the native editor, tests, and benchmarks.
