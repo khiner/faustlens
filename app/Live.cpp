@@ -34,7 +34,6 @@ std::expected<std::unique_ptr<Artifact>, std::string> Compile(Session &s, const 
     t.Lower = Since(at);
 
     a->Ui = g.Ui(RootLabel(s.Metadata));
-    // Report duplicate control paths without stopping compilation.
     a->Diags = CheckPaths(a->Ui);
     a->Hash = Hash(a->Plan);
 
@@ -60,7 +59,7 @@ std::vector<uint32_t> FieldOffsets(const Plan &p, const RefTree &refs) {
 
 std::vector<std::shared_ptr<Artifact>> Live::Collect() {
     std::vector<std::shared_ptr<Artifact>> garbage;
-    for (const Interp *done : Host.Collect())
+    for (const Instance *done : Host.Collect())
         std::erase_if(Retiring, [&](std::shared_ptr<Artifact> &a) {
             if (a->Dsp.get() != done) return false;
             garbage.push_back(std::move(a));

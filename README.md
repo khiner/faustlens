@@ -20,6 +20,33 @@ build/test/faustlens_acceptance
 
 The test binaries cover unit, property, and compiler conformance checks, widget interaction, and parser acceptance against tree-sitter-faust.
 
+## Standalone compiler and runtime
+
+Build the compiler and interpreter runtime:
+
+```sh
+cmake -S . -B build-runtime -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DFAUSTLENS_GUI=OFF -DFAUSTLENS_TESTS=OFF
+cmake --build build-runtime --target faustlens_interp
+```
+
+Link from another CMake project:
+
+```cmake
+add_subdirectory(path/to/faustlens)
+target_link_libraries(my_dsp_host PRIVATE faustlens_interp)
+```
+
+Embedded builds compile only the requested targets and their dependencies.
+`faustlens_interp` provides the source compiler and interpreter runtime.
+Use `Session` and `Graph` to lower source to a `Plan`, then construct an `Interp` DSP instance.
+Keep the Plan and Registry alive through the instance's lifetime.
+Call `Init` before `Compute`.
+The host supplies audio buffers and optional soundfile decoding through `SoundfileReader`.
+
+`faustlens_compiler` provides source-to-Plan compilation.
+The [library boundaries](ARCHITECTURE.md#library-boundaries) describe optional execution, DSP state transfer, and lens targets.
+
 ## Editing
 
 Run `build/app/faustlens_gui path/to/program.dsp`.

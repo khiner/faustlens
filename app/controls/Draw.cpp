@@ -1,7 +1,7 @@
 #include "controls/Draw.h"
 
 #include "controls/Style.h"
-#include "runtime/Interp.h"
+#include "runtime/Instance.h"
 
 #include "imgui.h"
 
@@ -71,7 +71,7 @@ Turn Knob(const char *id, float *t, const char *text) {
 
 struct Surface {
     const Plan &Plan;
-    Interp &Dsp;
+    Instance &Dsp;
     Values &Store;
     Report Report;
 };
@@ -82,9 +82,8 @@ void DrawWidget(const UiNode &n, Surface &s) {
     const float h = VerticalHeight * ImGui::GetFontSize() / 13.0f;
 
     ImGui::PushID(int(n.WidgetLabel));
-    // Group the widget for a shared trace and tooltip rectangle.
     ImGui::BeginGroup();
-    Interp &dsp = s.Dsp;
+    Instance &dsp = s.Dsp;
     const std::string_view path = s.Plan.Label(n.WidgetLabel);
     const double value = dsp.Control(n.WidgetLabel);
     const std::string text = Format(n, st, value);
@@ -96,7 +95,6 @@ void DrawWidget(const UiNode &n, Surface &s) {
     switch (n.Kind) {
         case UiKind::Button: {
             ImGui::Button(n.Label.c_str());
-            // Momentary buttons remain active only during a press and are excluded from stored values.
             dsp.SetControl(n.WidgetLabel, ImGui::IsItemActive() ? 1.0 : 0.0);
             break;
         }
@@ -109,7 +107,6 @@ void DrawWidget(const UiNode &n, Surface &s) {
         case UiKind::VSlider:
         case UiKind::HSlider:
         case UiKind::NumEntry: {
-            // Apply the program's scale to a normalized ImGui slider.
             float t = float(ToPosition(n, st.Scale, value));
             Turn turn;
             if (st.Knob) {
@@ -201,7 +198,7 @@ void DrawNode(const UiNode &n, Surface &s, bool root) {
 
 } // namespace
 
-Report Draw(const Plan &plan, const UiNode &ui, Interp &dsp, Values &store) {
+Report Draw(const Plan &plan, const UiNode &ui, Instance &dsp, Values &store) {
     Surface s{plan, dsp, store};
     DrawNode(ui, s, true);
     return s.Report;

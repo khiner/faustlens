@@ -1,4 +1,12 @@
-# Build editing, layout, and audio hosting without window dependencies.
+add_library(miniaudio STATIC ../lib/miniaudio/miniaudio.c)
+target_include_directories(miniaudio SYSTEM PUBLIC ../lib/miniaudio)
+target_compile_definitions(miniaudio PUBLIC
+    MA_NO_ENGINE MA_NO_NODE_GRAPH MA_NO_RESOURCE_MANAGER MA_NO_GENERATION MA_NO_ENCODING)
+if(APPLE)
+    target_link_libraries(miniaudio PUBLIC
+        "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
+endif()
+
 add_library(faustlens_app
     editor/Buffer.cpp
     editor/Text.cpp

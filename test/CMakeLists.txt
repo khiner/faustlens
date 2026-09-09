@@ -53,7 +53,8 @@ add_executable(faustlens_tests
     unit/CompilerTest.cpp
     unit/TextTest.cpp
     unit/MigrateTest.cpp
-    unit/ReloadTest.cpp)
+    unit/ReloadTest.cpp
+    unit/InstanceTest.cpp)
 target_link_libraries(faustlens_tests PRIVATE faustlens faustlens_app doctest)
 target_include_directories(faustlens_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(faustlens_tests PRIVATE

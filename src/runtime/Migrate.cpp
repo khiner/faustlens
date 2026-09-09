@@ -1,6 +1,6 @@
 #include "runtime/Migrate.h"
 
-#include "runtime/Interp.h"
+#include "runtime/Instance.h"
 
 #include <algorithm>
 #include <compare>
@@ -12,10 +12,9 @@ namespace {
 
 bool Carried(const Field &f) { return f.Loop == NoLoop && f.Sig != NoSig && (f.Kind == FieldKind::Delay || f.Kind == FieldKind::Perm); }
 
-// Read the shared IOTA position without migrating it.
 bool IsIota(const Field &f) { return f.Kind == FieldKind::Perm && f.Sig == NoSig && f.Loop == NoLoop; }
 
-int32_t IotaOf(const Plan &p, const Interp &in) {
+int32_t IotaOf(const Plan &p, const Instance &in) {
     for (uint32_t f = 0; f < p.Fields.size(); ++f)
         if (IsIota(p.Fields[f])) return in.FieldState(f)[0].I;
     return 0;
@@ -31,19 +30,17 @@ uint32_t Slot(const Field &f, int32_t iota, uint32_t k) {
 void Copy(const Field &of, std::span<const Scalar> from, int32_t old_iota, const Field &nf, std::span<Scalar> to, int32_t new_iota) {
     const uint32_t n = std::min(of.Extent, nf.Extent);
     for (uint32_t k = 0; k < n; ++k) to[Slot(nf, new_iota, k)] = from[Slot(of, old_iota, k)];
-    // Zero unused slots relative to the rotated ring position.
     for (uint32_t k = n; k < nf.Extent; ++k) to[Slot(nf, new_iota, k)] = Scalar{};
 }
 
-// Break ties by source offset to preserve independence from lowering order.
 struct Pair {
     uint32_t Distance = 0;
     uint32_t OldAt = 0, NewAt = 0;
     uint32_t OldField = 0, NewField = 0;
 
     std::strong_ordering operator<=>(const Pair &b) const {
-        // Exclude field indices from ordering.
         if (const auto c = Distance <=> b.Distance; c != 0) return c;
+        // Break ties by source offset to preserve independence from lowering order.
         if (const auto c = OldAt <=> b.OldAt; c != 0) return c;
         return NewAt <=> b.NewAt;
     }
@@ -91,6 +88,7 @@ StateTransfer MatchState(const Plan &old_plan, std::span<const uint32_t> old_at,
         transfer.Fields.emplace_back(pick, f);
     }
 
+    // Match remaining fields by shape and source proximity.
     std::vector<Pair> pairs;
     for (const uint32_t f : unmatched) {
         const Field &nf = new_plan.Fields[f];
@@ -117,14 +115,14 @@ StateTransfer MatchState(const Plan &old_plan, std::span<const uint32_t> old_at,
     return transfer;
 }
 
-void TransferState(const StateTransfer &transfer, const Interp &from, Interp &to) {
+void TransferState(const StateTransfer &transfer, const Instance &from, Instance &to) {
     const int32_t old_iota = IotaOf(from.Plan, from), new_iota = IotaOf(to.Plan, to);
     for (const auto &[old_field, new_field] : transfer.Fields)
         Copy(from.Plan.Fields[old_field], from.FieldState(old_field), old_iota, to.Plan.Fields[new_field], to.FieldState(new_field), new_iota);
 }
 
 Migration
-Migrate(const Plan &old_plan, const Interp &from, std::span<const uint32_t> old_at, const Plan &new_plan, Interp &to, std::span<const uint32_t> new_at) {
+Migrate(const Plan &old_plan, const Instance &from, std::span<const uint32_t> old_at, const Plan &new_plan, Instance &to, std::span<const uint32_t> new_at) {
     const StateTransfer transfer = MatchState(old_plan, old_at, new_plan, new_at);
     TransferState(transfer, from, to);
     return transfer.Counts;

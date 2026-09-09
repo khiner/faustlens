@@ -18,12 +18,6 @@ namespace faustlens {
 
 namespace {
 
-constexpr std::array<std::string_view, size_t(Op::Count_)> OpNames = {
-    "const.i", "const.f",   "input",   "output",  "binop",  "ext",  "int",  "float",      "bitcast",  "select2",     "select3",   "load",
-    "store",   "sf.length", "sf.rate", "sf.read", "fconst", "fvar", "ffun", "loop.begin", "loop.end", "guard.begin", "guard.end",
-};
-
-// An unguarded use makes the combined DNF condition true.
 using Clause = std::vector<SigId>; // sorted conjunction of atoms
 using Dnf = std::vector<Clause>; // sorted disjunction of clauses; empty means true
 
@@ -130,6 +124,7 @@ struct Slot {
 
 struct Lowering {
     const Signals &Sigs;
+    const Boxes &Boxes;
     const std::vector<SigId> &Roots;
     Plan &Plan;
     std::string Why;
@@ -139,7 +134,6 @@ struct Lowering {
     std::vector<Interval> Iv;
     Conditions Conds;
     std::unordered_map<SigId, uint32_t> CondAt;
-    // Track read projections to omit unused outputs.
     std::map<std::pair<SigId, uint32_t>, SigId> ProjAt;
     std::unordered_map<SigId, uint8_t> Reached;
     Scope *Sc = nullptr;
@@ -155,7 +149,6 @@ struct Lowering {
         const auto it = CondAt.find(id);
         return it == CondAt.end() ? 0 : it->second;
     }
-    // Guards apply only to the sample band.
     uint32_t GuardOf(SigId id) const { return BandOf[id] == Band::Sample ? CondOf(id) : 0; }
 
     Reg NewReg() { return Plan.Regs++; }
@@ -181,7 +174,7 @@ struct Lowering {
     uint32_t AddField(FieldKind, SigId, Nature, uint32_t extent);
     uint32_t WidgetField(SigId, uint32_t label);
     uint32_t SoundfileDescOf(SigId);
-    uint32_t ForeignDescOf(ForeignKind, uint32_t name, uint8_t ftype, std::span<const SigId> args);
+    uint32_t ForeignDescOf(ForeignKind, uint32_t name, uint8_t ftype, std::span<const SigId> args, std::span<const uint8_t> types = {});
     uint32_t LineOf(SigId);
     uint32_t IotaField();
 
@@ -194,7 +187,6 @@ struct Lowering {
     Reg GuardReg(uint32_t cond);
     void SetGuard(uint32_t cond, Reg g);
 
-    // Return a cached register, including values emitted during operand compilation.
     bool Already(SigId id, Reg &out) const {
         const auto it = Sc->Val.find(id);
         if (it == Sc->Val.end()) return false;
@@ -265,7 +257,6 @@ uint32_t Lowering::WidgetField(SigId id, uint32_t label) {
     return Sc->Widget[id] = f;
 }
 
-// Read soundfile URL metadata from the innermost label segment.
 uint32_t Lowering::SoundfileDescOf(SigId id) {
     const SigNode n = Sigs.Get(id);
     SoundfileDesc d;
@@ -276,11 +267,12 @@ uint32_t Lowering::SoundfileDescOf(SigId id) {
     const size_t slash = path.find('/');
     std::string label;
     std::map<std::string, std::set<std::string>> meta;
+    // Read URL metadata from the innermost label segment.
     ExtractMetadata(path.substr(0, slash == std::string_view::npos ? path.size() : slash), label, meta);
     const auto url = meta.find("url");
     if (url != meta.end())
         for (const std::string &v : url->second) {
-            // Parse reference parseMenuList2 syntax: brace-enclosed, semicolon-separated quoted URLs, or one unparsed URL.
+            // Match parseMenuList2: semicolon-separated quoted URLs in braces, or one unparsed URL.
             std::vector<std::string> names;
             const char *p = v.c_str();
             const auto blank = [&] {
@@ -316,13 +308,12 @@ uint32_t Lowering::SoundfileDescOf(SigId id) {
     return uint32_t(Plan.Soundfiles.size() - 1);
 }
 
-uint32_t Lowering::ForeignDescOf(ForeignKind kind, uint32_t name, uint8_t ftype, std::span<const SigId> args) {
+uint32_t Lowering::ForeignDescOf(ForeignKind kind, uint32_t name, uint8_t ftype, std::span<const SigId> args, std::span<const uint8_t> types) {
     ForeignDesc d;
     d.Kind = kind;
     d.Name = Sigs.Str(name);
-    // Use the declared foreign result type.
     d.Result = FType(ftype) == FType::Int ? Nature::Int : Nature::Real;
-    for (const SigId a : args) d.Args.push_back(Nat[a]);
+    for (size_t k = 0; k < args.size(); ++k) d.Args.push_back(types[k] == 2 ? Nat[args[k]] : FType(types[k]) == FType::Int ? Nature::Int : Nature::Real);
     for (size_t i = 0; i < Plan.Foreign.size(); ++i) {
         const ForeignDesc &e = Plan.Foreign[i];
         if (e.Kind == d.Kind && e.Name == d.Name && e.Result == d.Result && e.Args == d.Args) return uint32_t(i);
@@ -475,7 +466,6 @@ Reg Lowering::LoadValue(SigId id, Band b, uint32_t field, std::initializer_list<
     return Sc->Val[id] = Close(id, sl, Load(b, field, at));
 }
 
-// Compile table generators in a separate init-loop scope.
 uint32_t Lowering::EmitTable(SigId id) {
     if (const auto it = Sc->Table.find(id); it != Sc->Table.end()) return it->second;
     const SigId size_sig = Sigs.Child(id, 0), gen = Sigs.Child(id, 1);
@@ -491,6 +481,7 @@ uint32_t Lowering::EmitTable(SigId id) {
     Push(Band::Init, Op::LoopBegin, i, size, {});
 
     Scope inner;
+    // Emit every generator band into the initialization loop.
     inner.Target[0] = inner.Target[1] = inner.Target[2] = Sc->Target[0];
     inner.Loop = loop;
     const std::array gen_roots{Sigs.Child(gen, 0)};
@@ -510,7 +501,6 @@ uint32_t Lowering::EmitTable(SigId id) {
     return f;
 }
 
-// Delay lines terminate traversal through recursive projections.
 bool Lowering::EmitRec(SigId rec) {
     if (Sc->Rec[rec] != 0) return true;
     Sc->Rec[rec] = 1;
@@ -520,6 +510,7 @@ bool Lowering::EmitRec(SigId rec) {
         const auto it = ProjAt.find({rec, i});
         if (it != ProjAt.end()) projs[i] = it->second;
     }
+    // Delay lines terminate traversal through recursive projections.
     for (uint32_t i = 0; i < n; ++i)
         if (projs[i] != NoSig) LineOf(projs[i]);
     for (uint32_t i = 0; i < n; ++i) {
@@ -560,7 +551,6 @@ Reg Lowering::Emit(SigId id) {
             Emit(kids[1]);
             return Failed ? NoReg : (Sc->Val[id] = r);
         }
-        // Apply the condition already annotated on x.
         case SigKind::Control: {
             Emit(kids[1]);
             const Reg r = Emit(kids[0]);
@@ -573,12 +563,12 @@ Reg Lowering::Emit(SigId id) {
         }
         case SigKind::Extended: {
             const Ext e = Ext(n.Form);
-            // Bounds affect interval analysis only.
+            // Asserted bounds apply during interval analysis.
             if (e == Ext::AssertBounds) {
                 const Reg r = Emit(kids[2]);
                 return Failed ? NoReg : (Sc->Val[id] = r);
             }
-            // Read the inferred bound without emitting the operand.
+            // Interval queries emit constants.
             if (e == Ext::Lowest || e == Ext::Highest) {
                 const double v = e == Ext::Lowest ? Iv[kids[0]].Lo : Iv[kids[0]].Hi;
                 const uint64_t bits = BitsOf(v);
@@ -605,7 +595,6 @@ Reg Lowering::Emit(SigId id) {
         case SigKind::VSlider:
         case SigKind::HSlider:
         case SigKind::NumEntry: return LoadValue(id, b, WidgetField(id, n.Payload), {});
-        // Soundfile accessors read a shared pointer field.
         case SigKind::Soundfile: {
             if (!Sc->Widget.contains(id)) {
                 const uint32_t f = AddField(FieldKind::Soundfile, id, Nature::Real, 1);
@@ -638,7 +627,6 @@ Reg Lowering::Emit(SigId id) {
             if (Failed) return NoReg;
             return LoadValue(id, b, f, {ri});
         }
-        // Cycle waveform samples with a per-frame index.
         case SigKind::Waveform: {
             const std::vector<double> &w = Sigs.WaveformAt(n.Aux);
             const uint32_t f = AddField(FieldKind::Table, id, Nat[id], uint32_t(w.size()));
@@ -665,7 +653,7 @@ Reg Lowering::Emit(SigId id) {
             const auto at_line = Sc->Line.find(x);
             const uint32_t xf = at_line == Sc->Line.end() ? NoField : at_line->second;
             if (xf == NoField) {
-                // Allow zero-delay projections without history; other delayed reads require allocated history.
+                // Reads with a nonzero delay require allocated history.
                 const auto v = Sc->Val.find(x);
                 if (v == Sc->Val.end() || Sc->Maxd[x] > 0) return Fail("a delayed read of a signal that keeps no history", id), NoReg;
                 return Sc->Val[id] = v->second;
@@ -724,14 +712,13 @@ Reg Lowering::Emit(SigId id) {
             break;
         case SigKind::FFun:
             in.Op = uint8_t(Op::FFun);
-            in.Imm = ForeignDescOf(ForeignKind::Function, n.Payload, n.Form, kids);
+            in.Imm = ForeignDescOf(ForeignKind::Function, n.Payload, n.Form, kids, Boxes.SignatureAt(n.Aux).Args);
             break;
         case SigKind::BinOp: in.Op = uint8_t(Op::BinOp); break;
         case SigKind::Extended: in.Op = uint8_t(Op::Extended); break;
         case SigKind::IntCast: in.Op = uint8_t(Op::IntCast); break;
         case SigKind::FloatCast: in.Op = uint8_t(Op::FloatCast); break;
         case SigKind::BitCast: in.Op = uint8_t(Op::BitCast); break;
-        // Evaluate both select branches unconditionally.
         case SigKind::Select2: in.Op = uint8_t(Op::Select2); break;
         case SigKind::Select3: in.Op = uint8_t(Op::Select3); break;
         case SigKind::SoundfileLength: in.Op = uint8_t(Op::SoundfileLength); break;
@@ -787,7 +774,6 @@ void Lowering::EmitEpilogue() {
         if (Failed) return;
         SetGuard(ep.Cond, g);
         switch (ep.Kind) {
-            // Keep copy-line updates unrolled within the configured size limit.
             case Scope::Epilogue::Kind::Shift:
                 for (int32_t i = ep.MaxDelay; i >= 1; --i) {
                     const Reg from = IntReg(i - 1), to = IntReg(i);
@@ -863,8 +849,6 @@ std::expected<void, std::string> Lowering::Run() {
 
 } // namespace
 
-std::string_view OpName(Op o) { return OpNames[size_t(o)]; }
-
 Graph::Graph(Session &s, const std::string &path, Signals &sigs, bool add_normal_form)
     : Prop(s.Boxes, s.Terms, sigs), Box(s.Process(path)), Arity(s.Boxes.ArityOf(Box)), Ok(!s.Boxes.IsError(Box) && Arity.Known) {
     if (Ok) Outs = Normalize(sigs, Prop.Run(Box, Arity.Ins), add_normal_form);
@@ -874,8 +858,7 @@ std::expected<Plan, std::string> Graph::Lower() const {
     const Signals &s = Prop.Sigs;
     Plan out;
     out.Inputs = Arity.Ins;
-    if (auto lowered = Lowering{s, Outs, out}.Run(); !lowered) return std::unexpected(std::move(lowered).error());
-    // Copy labels from the compilation arena into the Plan.
+    if (auto lowered = Lowering{s, Prop.Boxes, Outs, out}.Run(); !lowered) return std::unexpected(std::move(lowered).error());
     for (const Field &f : out.Fields) {
         if (f.Kind != FieldKind::Widget) continue;
         if (out.Labels.size() <= f.Label) out.Labels.resize(f.Label + 1);

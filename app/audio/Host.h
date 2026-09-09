@@ -11,7 +11,7 @@
 
 namespace faustlens {
 
-struct Interp;
+struct Instance;
 
 namespace audio {
 
@@ -19,7 +19,7 @@ namespace audio {
 void Deinterleave(const float *in, int32_t in_channels, int32_t frames, double *const *out, int32_t out_channels);
 void Interleave(const double *const *in, int32_t in_channels, int32_t frames, float *out, int32_t out_channels);
 
-// Mix into to using frame counts done and length.
+// Crossfade into `to` starting at frame `done` of the `length`-frame transition.
 void Crossfade(const double *const *from, int32_t from_channels, double *const *to, int32_t to_channels, int32_t frames, int64_t done, int64_t length);
 
 // Enable FTZ and DAZ on the calling thread.
@@ -28,12 +28,11 @@ void EnableFlushToZero();
 struct Host {
     struct Device;
 
-    // Allocate buffers before publishing to the audio thread.
     struct Voice {
-        Interp *Dsp = nullptr;
+        Instance *Dsp = nullptr;
         std::vector<std::vector<double>> InBuf, OutBuf;
         std::vector<double *> InAt, OutAt;
-        const Interp *From = nullptr;
+        const Instance *From = nullptr;
         StateTransfer Transfer;
     };
 
@@ -51,7 +50,6 @@ struct Host {
     double SampleRate = 0;
     bool Running = false;
     std::string DeviceName;
-    // Capture failures produce silent inputs.
     std::string Warning;
 
     Host();
@@ -59,20 +57,20 @@ struct Host {
     Host(const Host &) = delete;
     Host &operator=(const Host &) = delete;
 
-    // The DSP must outlive the host.
+    // Retain the instance until Stop completes or Collect returns it.
     // Capture failures produce silent inputs and a warning.
-    std::expected<void, std::string> Start(Interp &dsp);
+    std::expected<void, std::string> Start(Instance &dsp);
     void Stop();
 
     // Publish only while running with no pending swap and sufficient retirement capacity.
     // Retain instance ownership until Collect returns it.
-    bool Swap(Interp &next, const Interp *from = nullptr, const StateTransfer & = {});
+    bool Swap(Instance &next, const Instance *from = nullptr, const StateTransfer & = {});
 
-    // Collect completed instances off the audio thread before destroying their Plans.
-    std::vector<Interp *> Collect();
+    // Collect retired instances off the audio thread before destroying them or their Plans.
+    std::vector<Instance *> Collect();
 
     void Process(const float *in, float *out, uint32_t frames);
-    std::unique_ptr<Voice> MakeVoice(Interp &) const;
+    std::unique_ptr<Voice> MakeVoice(Instance &) const;
     bool Retire(Voice *);
 };
 

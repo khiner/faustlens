@@ -1,4 +1,3 @@
-// Store control values by label path across program edits.
 #pragma once
 
 #include "signal/Plan.h"
@@ -11,11 +10,10 @@
 
 namespace faustlens {
 
-struct Interp;
+struct Instance;
 
 namespace controls {
 
-// Restore values only within the same control class.
 enum class Restorable : uint8_t { No, Continuous, Toggle };
 Restorable RestorableAs(UiKind);
 
@@ -26,14 +24,13 @@ struct Value {
     bool operator==(const Value &) const = default;
 };
 
-// Retain values for controls absent from the current program.
+// Values persist by label path, including controls absent from the current program.
 using Values = std::map<std::string, Value, std::less<>>;
 
 void Record(Values &, std::string_view path, const UiNode &, double v);
 
-// Write each restorable widget once, using its stored value or initial value.
-// Reapply bounds to stored values only.
-void Apply(const Values &, const Plan &, const UiNode &, Interp &);
+// Restore values from the same control class within current bounds, or use the declared initial value.
+void Apply(const Values &, const Plan &, const UiNode &, Instance &);
 
 } // namespace controls
 } // namespace faustlens

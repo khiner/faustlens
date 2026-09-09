@@ -23,7 +23,6 @@ inline constexpr uint32_t NoField = 0xFFFFFFFFu;
 inline constexpr uint32_t NoLoop = 0xFFFFFFFFu;
 inline constexpr uint32_t NoDesc = 0xFFFFFFFFu;
 
-// Form selects the per-kind operation; Dst is NoReg for instructions without a result.
 enum class Op : uint8_t {
     ConstInt,
     ConstReal, // imm/aux: the double's low and high words
@@ -49,12 +48,12 @@ enum class Op : uint8_t {
     FVar, // imm: the `foreign` entry
     FFun, // imm: the `foreign` entry. args: the call's
 
-    // Init loops count Dst up to Imm; LoopEnd has no operands.
+    // LoopBegin counts Dst from zero to Imm - 1.
     LoopBegin,
-    LoopEnd,
-    // GuardBegin takes one condition register; GuardEnd takes none.
+    LoopEnd, // no operands
+    // GuardBegin takes one condition register.
     GuardBegin,
-    GuardEnd,
+    GuardEnd, // no operands
 
     Count_
 };
@@ -63,10 +62,10 @@ std::string_view OpName(Op);
 
 struct Instr {
     uint8_t Op = 0;
-    uint8_t Form = 0;
-    // Store result nature explicitly because comparison operands can have different nature.
+    uint8_t Form = 0; // per-op variant
+    // Result and operand natures can differ for comparisons.
     Nature Nature = Nature::Real;
-    Reg Dst = NoReg;
+    Reg Dst = NoReg; // NoReg for instructions without a result
     uint32_t Imm = 0, Aux = 0;
     uint32_t Args = 0, ArgCount = 0;
 };
@@ -74,9 +73,7 @@ struct Instr {
 enum class FieldKind : uint8_t {
     // Use IOTA indexing for rings and end-of-frame copies for short history.
     Delay,
-    // Recompute table and waveform storage during initialization.
     Table,
-    // Identify UI zones by label path across edits.
     Widget,
     Soundfile, // one per `soundfile`, written by the host
     // Scalar state for guards, prefix, and IOTA.
@@ -86,10 +83,9 @@ enum class FieldKind : uint8_t {
 struct Field {
     FieldKind Kind = FieldKind::Perm;
     Nature Nature = Nature::Real;
-    // Hash identifies content across arenas; Shape excludes numeric literal payloads.
     SigId Sig = NoSig;
+    // Hash includes numeric literal values, and Shape omits them.
     uint64_t Hash = 0, Shape = 0;
-    // NoTerm marks fields without a source origin.
     ValueId Origin = NoTerm;
     uint32_t Extent = 1; // slots, 1 for a scalar
     bool Ring = false;
@@ -101,17 +97,17 @@ struct Field {
     uint32_t Loop = NoLoop;
 };
 
-// Resolve URLs through the host; an empty list requests lookup by label.
+// The host resolves an empty URL list by label.
 struct SoundfileDesc {
     uint32_t Label = 0;
     uint32_t Channels = 0;
     std::vector<std::string> Urls;
 };
 
-// Read fconstant at init and fvariable at block rate; invoke ffunction as a call.
+// Read constants at initialization and variables once per block.
 enum class ForeignKind : uint8_t { Constant, Variable, Function };
 
-// Store actual argument types in call order.
+// Resolve `any` argument types from the signal type.
 struct ForeignDesc {
     ForeignKind Kind = ForeignKind::Function;
     std::string Name;
@@ -119,7 +115,6 @@ struct ForeignDesc {
     std::vector<Nature> Args;
 };
 
-// Registers persist across init, control, and sample bands.
 struct Plan {
     std::vector<Field> Fields;
     std::array<std::vector<Instr>, 3> Bands;
@@ -127,10 +122,9 @@ struct Plan {
     std::vector<std::vector<double>> Waves;
     std::vector<SoundfileDesc> Soundfiles;
     std::vector<ForeignDesc> Foreign;
-    // Store widget path text for cross-arena comparison.
     std::vector<std::string> Labels;
     uint32_t Regs = 0;
-    // Supply the declared input count, including unused inputs.
+    // Inputs includes unused declared channels.
     int32_t Inputs = 0, Outputs = 0;
 
     std::string_view Label(uint32_t id) const { return id < Labels.size() ? std::string_view(Labels[id]) : std::string_view(); }
@@ -149,13 +143,12 @@ struct Graph {
     std::vector<SigId> Outs;
     bool Ok = false;
 
-    // Lower nodes reachable from outs, reporting unsupported constructs.
+    // Lower nodes reachable from Outs.
     std::expected<Plan, std::string> Lower() const;
     // Return widgets present after simplification.
     UiNode Ui(std::string_view root_name) const;
 };
 
-// Equal Plan hashes permit skipping instance replacement.
 uint64_t Hash(const Plan &);
 
 } // namespace faustlens

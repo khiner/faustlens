@@ -5,8 +5,7 @@ Source bytes are authoritative for the authored program.
 Text edits and structural rewrites update those bytes through one Workspace history.
 The diagram derives from parsed source occurrences, while audio uses the latest successfully compiled program.
 
-The pinned `lib/faust` submodule defines reference behavior and supplies the standard-library sources and test oracle.
-FaustLens implements the compiler independently.
+Pinned `lib/faust` supplies standard-library data and the test oracle's reference compiler.
 
 ## Major implementation objective
 
@@ -26,18 +25,14 @@ Native compilation must be self-contained in the editor, with a small footprint 
 
 Term preserves source forms such as `a+b`, `(a,b) : +`, numeric lexemes, and operator spellings.
 Evaluation desugars Term into Box, then propagation constructs Signal.
-Analysis and lowering produce a Plan executed by the interpreter.
-Native compilation and ahead-of-time export remain planned extensions of Plan.
+Analysis and lowering produce a Plan that the interpreter executes directly.
+Instance state, lifecycle, controls, and DSP state transfer are independent of execution.
 
-Values are interned independently of source positions.
-Equivalent terms share an id across files, while each source occurrence has its own ref and byte spans.
-Per-file refs are rebuilt after reparsing.
-Tokens cover every byte, including whitespace and comments.
-Together, refs and tokens preserve concrete syntax without a separate CST.
-
-Hashes identify content independently of source position.
-Diagnostics and state-field origins use side tables and ref traversal to recover source ranges.
-An unrelated whitespace edit preserves semantic identities.
+Equivalent terms share an interned id across files, while each source occurrence has its own ref and byte spans.
+Reparsing rebuilds per-file refs and tokens covering every source byte, including whitespace and comments.
+Refs and tokens preserve concrete syntax.
+Semantic hashes exclude source positions.
+Diagnostics and state-field origins recover source ranges through side tables and ref traversal.
 
 ## Editing
 
@@ -113,8 +108,7 @@ A failed frame emits a diagnostic and a Hole containing its source bytes and com
 Holes print verbatim and evaluate to Error.
 This recovery policy keeps incomplete source editable [R12].
 
-The hand-written parser provides direct control over recovery boundaries.
-Tree-sitter supplies an independent acceptance and token-boundary oracle; recovery-control discussions are listed in [R7, R8].
+Tree-sitter provides an independent acceptance and token-boundary oracle, with recovery-control discussions in [R7, R8].
 Derived parser/printer systems [R9, R10] address consistency, while this editor also requires recovery, source refs, and retained fragments.
 
 Each edited file is reparsed in full.
@@ -129,8 +123,7 @@ Output-sensitive iteration uses sorted or insertion order for deterministic reco
 
 The path-addressed query layer tracks file text, VFS revisions, resolution, terms, and file environments.
 Each entry records its result, dependencies, and changed/verified revisions.
-Dependency verification reuses results until an input changes.
-Recomputation advances the changed revision only when the result differs.
+Dependency verification reuses results until an input changes, and recomputation advances the changed revision only when the result differs.
 Term equality uses the value component so whitespace changes can update refs without invalidating semantic dependents.
 
 File resolution uses these layers in order:
@@ -150,12 +143,10 @@ Evaluation cycles are detected independently by in-flight memo keys and a depth 
 One worker owns the single-threaded Session and query engine.
 Requests contain immutable buffer copies and coalesce before compilation.
 Superseded results are discarded at worker publication checks.
-The UI renders completed publications while displaying current buffer text.
 
 Session pools and evaluation memos remain append-only for its lifetime.
 Each publication owns copied syntax pools, file text, refs, tokens, diagnostics, and lifted expansions.
-The UI can intern replacement terms in its publication without mutating worker storage.
-Published expansions use Term values independent of worker Box storage.
+The UI interns replacement terms in its publication's syntax pools.
 
 Structural edits require buffer bytes matching the snapshot.
 Materialization also requires the selection's document revision, including dependency changes.
@@ -177,22 +168,24 @@ Partially applied cases retain per-rule environments and match one argument at a
 Propagation connects Box inputs through the composition operators to construct Signal.
 Recursive groups reserve an id before constructing branches and intern the completed group afterward.
 Group hashing represents self-references with canonical binding positions.
-Projections expose current-sample outputs; feedback reads pass through explicit delays.
+Projections expose current-sample outputs, and feedback reads pass through explicit delays.
 
 Type analysis computes integer/real nature and constant, block, or sample variability.
 Interval analysis bounds delays and indices, controls buffer sizing and clamping, and reports unbounded delay requirements.
 Promotion inserts casts around simplification to preserve Faust conversion behavior.
 Ordered arithmetic normalization preserves reproducible association, which affects numerical results in feedback networks.
 
-Plan lowering schedules init, control, and sample instructions over one persistent register file.
+Plan lowering schedules init, control, and sample instructions with numbered values.
+Instance storage retains values read across bands or defined under guards.
+Each executor owns its temporary storage.
 Each delayed signal uses one history buffer sized for its maximum delay.
 Bounded init loops fill tables and waveforms.
 Guards preserve inactive outputs in state fields across frames.
 Select instructions evaluate all branches before selecting a result.
 Table dependencies order reads after writes, and attach retains the attached operand's effects.
 
-The interpreter executes Plan instructions and resolves foreign symbols through a host registry.
-Foreign calls use scalar signatures; unresolved symbols produce diagnostics and zero-valued reads.
+The instance resolves scalar foreign symbols through a host registry.
+Unresolved symbols produce diagnostics and zero-valued reads.
 
 ## Runtime and reload
 
@@ -206,28 +199,26 @@ Foreign calls use scalar signatures; unresolved symbols produce diagnostics and 
 | Init(sampleRate) | Run Constants, ResetControls, and Clear in order |
 | Compute(frames, in, out) | Run the control band once and the sample band per frame |
 
-Registers and state storage are allocated before execution.
-Null input channels produce silence, and the host converts device samples at the boundary.
+Compilation, allocation, and destruction occur outside the audio callback.
+The host converts device samples at the boundary.
 The audio thread enables denormal flushing, while the reference-comparison harness preserves the oracle's floating-point mode.
-UI controls and bargraphs use relaxed atomic scalar access between threads.
+UI controls and bargraphs use aligned, relaxed atomic 64-bit accesses between threads.
 
 The UI descriptor preserves group paths, widget bounds, and metadata.
 Labels support group prefixes, parent paths, and evaluated iteration substitutions.
-The host renders this descriptor and updates named control fields.
 
 The host resolves soundfile URLs and caches both successful and failed decodes across recompiles.
 Missing audio uses the reference silent defaults and reports diagnostics.
-Table and waveform contents are recomputed during initialization.
 
-### State matching and audio transfer
+### DSP state transfer
 
 State fields match first by content hash and then by shape hash with numeric literals normalized away.
 Shape matches use greedy source-offset proximity with lower-offset tie breaking [R11].
 Unmatched fields use initialized state.
 Matched delay buffers copy their common history relative to the write head and zero additional slots.
 
-Control values persist separately in Workspace by label path, including controls absent from the current program.
-They are restored with compatible control classes and current bounds.
+Workspace retains control values by label path even when the control is absent.
+Restoration requires compatible control classes and applies current bounds.
 Tables, waveforms, soundfile pointers, and controls are excluded from delay-state matching.
 
 The worker compiles, initializes, decodes soundfiles, and prepares field matches using immutable Plan data and source offsets.
@@ -240,10 +231,18 @@ The host runs old and new instances during a linear crossfade with weights summi
 Equal Plan hashes skip replacement.
 Failed compilation preserves the last good audio while the editors continue displaying incomplete source.
 
+## Library boundaries
+
+`faustlens_compiler` contains parsing, file resolution, evaluation, signal analysis, and Plan lowering.
+`faustlens_runtime` provides shared instance state, controls, foreign bindings, and soundfile storage.
+`faustlens_interp` provides interpreted execution.
+`faustlens_migrate` provides optional DSP state transfer.
+`faustlens_lens` contains printing, source splicing, structural edits, evaluation lifting, and source snapshots.
+Standalone interpreter builds include the compiler and shared runtime and require only the embedded Faust libraries as third-party source data.
+
 ## Application
 
 SDL3 and SDL_GPU provide platform and rendering support, Dear ImGui provides widgets, and miniaudio provides audio I/O and decoding.
-The compiler and nonvisual application components remain testable without a window.
 
 Workspace history records all open buffers, selections, and control values.
 Immutable text storage shares unchanged files across history entries.
@@ -259,7 +258,7 @@ Persistent diagram coordinates would require additional document state and synch
 
 ## Scope and validation
 
-The compiler covers Faust's definition language, block-diagram algebra, signal processing, and interpreter runtime.
+The compiler covers Faust's definition language, block-diagram algebra, signal processing, and interpreted execution.
 Scope includes lexical environments, pattern matching, imports, iterations, metadata, route, local-definition modification, and modulation.
 Fixed-point code generation, additional text backends, reference API compatibility, MIDI/OSC, polyphony, and compiling foreign C are outside the current scope.
 
@@ -290,15 +289,13 @@ Build and oracle commands are in [README.md](README.md).
 | src/files | Overlay VFS and embedded libraries |
 | src/eval, src/box | Evaluation, lexical environments, and Box graphs |
 | src/signal | Signal graphs, analysis, normalization, Plan, and UI descriptors |
-| src/runtime | Interpreter, state migration, foreign symbols, and soundfiles |
+| src/runtime | Interpreter, shared state, DSP state transfer, foreign symbols, and soundfiles |
 | src/query | Revisions, dependencies, and source snapshots |
 | app | Compiler worker, Workspace, diagram, controls, and audio host |
 | test | Unit, property, and reference-conformance checks |
 | lib | Pinned dependency submodules |
 
-The implementation uses C++23, flat indexed storage, interned identities, and deterministic output ordering.
-Recoverable failures use diagnostics or expected results; ordinary absence uses optional results.
-Generated standard-library data preserves upstream bytes and records its revision with third-party notices.
+Embedded standard-library data preserves upstream bytes and records its revision with third-party notices.
 
 ## References
 

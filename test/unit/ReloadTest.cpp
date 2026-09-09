@@ -21,7 +21,7 @@ using faustlens::app::Artifact;
 
 namespace {
 
-struct Instance {
+struct Fixture {
     Session Session;
     Signals Sigs;
     Plan Plan;
@@ -39,8 +39,8 @@ struct Instance {
     }
 };
 
-std::unique_ptr<Instance> Build(const std::string &src) {
-    auto i = std::make_unique<Instance>();
+std::unique_ptr<Fixture> Build(const std::string &src) {
+    auto i = std::make_unique<Fixture>();
     i->Session.SetBuffer("/r.dsp", src);
     const Graph g(i->Session, "/r.dsp", i->Sigs);
     REQUIRE(g.Ok);
@@ -111,11 +111,11 @@ TEST_CASE("offline reload preserves the existing sample rate") {
 
 TEST_CASE("a no-op edit is sample-identical across the reload") {
     const std::string src = "process = (+ : *(0.9)) ~ _;";
-    const std::unique_ptr<Instance> live = Build(src);
+    const std::unique_ptr<Fixture> live = Build(src);
     std::vector<double> warm;
     live->Run(64, 1.0, warm);
 
-    const std::unique_ptr<Instance> reloaded = Build(src);
+    const std::unique_ptr<Fixture> reloaded = Build(src);
     const Migration m = Migrate(live->Plan, *live->Dsp, live->At, reloaded->Plan, *reloaded->Dsp, reloaded->At);
     CHECK(m.Exact > 0);
     CHECK(m.Fresh == 0);
@@ -129,13 +129,13 @@ TEST_CASE("a no-op edit is sample-identical across the reload") {
 }
 
 TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
-    const std::unique_ptr<Instance> live = Build("process = (+ : *(0.9)) ~ _;");
+    const std::unique_ptr<Fixture> live = Build("process = (+ : *(0.9)) ~ _;");
     std::vector<double> warm;
     live->Run(64, 1.0, warm);
     const double level = warm.back();
     REQUIRE(std::fabs(level) > 1e-3);
 
-    const std::unique_ptr<Instance> edited = Build("process = (+ : *(0.8)) ~ _;");
+    const std::unique_ptr<Fixture> edited = Build("process = (+ : *(0.8)) ~ _;");
     const Migration m = Migrate(live->Plan, *live->Dsp, live->At, edited->Plan, *edited->Dsp, edited->At);
     CHECK(m.Shaped > 0);
     CHECK(m.Exact == 0);
@@ -145,7 +145,7 @@ TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
     edited->Run(1, 0.0, tail);
     CHECK(tail[0] == doctest::Approx(level * 0.8));
 
-    const std::unique_ptr<Instance> cold = Build("process = (+ : *(0.8)) ~ _;");
+    const std::unique_ptr<Fixture> cold = Build("process = (+ : *(0.8)) ~ _;");
     std::vector<double> silence;
     cold->Run(1, 0.0, silence);
     CHECK(silence[0] == 0.0);
@@ -153,7 +153,7 @@ TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
 
 TEST_CASE("a widget's state is not this pass's to carry") {
     // Use the edited initial value when no persistent control value exists.
-    const std::unique_ptr<Instance> live = Build(
+    const std::unique_ptr<Fixture> live = Build(
         "gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
         "process = _ * gain;\n"
     );
@@ -161,7 +161,7 @@ TEST_CASE("a widget's state is not this pass's to carry") {
     REQUIRE(sliders.size() == 1);
     live->Dsp->SetControl(sliders[0], 0.75);
 
-    const std::unique_ptr<Instance> edited = Build(
+    const std::unique_ptr<Fixture> edited = Build(
         "gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
         "process = _ * gain * 2.0;\n"
     );
@@ -172,15 +172,15 @@ TEST_CASE("a widget's state is not this pass's to carry") {
 }
 
 TEST_CASE("a lengthened delay keeps the history it had") {
-    const std::unique_ptr<Instance> live = Build("process = _ @ 8;");
+    const std::unique_ptr<Fixture> live = Build("process = _ @ 8;");
     std::vector<double> warm;
     live->Run(4, 1.0, warm);
 
-    const std::unique_ptr<Instance> longer = Build("process = _ @ 8;");
+    const std::unique_ptr<Fixture> longer = Build("process = _ @ 8;");
     const Migration same = Migrate(live->Plan, *live->Dsp, live->At, longer->Plan, *longer->Dsp, longer->At);
     CHECK(same.Resized == 0);
 
-    const std::unique_ptr<Instance> grown = Build("process = _ @ 64;");
+    const std::unique_ptr<Fixture> grown = Build("process = _ @ 64;");
     const Migration m = Migrate(live->Plan, *live->Dsp, live->At, grown->Plan, *grown->Dsp, grown->At);
     CHECK(m.Exact > 0);
     CHECK(m.Resized == 1);

@@ -339,10 +339,8 @@ struct Intent {
     bool Undo = false, Redo = false;
 };
 
-// Route edits globally and arrow keys to the focused window.
 Intent HandleKeys(App &app, const FileView &f) {
     Intent in;
-    // Reserve character keys for the active text field.
     if (app.Field.Open) return in;
 
     constexpr ImGuiInputFlags Global = ImGuiInputFlags_RouteGlobal;
@@ -458,7 +456,7 @@ void ControlPane(App &app) {
         ImGui::End();
         return;
     }
-    const Interp &dsp = *art->Dsp;
+    const Instance &dsp = *art->Dsp;
     const audio::Host &host = app.Live.Host;
     if (host.Running) {
         ImGui::Text("%s, %.0f Hz", host.DeviceName.c_str(), host.SampleRate);
@@ -480,14 +478,12 @@ void ControlPane(App &app) {
         else ImGui::TextWrapped("%s is declared in %s", app.Traced.Control.c_str(), what.c_str());
     }
     ImGui::Separator();
-    // Commit a control gesture after the drag ends.
     const controls::Report r = controls::Draw(art->Plan, art->Ui, *art->Dsp, app.Ws.Controls);
     if (r.Ended) app.Ws.CommitGesture(app.Ws.Controls);
     if (r.Traced) app.TraceBack(*r.Traced);
     ImGui::End();
 }
 
-// Build the initial layout once to keep the diagram visible.
 void BuildDefaultLayout(ImGuiID dock) {
     ImGui::DockBuilderRemoveNode(dock);
     ImGui::DockBuilderAddNode(dock, ImGuiDockNodeFlags_DockSpace);
@@ -529,7 +525,6 @@ int main(int argc, char **argv) {
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-    // Disable ini output in the launch directory.
     io.IniFilename = nullptr;
     ImGui::StyleColorsDark();
     ImGui::GetStyle().ScaleAllSizes(scale);
@@ -587,7 +582,6 @@ int main(int argc, char **argv) {
                 ImGui::TextUnformatted(app.Refused.c_str());
                 ImGui::Separator();
             }
-            // Position hit regions after drawing the refusal message.
             const ImVec2 at = ImGui::GetCursorScreenPos();
             const ImVec2 m = ImGui::GetIO().MousePos;
             const float mx = m.x - at.x, my = m.y - at.y;
@@ -605,7 +599,6 @@ int main(int argc, char **argv) {
                     app.Reveal = true;
                 }
             }
-            // End drags released outside the window.
             if (app.Drag.Active && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                 const boxview::Layout::Endpoint end = boxview::Layout::PortAt(root, mx, my, boxview::PortReach);
                 if (end && end.Port->Input != app.Drag.Input && PathToNode(root, *end.Node) == app.Drag.At) {

@@ -25,16 +25,15 @@ struct Artifact {
     uint64_t Hash = 0;
     // Source offsets captured before the ref tree is replaced.
     std::vector<uint32_t> At;
-    // Metadata for the running program.
     std::vector<Diagnostic> Diags;
-    std::unique_ptr<Interp> Dsp;
+    std::unique_ptr<Instance> Dsp;
 };
 
 // Return the earliest source offset per Plan field, or `Nowhere`.
 std::vector<uint32_t> FieldOffsets(const Plan &, const RefTree &refs);
 
 struct Live {
-    // Preparation time in ms, excluding hand-off, callback state copy, and retirement.
+    // Preparation times in milliseconds, ending before publication.
     struct Timings {
         double Parse = 0, Evaluate = 0, Propagate = 0, Lower = 0, Artifact = 0;
         double Instance = 0, Init = 0, Migrate = 0, Total = 0;
@@ -45,7 +44,7 @@ struct Live {
         bool Swapped = false;
         bool Unchanged = false; // equal Plan hash
         bool Deferred = false; // pending audio swap
-        std::string Why; // compile or swap failure
+        std::string Why;
         Migration Migration;
         Timings Timings;
     };
@@ -57,13 +56,13 @@ struct Live {
         Result Status;
     };
 
-    // Compile and initialize on the worker without reading running DSP state.
+    // Compile and initialize on the worker using immutable base-program metadata.
     static Prepared
     Build(Session &, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &, double sample_rate, audio::Decoder &);
     // Publish on the host-owning thread, retaining deferred instances for retry.
     Result Accept(Prepared &, const controls::Values & = {});
 
-    // Compile and migrate `process` from `path`; the caller starts the audio device.
+    // The caller starts the audio device.
     Result Reload(Session &, const std::string &path, const controls::Values &controls = {});
 
     double SampleRate() const;
@@ -72,9 +71,8 @@ struct Live {
     std::vector<std::shared_ptr<Artifact>> Collect();
 
     audio::Decoder Sound;
-    // Latest accepted artifact; the callback may still use its predecessor.
+    // The callback may still use the predecessor of Current.
     std::shared_ptr<Artifact> Current;
-    // Artifacts retained until the audio thread releases their voices.
     std::vector<std::shared_ptr<Artifact>> Retiring;
     audio::Host Host; // Destroyed first to stop callbacks before artifacts.
 };

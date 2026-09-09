@@ -1,6 +1,6 @@
 #include "audio/Host.h"
 
-#include "runtime/Interp.h"
+#include "runtime/Instance.h"
 
 #include "miniaudio.h"
 
@@ -80,7 +80,7 @@ Host::~Host() {
     Collect();
 }
 
-std::unique_ptr<Host::Voice> Host::MakeVoice(Interp &dsp) const {
+std::unique_ptr<Host::Voice> Host::MakeVoice(Instance &dsp) const {
     auto v = std::make_unique<Voice>();
     v->Dsp = &dsp;
     v->InBuf.assign(std::max(dsp.Inputs(), 0), std::vector<double>(Chunk, 0.0));
@@ -98,8 +98,8 @@ bool Host::Retire(Voice *v) {
     return false;
 }
 
-std::vector<Interp *> Host::Collect() {
-    std::vector<Interp *> out;
+std::vector<Instance *> Host::Collect() {
+    std::vector<Instance *> out;
     for (std::atomic<Voice *> &slot : Retired) {
         Voice const *v = slot.exchange(nullptr, std::memory_order_acquire);
         if (!v) continue;
@@ -120,7 +120,7 @@ void Host::Process(const float *in, float *out, uint32_t frames) {
 
     if (Voice *next = Incoming.exchange(nullptr, std::memory_order_acquire)) {
         if (Fading && !Retire(Fading)) {
-            // Swap reserves enough retirement slots; failure would leak the voice.
+            // Retry the swap when a retirement slot becomes available.
             Incoming.store(next, std::memory_order_release);
         } else {
             if (Current && next->From == Current->Dsp) TransferState(next->Transfer, *Current->Dsp, *next->Dsp);
@@ -156,9 +156,9 @@ void Host::Process(const float *in, float *out, uint32_t frames) {
     }
 }
 
-bool Host::Swap(Interp &next, const Interp *from, const StateTransfer &transfer) {
+bool Host::Swap(Instance &next, const Instance *from, const StateTransfer &transfer) {
     if (!Running || Incoming.load(std::memory_order_acquire) != nullptr) return false;
-    // Reserve retirement slots before publishing for the pending, fading, and replaced voices.
+    // Reserve a slot for each pending, fading, and replaced voice.
     size_t free_slots = 0;
     for (const std::atomic<Voice *> &slot : Retired) free_slots += slot.load(std::memory_order_relaxed) == nullptr ? 1 : 0;
     if (free_slots < 3) return false;
@@ -170,7 +170,7 @@ bool Host::Swap(Interp &next, const Interp *from, const StateTransfer &transfer)
     return true;
 }
 
-std::expected<void, std::string> Host::Start(Interp &dsp) {
+std::expected<void, std::string> Host::Start(Instance &dsp) {
     Stop();
     Warning.clear();
 
@@ -209,7 +209,6 @@ std::expected<void, std::string> Host::Start(Interp &dsp) {
 
     Chunk = std::max<int32_t>(1024, int32_t(Device->Device.playback.internalPeriodSizeInFrames));
 
-    // Initialize at the device sample rate before the first callback.
     dsp.Init(SampleRate);
     Current = MakeVoice(dsp).release();
 

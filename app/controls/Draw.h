@@ -1,4 +1,3 @@
-// Control edits update both the running instance and persistent session values.
 #pragma once
 
 #include "controls/Store.h"
@@ -10,7 +9,7 @@
 
 namespace faustlens {
 
-struct Interp;
+struct Instance;
 
 namespace controls {
 
@@ -19,7 +18,8 @@ struct Report {
     std::optional<uint32_t> Traced;
 };
 
-Report Draw(const Plan &, const UiNode &, Interp &dsp, Values &store);
+// Update both the running instance and persistent control values.
+Report Draw(const Plan &, const UiNode &, Instance &dsp, Values &store);
 
 } // namespace controls
 } // namespace faustlens

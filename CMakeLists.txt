@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-# C is used by the tree-sitter acceptance oracle.
-project(faustlens CXX C)
+project(faustlens LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,11 +12,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-option(FAUSTLENS_TESTS "Build the test binaries" ON)
+option(FAUSTLENS_TESTS "Build the test binaries" ${PROJECT_IS_TOP_LEVEL})
 
 option(FAUSTLENS_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
-option(FAUSTLENS_GUI "Build the SDL3 + Dear ImGui front end" ON)
+option(FAUSTLENS_GUI "Build the SDL3 + Dear ImGui front end" ${PROJECT_IS_TOP_LEVEL})
 
 if(FAUSTLENS_SANITIZE)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -25,7 +24,7 @@ if(FAUSTLENS_SANITIZE)
 endif()
 
 # Use the same faustlibraries revision for embedding and oracle generation.
-set(FAUSTLENS_FAUSTLIBRARIES "${CMAKE_SOURCE_DIR}/lib/faust/libraries"
+set(FAUSTLENS_FAUSTLIBRARIES "${PROJECT_SOURCE_DIR}/lib/faust/libraries"
     CACHE PATH "faustlibraries checkout to embed")
 
 if(NOT EXISTS "${FAUSTLENS_FAUSTLIBRARIES}/stdfaust.lib")
@@ -34,15 +33,8 @@ if(NOT EXISTS "${FAUSTLENS_FAUSTLIBRARIES}/stdfaust.lib")
         "  git -C lib/faust submodule update --init libraries")
 endif()
 
-# Build audio hosting and decoding independently of the GUI for headless tests.
-add_library(miniaudio STATIC lib/miniaudio/miniaudio.c)
-target_include_directories(miniaudio SYSTEM PUBLIC lib/miniaudio)
-# Use miniaudio device I/O and decoding without the high-level engine.
-target_compile_definitions(miniaudio PUBLIC
-    MA_NO_ENGINE MA_NO_NODE_GRAPH MA_NO_RESOURCE_MANAGER MA_NO_GENERATION MA_NO_ENCODING)
-if(APPLE)
-    target_link_libraries(miniaudio PUBLIC
-        "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
+if(FAUSTLENS_GUI OR FAUSTLENS_TESTS)
+    enable_language(C)
 endif()
 
 if(FAUSTLENS_GUI)
@@ -63,8 +55,10 @@ if(FAUSTLENS_GUI)
     target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 endif()
 
-add_subdirectory(src)
-add_subdirectory(app)
+add_subdirectory(src EXCLUDE_FROM_ALL)
+if(FAUSTLENS_GUI OR FAUSTLENS_TESTS)
+    add_subdirectory(app)
+endif()
 
 if(FAUSTLENS_TESTS)
     enable_testing()

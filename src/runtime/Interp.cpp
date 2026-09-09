@@ -1,11 +1,11 @@
 #include "runtime/Interp.h"
+#include "runtime/Math.h"
 
 #include "eval/Fold.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <format>
 #include <type_traits>
 
 namespace faustlens {
@@ -14,7 +14,6 @@ namespace {
 
 constexpr uint8_t OpByte(Op o) { return uint8_t(o); }
 
-// Repeated multiplication preserves reference pow rounding.
 constexpr uint8_t IPow = OpByte(Op::Count_);
 
 // Use relaxed atomics for control and bargraph scalars shared with the UI thread.
@@ -25,63 +24,12 @@ constexpr std::memory_order Relaxed = std::memory_order_relaxed;
 
 std::atomic_ref<double> UiAt(Scalar &s) { return std::atomic_ref<double>(s.D); }
 
-// Use unsigned arithmetic for defined integer wrapping, required by noise.
 int32_t Wrap(uint32_t v) { return IntOf(v); }
 
 } // namespace
 
-Interp::Interp(const faustlens::Plan &p, const UiNode &ui, const faustlens::Registry &reg) : Plan(p), Registry(reg) {
+Interp::Interp(const faustlens::Plan &p, const UiNode &ui, const faustlens::Registry &reg) : Instance(p, ui, reg), Regs(p.Regs) {
     for (size_t b = 0; b < Bands.size(); ++b) Prepare(Bands[b], p.Bands[b]);
-
-    Regs.assign(p.Regs, Scalar{});
-    RegNature.assign(p.Regs, Nature::Real);
-    for (const Code &c : Bands)
-        for (const Instr &i : c.In)
-            if (i.Dst != NoReg) RegNature[i.Dst] = i.Nature;
-
-    FieldAt.resize(p.Fields.size());
-    uint32_t at = 0;
-    for (size_t f = 0; f < p.Fields.size(); ++f) {
-        FieldAt[f] = at;
-        at += std::max<uint32_t>(1, p.Fields[f].Extent);
-    }
-    State.assign(at, Scalar{});
-
-    InitWritesField.assign(p.Fields.size(), 0);
-    InitWritesReg.assign(p.Regs, 0);
-    for (const Instr &i : Band(Band::Init).In) {
-        if (Op(i.Op) == Op::StoreField && i.Imm < p.Fields.size()) InitWritesField[i.Imm] = 1;
-        if (i.Dst != NoReg) InitWritesReg[i.Dst] = 1;
-    }
-
-    // Read unresolved foreign symbols as zero and report a diagnostic.
-    Symbol.assign(p.Foreign.size(), nullptr);
-    for (size_t i = 0; i < p.Foreign.size(); ++i) {
-        const ForeignDesc &d = p.Foreign[i];
-        const faustlens::Symbol *s = Registry.Find(d);
-        if (s && CanCall(*s)) {
-            Symbol[i] = s;
-            continue;
-        }
-        Diagnostics.push_back(s ? "no thunk shape for " + d.Name : "no registered symbol for " + d.Name);
-    }
-
-    Sound.assign(p.Fields.size(), nullptr);
-    LoadSoundfiles(nullptr);
-
-    ForEachWidget(ui, [&](const UiNode &w) {
-        const uint32_t label = w.WidgetLabel;
-        if (std::ranges::any_of(Zones, [&](const Zone &z) { return z.Label == label; })) return true;
-        Zone z;
-        z.Label = label;
-        z.Kind = w.Kind;
-        z.Init = w.Init;
-        for (uint32_t f = 0; f < p.Fields.size(); ++f)
-            if (p.Fields[f].Kind == FieldKind::Widget && p.Fields[f].Label == label) z.Fields.push_back(f);
-        Zones.push_back(std::move(z));
-        return true;
-    });
-
     Specialize();
 }
 
@@ -94,27 +42,13 @@ void Interp::Specialize() {
     for (Code &c : Bands)
         for (Instr &i : c.In) {
             if (Op(i.Op) != Op::Extended || Ext(i.Form) != Ext::Pow || i.ArgCount != 2) continue;
-            const Instr *e = def[Plan.Operands[i.Args + 1]];
-            if (!e) continue;
-            // Specialize pow after all bands using reference isIntPowArg rules: int exponents <= 8 or integral real exponents in [0, 8].
-            int32_t k = 0;
-            if (Op(e->Op) == Op::ConstInt) {
-                k = IntOf(e->Imm);
-                if (k > 8) continue;
-            } else if (Op(e->Op) == Op::ConstReal) {
-                const double v = RealOf(e->Imm, e->Aux);
-                double whole;
-                if (std::modf(v, &whole) != 0.0 || v < 0 || v > 8) continue;
-                k = int32_t(v);
-            } else {
-                continue;
-            }
+            const auto k = PowerExponent(def[Plan.Operands[i.Args + 1]]);
+            if (!k) continue;
             i.Op = IPow;
-            i.Aux = BitsOf(k);
+            i.Aux = BitsOf(*k);
             i.ArgCount = 1;
         }
 
-    // Use atomic access only for real widget zones.
     for (Code &c : Bands)
         for (Instr &i : c.In) {
             const Op op = Op(i.Op);
@@ -127,7 +61,7 @@ void Interp::Specialize() {
 }
 
 void Interp::Prepare(Code &c, std::span<const Instr> src) {
-    // Copy instructions because prepared Code can outlive the Plan band.
+    // Specialization modifies the copied instructions.
     c.In.assign(src.begin(), src.end());
     c.Jump.assign(src.size(), 0);
     std::vector<uint32_t> open;
@@ -149,78 +83,10 @@ void Interp::Prepare(Code &c, std::span<const Instr> src) {
     }
 }
 
-void Interp::Constants(double rate) {
-    SampleRate = rate;
-    for (uint32_t f = 0; f < Plan.Fields.size(); ++f) {
-        const Field &fd = Plan.Fields[f];
-        if (fd.Kind != FieldKind::Table || fd.Desc == NoDesc) continue;
-        const std::vector<double> &w = Plan.Waves[fd.Desc];
-        for (uint32_t k = 0; k < fd.Extent && k < w.size(); ++k) {
-            if (fd.Nature == Nature::Int) State[FieldAt[f] + k].I = ToInt(w[k]);
-            else State[FieldAt[f] + k].D = w[k];
-        }
-    }
-    Run(Band(Band::Init), nullptr, nullptr, 0);
-}
-
-void Interp::ResetControls() {
-    for (const Zone &z : Zones)
-        for (const uint32_t f : z.Fields) UiAt(State[FieldAt[f]]).store(z.Init, Relaxed);
-}
-
-void Interp::Clear() {
-    // Preserve fields written by the init band.
-    for (uint32_t f = 0; f < Plan.Fields.size(); ++f) {
-        const Field &fd = Plan.Fields[f];
-        if (fd.Kind != FieldKind::Delay && fd.Kind != FieldKind::Perm) continue;
-        if (InitWritesField[f]) continue;
-        for (uint32_t k = 0; k < fd.Extent; ++k) State[FieldAt[f] + k] = Scalar{};
-    }
-    for (uint32_t r = 0; r < Regs.size(); ++r)
-        if (!InitWritesReg[r]) Regs[r] = Scalar{};
-}
-
-void Interp::Init(double rate) {
-    Constants(rate);
-    ResetControls();
-    Clear();
-}
-
-void Interp::LoadSoundfiles(SoundfileReader *reader) {
-    for (uint32_t f = 0; f < Plan.Fields.size(); ++f) {
-        const Field &fd = Plan.Fields[f];
-        if (fd.Kind != FieldKind::Soundfile || fd.Desc >= Plan.Soundfiles.size()) continue;
-        uint32_t unresolved = 0;
-        Sound[f] = LoadSoundfile(Plan.Soundfiles[fd.Desc], reader, unresolved);
-        if (unresolved && reader) Diagnostics.push_back(std::format("{} unreadable file(s) for soundfile {}", unresolved, fd.Desc));
-    }
-}
-
-void Interp::SetControl(uint32_t label, double value) {
-    for (const Zone &z : Zones)
-        if (z.Label == label)
-            for (const uint32_t f : z.Fields) UiAt(State[FieldAt[f]]).store(value, Relaxed);
-}
-
-double Interp::Control(uint32_t label) const {
-    for (const Zone &z : Zones)
-        if (z.Label == label && !z.Fields.empty())
-            // The audio thread can update bargraphs during this read.
-            return UiAt(const_cast<Scalar &>(State[FieldAt[z.Fields[0]]])).load(Relaxed);
-    return 0;
-}
-
-std::vector<uint32_t> Interp::ControlsOfKind(UiKind k) const {
-    std::vector<uint32_t> out;
-    for (const Zone &z : Zones)
-        if (z.Kind == k) out.push_back(z.Label);
-    return out;
-}
-
-void Interp::Compute(int32_t n, const double *const *in, double *const *out) {
-    Frames = n;
-    Run(Band(Band::Control), in, out, 0);
-    for (int32_t f = 0; f < Frames; ++f) Run(Band(Band::Sample), in, out, f);
+void Interp::Execute(faustlens::Band band, int32_t frames, const double *const *in, double *const *out) {
+    for (size_t k = 0; k < Values.size(); ++k) Regs[Registers.Persistent[k]] = Values[k];
+    for (int32_t f = 0; f < frames; ++f) Run(Band(band), in, out, f);
+    for (size_t k = 0; k < Values.size(); ++k) Values[k] = Regs[Registers.Persistent[k]];
 }
 
 void Interp::Run(const Code &c, const double *const *in, double *const *out, int32_t frame) {
@@ -229,8 +95,8 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
     const Instr *code = c.In.data();
     const size_t n = c.In.size();
 
-    const auto D = [&](Reg r) { return RegNature[r] == Nature::Int ? double(R[r].I) : R[r].D; };
-    const auto I = [&](Reg r) { return RegNature[r] == Nature::Int ? R[r].I : ToInt(R[r].D); };
+    const auto D = [&](Reg r) { return Registers.Types[r] == Nature::Int ? double(R[r].I) : R[r].D; };
+    const auto I = [&](Reg r) { return Registers.Types[r] == Nature::Int ? R[r].I : ToInt(R[r].D); };
     const auto Write = [&](const Instr &n, auto v) {
         if (n.Nature != Nature::Int) R[n.Dst].D = double(v);
         else if constexpr (std::is_integral_v<decltype(v)>) R[n.Dst].I = v;
@@ -255,14 +121,14 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
 
             case OpByte(Op::BinOp): {
                 const BinOpCode b = BinOpCode(i.Form);
-                if (RegNature[a[0]] == Nature::Int) {
+                if (Registers.Types[a[0]] == Nature::Int) {
                     const int32_t x = R[a[0]].I, y = R[a[1]].I;
                     int32_t v = 0;
                     switch (b) {
                         case BinOpCode::Add: v = Wrap(uint32_t(x) + uint32_t(y)); break;
                         case BinOpCode::Sub: v = Wrap(uint32_t(x) - uint32_t(y)); break;
                         case BinOpCode::Mul: v = Wrap(uint32_t(x) * uint32_t(y)); break;
-                        // Use AArch64 results for exceptional integer division and remainder, and reduce shift counts modulo the width.
+                        // Preserve AArch64 results for exceptional integer division and remainder.
                         case BinOpCode::Div: v = y == 0 ? 0 : (y == -1 ? Wrap(-uint32_t(x)) : x / y); break;
                         case BinOpCode::Rem: v = y == 0 ? x : (y == -1 ? 0 : x % y); break;
                         case BinOpCode::LeftShift: v = Wrap(uint32_t(x) << (uint32_t(y) & 31)); break;
@@ -302,7 +168,7 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
 
             case OpByte(Op::Extended): {
                 const Ext e = Ext(i.Form);
-                if (RegNature[a[0]] == Nature::Int && (e == Ext::Abs || e == Ext::Min || e == Ext::Max)) {
+                if (Registers.Types[a[0]] == Nature::Int && (e == Ext::Abs || e == Ext::Min || e == Ext::Max)) {
                     const int32_t x = R[a[0]].I;
                     const int32_t v = e == Ext::Abs ? (x == INT32_MIN ? x : (x < 0 ? -x : x)) : e == Ext::Min ? std::min(x, R[a[1]].I) : std::max(x, R[a[1]].I);
                     Write(i, v);
@@ -347,7 +213,7 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
 
             case IPow: {
                 const int32_t k = IntOf(i.Aux);
-                if (RegNature[a[0]] == Nature::Int) {
+                if (Registers.Types[a[0]] == Nature::Int) {
                     const int32_t x = R[a[0]].I;
                     int32_t v = k == 0 ? 1 : x;
                     for (int32_t s = 0; s + 1 < k; ++s) v = Wrap(uint32_t(v) * uint32_t(x));
