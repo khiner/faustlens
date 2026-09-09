@@ -32,4 +32,5 @@ if(FAUSTLENS_GUI)
         boxview/Draw.cpp
         controls/Draw.cpp)
     target_link_libraries(faustlens_gui PRIVATE faustlens_app imgui)
+    faustlens_sign_jit(faustlens_gui)
 endif()

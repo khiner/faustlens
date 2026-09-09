@@ -1,5 +1,5 @@
 #include "conformance/Sweep.h"
-#include "runtime/Interp.h"
+#include "runtime/Executors.h"
 #include "signal/Plan.h"
 #include "signal/Ui.h"
 
@@ -16,7 +16,6 @@ using namespace faustlens::test;
 
 namespace {
 
-// Store inputs and expected samples per channel.
 struct Probe {
     const char *Clause;
     const char *Source;
@@ -40,6 +39,14 @@ const std::vector<Probe> &Probes() {
         {"`int(x)` truncates toward zero, never rounds", "process = int(_);", {{2.7, -2.7, 2.5, -0.5}}, {{2, -2, 2, 0}}},
         // Use the reference -cir float-to-int rewrite for cases where backends disagree.
         {"float-to-int out of range saturates and NaN converts to zero", "process = int(_);", {{1e18, -1e18, Nan}}, {{2147483647, -2147483648, 0}}},
+        {"select2 chooses its first integer value only for selector zero",
+         "process = select2(int(_), int(_), -7);",
+         {{0, 1, 2, -1}, {4, 5, 6, 7}},
+         {{4, -7, -7, -7}}},
+        {"select3 chooses real values without arithmetic on unselected values",
+         "process = select3(int(_), _, -0.0, 7.5);",
+         {{0, 1, 2}, {Nan, Inf, -Inf}},
+         {{Nan, -0.0, 7.5}}},
 
         {"`:>` sums: output bus b takes inputs b, b + n, b + 2n, ...", "process = _,_,_,_ :> _,_;", {{1}, {2}, {10}, {20}}, {{11}, {22}}},
         {"`<:` replicates modulo the input count", "process = _,_ <: _,_,_,_;", {{1}, {2}}, {{1}, {2}, {1}, {2}}},
@@ -68,13 +75,12 @@ const std::vector<Probe> &Probes() {
     return probes;
 }
 
-// Use exact expectations specified by each semantic rule.
 bool Same(double got, double want) {
     if (std::isnan(want)) return std::isnan(got);
     return got == want;
 }
 
-std::string Run(const Probe &p, std::vector<std::vector<double>> &got) {
+template<class Backend> std::string Run(const Probe &p, std::vector<std::vector<double>> &got) {
     Program const prog("/probe.dsp", p.Source);
     if (!prog.Ok) return "did not evaluate";
     const auto lowered = prog.Lower();
@@ -84,8 +90,8 @@ std::string Run(const Probe &p, std::vector<std::vector<double>> &got) {
     if (size_t(plan.Outputs) != p.Want.size()) return std::format("declares {} outputs, not {}", plan.Outputs, p.Want.size());
 
     std::map<uint32_t, int> const keep;
-    Interp dsp(plan, BuildUiTree(prog.Prop.Ui, "probe", keep));
-    dsp.Init(44100);
+    auto dsp = MakeExecutor<Backend>(plan, BuildUiTree(prog.Prop.Ui, "probe", keep));
+    dsp->Init(44100);
 
     const int32_t frames = int32_t(p.Want[0].size());
     std::vector<std::vector<double>> in = p.In;
@@ -96,18 +102,18 @@ std::string Run(const Probe &p, std::vector<std::vector<double>> &got) {
     for (std::vector<double> &c : in) ip.push_back(c.data());
     op.reserve(got.size());
     for (std::vector<double> &c : got) op.push_back(c.data());
-    dsp.Compute(frames, ip.data(), op.data());
+    dsp->Compute(frames, ip.data(), op.data());
     return "";
 }
 
 } // namespace
 
-TEST_CASE("pinned semantics, each probed against the rule rather than against the oracle") {
+TEST_CASE_TEMPLATE("pinned semantics, each probed against the rule rather than against the oracle", Backend, FAUSTLENS_TEST_EXECUTORS) {
     int ok = 0;
     for (const Probe &p : Probes()) {
         INFO(p.Clause);
         std::vector<std::vector<double>> got;
-        const std::string why = Run(p, got);
+        const std::string why = Run<Backend>(p, got);
         if (p.Reject) {
             const bool rejected = why.find(p.Reject) != std::string::npos;
             if (!rejected) MESSAGE("  ", why.empty() ? std::string("compiled") : why);

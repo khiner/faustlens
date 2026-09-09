@@ -25,8 +25,10 @@ Native compilation must be self-contained in the editor, with a small footprint 
 
 Term preserves source forms such as `a+b`, `(a,b) : +`, numeric lexemes, and operator spellings.
 Evaluation desugars Term into Box, then propagation constructs Signal.
-Analysis and lowering produce a Plan that the interpreter executes directly.
-Instance state, lifecycle, controls, and DSP state transfer are independent of execution.
+Analysis and lowering produce a Plan shared by both execution paths.
+The native backend compiles Plan instructions to ARM64, and the interpreter executes them directly.
+Both use the same instance state, lifecycle, controls, and DSP state transfer.
+[NATIVE.md](NATIVE.md) defines the native execution contract and acceptance budgets.
 
 Equivalent terms share an interned id across files, while each source occurrence has its own ref and byte spans.
 Reparsing rebuilds per-file refs and tokens covering every source byte, including whitespace and comments.
@@ -228,17 +230,17 @@ Copying allocates nothing and scales with the transferred history size.
 A pending transfer must complete before another is accepted.
 
 The host runs old and new instances during a linear crossfade with weights summing to one.
-Equal Plan hashes skip replacement.
+Equal Plan hashes skip replacement when the backend is unchanged.
 Failed compilation preserves the last good audio while the editors continue displaying incomplete source.
 
 ## Library boundaries
 
 `faustlens_compiler` contains parsing, file resolution, evaluation, signal analysis, and Plan lowering.
 `faustlens_runtime` provides shared instance state, controls, foreign bindings, and soundfile storage.
-`faustlens_interp` provides interpreted execution.
+`faustlens_native` and `faustlens_interp` provide execution.
 `faustlens_migrate` provides optional DSP state transfer.
 `faustlens_lens` contains printing, source splicing, structural edits, evaluation lifting, and source snapshots.
-Standalone interpreter builds include the compiler and shared runtime and require only the embedded Faust libraries as third-party source data.
+Standalone native builds include the compiler and shared runtime and require only the embedded Faust libraries as third-party source data.
 
 ## Application
 
@@ -258,7 +260,7 @@ Persistent diagram coordinates would require additional document state and synch
 
 ## Scope and validation
 
-The compiler covers Faust's definition language, block-diagram algebra, signal processing, and interpreted execution.
+The compiler covers Faust's definition language, block-diagram algebra, signal processing, and native and interpreted execution.
 Scope includes lexical environments, pattern matching, imports, iterations, metadata, route, local-definition modification, and modulation.
 Fixed-point code generation, additional text backends, reference API compatibility, MIDI/OSC, polyphony, and compiling foreign C are outside the current scope.
 
@@ -289,7 +291,7 @@ Build and oracle commands are in [README.md](README.md).
 | src/files | Overlay VFS and embedded libraries |
 | src/eval, src/box | Evaluation, lexical environments, and Box graphs |
 | src/signal | Signal graphs, analysis, normalization, Plan, and UI descriptors |
-| src/runtime | Interpreter, shared state, DSP state transfer, foreign symbols, and soundfiles |
+| src/runtime | Native code generation, interpreter, shared state, DSP state transfer, foreign symbols, and soundfiles |
 | src/query | Revisions, dependencies, and source snapshots |
 | app | Compiler worker, Workspace, diagram, controls, and audio host |
 | test | Unit, property, and reference-conformance checks |

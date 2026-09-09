@@ -1,0 +1,28 @@
+#define FAUSTFLOAT double
+#include "Reference.h"
+#include "faust/dsp/dsp.h"
+#include "faust/gui/MapUI.h"
+#include "faust/gui/meta.h"
+
+<<includeIntrinsic>>
+<<includeclass>>
+
+namespace {
+struct Wrapper {
+    BENCH_CLASS Dsp;
+    MapUI Ui;
+    Wrapper() { Dsp.buildUserInterface(&Ui); }
+};
+}
+
+Reference BENCH_FACTORY() {
+    auto *w = new Wrapper;
+    return {
+        w,
+        [](void *p) { delete static_cast<Wrapper *>(p); },
+        [](void *p, int rate) { static_cast<Wrapper *>(p)->Dsp.init(rate); },
+        [](void *p, int n, double **in, double **out) { static_cast<Wrapper *>(p)->Dsp.compute(n, in, out); },
+        [](void *p, double value) { static_cast<Wrapper *>(p)->Ui.setParamValue("gain", value); },
+        w->Dsp.getNumInputs(), w->Dsp.getNumOutputs()
+    };
+}

@@ -1,7 +1,6 @@
-// Assert dependency isolation and measure block responsiveness.
 #include "conformance/Sweep.h"
 #include "property/Corpus.h"
-#include "runtime/Interp.h"
+#include "runtime/Executors.h"
 #include "signal/Plan.h"
 #include "signal/Ui.h"
 
@@ -37,16 +36,15 @@ bool IsInput(UiKind k) {
     }
 }
 
-// Return a valid control value different from its initial value.
 double Elsewhere(const UiNode &w) {
     if (w.Kind == UiKind::Button || w.Kind == UiKind::Checkbox) return w.Init == 0 ? 1 : 0;
     return w.Init == w.Max ? w.Min : w.Max;
 }
 
-std::vector<double> Blocks(const Plan &p, const UiNode &ui, uint32_t write, double value) {
-    Interp dsp(p, ui);
-    dsp.Init(44100);
-    const int32_t nin = dsp.Inputs(), nout = dsp.Outputs();
+template<class Backend> std::vector<double> Blocks(const Plan &p, const UiNode &ui, uint32_t write, double value) {
+    auto dsp = MakeExecutor<Backend>(p, ui);
+    dsp->Init(44100);
+    const int32_t nin = dsp->Inputs(), nout = dsp->Outputs();
     std::vector<std::vector<double>> in(std::max(nin, 1), std::vector<double>(Block, 0.0));
     std::vector<std::vector<double>> out(std::max(nout, 1), std::vector<double>(Block, 0.0));
     std::vector<const double *> ip(std::max(nin, 1));
@@ -55,11 +53,11 @@ std::vector<double> Blocks(const Plan &p, const UiNode &ui, uint32_t write, doub
     for (int32_t c = 0; c < nout; ++c) op[c] = out[c].data();
 
     for (int32_t b = 0; b <= Settle; ++b) {
-        // Use a sine input so programs remain active during the measured block.
+        // Sine input provides a continuous signal during control measurements.
         for (int32_t c = 0; c < nin; ++c)
             for (int32_t i = 0; i < Block; ++i) in[c][i] = 0.25 * std::sin(2 * M_PI * 440.0 * (b * Block + i) / 44100.0);
-        if (b == Settle && write != 0xFFFFFFFFu) dsp.SetControl(write, value);
-        dsp.Compute(Block, ip.data(), op.data());
+        if (b == Settle && write != 0xFFFFFFFFu) dsp->SetControl(write, value);
+        dsp->Compute(Block, ip.data(), op.data());
     }
     std::vector<double> rows;
     for (int32_t i = 0; i < Block; ++i)
@@ -70,7 +68,6 @@ std::vector<double> Blocks(const Plan &p, const UiNode &ui, uint32_t write, doub
 struct Result {
     std::string Name;
     int Controls = 0, Moved = 0;
-    // Group by widget kind to expose rate-scheduling failures.
     std::map<std::string, std::pair<int, int>> ByKind;
     std::vector<std::string> Bad;
 };
@@ -86,7 +83,7 @@ const char *KindName(UiKind k) {
     }
 }
 
-Result Measure(const fs::path &path) {
+template<class Backend> Result Measure(const fs::path &path) {
     Result r;
     r.Name = path.stem().string();
 
@@ -117,11 +114,11 @@ Result Measure(const fs::path &path) {
     });
     if (widgets.empty()) return r;
 
-    const std::vector<double> base = Blocks(plan, ui, 0xFFFFFFFFu, 0);
+    const std::vector<double> base = Blocks<Backend>(plan, ui, 0xFFFFFFFFu, 0);
     const int32_t nout = plan.Outputs;
     for (const UiNode *w : widgets) {
         ++r.Controls;
-        const std::vector<double> moved = Blocks(plan, ui, w->WidgetLabel, Elsewhere(*w));
+        const std::vector<double> moved = Blocks<Backend>(plan, ui, w->WidgetLabel, Elsewhere(*w));
         bool any = false;
         for (int32_t c = 0; c < nout; ++c) {
             bool changed = false;
@@ -141,8 +138,8 @@ Result Measure(const fs::path &path) {
 
 } // namespace
 
-TEST_CASE("control responsiveness: a control changes the next block, and only what reads it") {
-    const std::vector<Result> results = MapEach<Result>(DspPaths(), Measure);
+TEST_CASE_TEMPLATE("control responsiveness: a control changes dependent outputs in the next block", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    const std::vector<Result> results = MapEach<Result>(DspPaths(), Measure<Backend>);
 
     int controls = 0, moved = 0, programs = 0;
     std::map<std::string, std::pair<int, int>> by_kind;
@@ -164,6 +161,5 @@ TEST_CASE("control responsiveness: a control changes the next block, and only wh
     MESSAGE("  by kind: ", kinds);
     for (const std::string &b : bad) MESSAGE("  ", b);
     CHECK(bad.empty());
-    // Check responsiveness separately from dependency isolation.
     CHECK(moved >= 560);
 }

@@ -54,7 +54,7 @@ add_executable(faustlens_tests
     unit/TextTest.cpp
     unit/MigrateTest.cpp
     unit/ReloadTest.cpp
-    unit/InstanceTest.cpp)
+    unit/NativeTest.cpp)
 target_link_libraries(faustlens_tests PRIVATE faustlens faustlens_app doctest)
 target_include_directories(faustlens_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(faustlens_tests PRIVATE
@@ -63,6 +63,7 @@ target_compile_definitions(faustlens_tests PRIVATE
     # Use the miniaudio test asset for soundfile decoding checks.
     FAUSTLENS_MINIAUDIO_DIR="${CMAKE_SOURCE_DIR}/lib/miniaudio")
 
+faustlens_sign_jit(faustlens_tests)
 add_test(NAME unit COMMAND faustlens_tests)
 
 if(FAUSTLENS_GUI)

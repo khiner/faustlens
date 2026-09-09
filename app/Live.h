@@ -4,7 +4,7 @@
 #include "audio/Host.h"
 #include "controls/Store.h"
 #include "query/Query.h"
-#include "runtime/Interp.h"
+#include "runtime/Backend.h"
 #include "runtime/Migrate.h"
 #include "signal/Plan.h"
 #include "signal/Signal.h"
@@ -23,6 +23,7 @@ struct Artifact {
     Plan Plan;
     UiNode Ui;
     uint64_t Hash = 0;
+    Backend Execution = DefaultBackend;
     // Source offsets captured before the ref tree is replaced.
     std::vector<uint32_t> At;
     std::vector<Diagnostic> Diags;
@@ -42,7 +43,7 @@ struct Live {
     struct Result {
         bool Compiled = false;
         bool Swapped = false;
-        bool Unchanged = false; // equal Plan hash
+        bool Unchanged = false; // equal Plan hash and backend
         bool Deferred = false; // pending audio swap
         std::string Why;
         Migration Migration;
@@ -57,8 +58,10 @@ struct Live {
     };
 
     // Compile and initialize on the worker using immutable base-program metadata.
-    static Prepared
-    Build(Session &, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &, double sample_rate, audio::Decoder &);
+    static Prepared Build(
+        Session &, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &, double sample_rate, audio::Decoder &,
+        Backend = DefaultBackend
+    );
     // Publish on the host-owning thread, retaining deferred instances for retry.
     Result Accept(Prepared &, const controls::Values & = {});
 
@@ -70,6 +73,7 @@ struct Live {
     // Collect on the host-owning thread and return artifacts to the worker for destruction.
     std::vector<std::shared_ptr<Artifact>> Collect();
 
+    Backend Execution = DefaultBackend;
     audio::Decoder Sound;
     // The callback may still use the predecessor of Current.
     std::shared_ptr<Artifact> Current;

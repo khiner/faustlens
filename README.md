@@ -3,8 +3,10 @@
 FaustLens is a from-scratch Faust compiler with synchronized text and diagram editing and live audio.
 Both editors update one source document through shared undo history.
 Structural edits preserve linked source occurrences, including comments and formatting.
+On Apple Silicon, the editor generates native DSP code with its own compact compiler backend.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) describes the representations, lens contracts, compilation, and runtime.
+[NATIVE.md](NATIVE.md) defines native execution and performance budgets.
 
 ## Building
 
@@ -20,26 +22,27 @@ build/test/faustlens_acceptance
 
 The test binaries cover unit, property, and compiler conformance checks, widget interaction, and parser acceptance against tree-sitter-faust.
 
-## Standalone compiler and runtime
+## Standalone compiler and native runtime
 
-Build the compiler and interpreter runtime:
+Build the compiler and Apple Silicon runtime:
 
 ```sh
-cmake -S . -B build-runtime -G Ninja -DCMAKE_BUILD_TYPE=Release \
+cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DFAUSTLENS_GUI=OFF -DFAUSTLENS_TESTS=OFF
-cmake --build build-runtime --target faustlens_interp
+cmake --build build-native --target faustlens_native
 ```
 
 Link from another CMake project:
 
 ```cmake
 add_subdirectory(path/to/faustlens)
-target_link_libraries(my_dsp_host PRIVATE faustlens_interp)
+target_link_libraries(my_dsp_host PRIVATE faustlens_native)
+faustlens_sign_jit(my_dsp_host)
 ```
 
 Embedded builds compile only the requested targets and their dependencies.
-`faustlens_interp` provides the source compiler and interpreter runtime.
-Use `Session` and `Graph` to lower source to a `Plan`, then construct an `Interp` DSP instance.
+`faustlens_native` provides the source compiler and native runtime.
+Use `Session` and `Graph` to lower source to a `Plan`, then `Native::Compile` to create a DSP instance.
 Keep the Plan and Registry alive through the instance's lifetime.
 Call `Init` before `Compute`.
 The host supplies audio buffers and optional soundfile decoding through `SoundfileReader`.

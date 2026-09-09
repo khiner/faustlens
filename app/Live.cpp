@@ -69,7 +69,8 @@ std::vector<std::shared_ptr<Artifact>> Live::Collect() {
 }
 
 Live::Prepared Live::Build(
-    Session &s, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &controls, double sample_rate, audio::Decoder &sound
+    Session &s, const std::string &path, std::shared_ptr<const Artifact> base, const controls::Values &controls, double sample_rate, audio::Decoder &sound,
+    Backend backend
 ) {
     Prepared prepared;
     prepared.Base = std::move(base);
@@ -86,12 +87,19 @@ Live::Prepared Live::Build(
     }
     auto next = std::move(*compiled);
     r.Compiled = true;
-    if (prepared.Base && prepared.Base->Hash == next->Hash) {
+    next->Execution = backend;
+    if (prepared.Base && prepared.Base->Hash == next->Hash && prepared.Base->Execution == backend) {
         r.Unchanged = true;
         return done();
     }
     auto at = std::chrono::steady_clock::now();
-    next->Dsp = std::make_unique<Interp>(next->Plan, next->Ui);
+    auto instance = CreateInstance(backend, next->Plan, next->Ui);
+    if (!instance) {
+        r.Compiled = false;
+        r.Why = std::move(instance).error();
+        return done();
+    }
+    next->Dsp = std::move(*instance);
     next->Dsp->LoadSoundfiles(&sound);
     r.Timings.Instance = Since(at);
     next->Dsp->Init(sample_rate);
@@ -135,7 +143,7 @@ Live::Result Live::Accept(Prepared &prepared, const controls::Values &controls) 
 
 Live::Result Live::Reload(Session &s, const std::string &path, const controls::Values &controls) {
     Collect();
-    auto prepared = Build(s, path, Current, controls, SampleRate(), Sound);
+    auto prepared = Build(s, path, Current, controls, SampleRate(), Sound, Execution);
     return Accept(prepared, controls);
 }
 

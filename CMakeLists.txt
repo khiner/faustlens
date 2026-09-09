@@ -17,6 +17,7 @@ option(FAUSTLENS_TESTS "Build the test binaries" ${PROJECT_IS_TOP_LEVEL})
 option(FAUSTLENS_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 option(FAUSTLENS_GUI "Build the SDL3 + Dear ImGui front end" ${PROJECT_IS_TOP_LEVEL})
+option(FAUSTLENS_BENCHMARKS "Build DSP benchmarks against the pinned Faust compiler" OFF)
 
 if(FAUSTLENS_SANITIZE)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -33,7 +34,7 @@ if(NOT EXISTS "${FAUSTLENS_FAUSTLIBRARIES}/stdfaust.lib")
         "  git -C lib/faust submodule update --init libraries")
 endif()
 
-if(FAUSTLENS_GUI OR FAUSTLENS_TESTS)
+if(FAUSTLENS_GUI OR FAUSTLENS_TESTS OR FAUSTLENS_BENCHMARKS)
     enable_language(C)
 endif()
 
@@ -55,12 +56,18 @@ if(FAUSTLENS_GUI)
     target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 endif()
 
+include(cmake/Jit.cmake)
+
 add_subdirectory(src EXCLUDE_FROM_ALL)
-if(FAUSTLENS_GUI OR FAUSTLENS_TESTS)
+if(FAUSTLENS_GUI OR FAUSTLENS_TESTS OR FAUSTLENS_BENCHMARKS)
     add_subdirectory(app)
 endif()
 
 if(FAUSTLENS_TESTS)
     enable_testing()
     add_subdirectory(test)
+endif()
+
+if(FAUSTLENS_BENCHMARKS)
+    add_subdirectory(benchmark)
 endif()

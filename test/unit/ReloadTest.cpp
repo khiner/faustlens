@@ -1,6 +1,6 @@
 #include "Live.h"
 #include "query/Query.h"
-#include "runtime/Interp.h"
+#include "runtime/Executors.h"
 #include "runtime/Migrate.h"
 #include "signal/Plan.h"
 #include "signal/Ui.h"
@@ -27,7 +27,7 @@ struct Fixture {
     Plan Plan;
     UiNode Ui;
     std::vector<uint32_t> At;
-    std::optional<Interp> Dsp;
+    std::unique_ptr<faustlens::Instance> Dsp;
 
     void Run(int32_t frames, double impulse, std::vector<double> &out) {
         std::vector<double> in(frames, 0.0);
@@ -39,7 +39,7 @@ struct Fixture {
     }
 };
 
-std::unique_ptr<Fixture> Build(const std::string &src) {
+template<class Backend> std::unique_ptr<Fixture> Build(const std::string &src) {
     auto i = std::make_unique<Fixture>();
     i->Session.SetBuffer("/r.dsp", src);
     const Graph g(i->Session, "/r.dsp", i->Sigs);
@@ -49,10 +49,9 @@ std::unique_ptr<Fixture> Build(const std::string &src) {
     i->Plan = *std::move(plan);
     i->Ui = g.Ui("r");
 
-    // Capture source offsets before reparsing replaces refs.
     i->At = app::FieldOffsets(i->Plan, i->Session.TermsOf("/r.dsp").Refs);
 
-    i->Dsp.emplace(i->Plan, i->Ui);
+    i->Dsp = test::MakeExecutor<Backend>(i->Plan, i->Ui);
     i->Dsp->Init(44100);
     return i;
 }
@@ -78,7 +77,6 @@ TEST_CASE("prepared audio transfers the state at the callback boundary and seria
     auto prepared = app::Live::Build(s, "/r.dsp", live.Current, {}, 1000, live.Sound);
     REQUIRE(prepared.Next);
     const auto next = prepared.Next;
-    // Advance running state after preparation.
     host.Process(nullptr, output, 4);
     const double before = output[3];
     REQUIRE(live.Accept(prepared).Swapped);
@@ -109,13 +107,13 @@ TEST_CASE("offline reload preserves the existing sample rate") {
     CHECK(live.Current->Dsp->SampleRate == 48000);
 }
 
-TEST_CASE("a no-op edit is sample-identical across the reload") {
+TEST_CASE_TEMPLATE("a no-op edit is sample-identical across the reload", Backend, FAUSTLENS_TEST_EXECUTORS) {
     const std::string src = "process = (+ : *(0.9)) ~ _;";
-    const std::unique_ptr<Fixture> live = Build(src);
+    const std::unique_ptr<Fixture> live = Build<Backend>(src);
     std::vector<double> warm;
     live->Run(64, 1.0, warm);
 
-    const std::unique_ptr<Fixture> reloaded = Build(src);
+    const std::unique_ptr<Fixture> reloaded = Build<Backend>(src);
     const Migration m = Migrate(live->Plan, *live->Dsp, live->At, reloaded->Plan, *reloaded->Dsp, reloaded->At);
     CHECK(m.Exact > 0);
     CHECK(m.Fresh == 0);
@@ -128,14 +126,14 @@ TEST_CASE("a no-op edit is sample-identical across the reload") {
     CHECK(kept[0] != 0.0);
 }
 
-TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
-    const std::unique_ptr<Fixture> live = Build("process = (+ : *(0.9)) ~ _;");
+TEST_CASE_TEMPLATE("a gain edit inside a feedback network does not cost the tail", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    const std::unique_ptr<Fixture> live = Build<Backend>("process = (+ : *(0.9)) ~ _;");
     std::vector<double> warm;
     live->Run(64, 1.0, warm);
     const double level = warm.back();
     REQUIRE(std::fabs(level) > 1e-3);
 
-    const std::unique_ptr<Fixture> edited = Build("process = (+ : *(0.8)) ~ _;");
+    const std::unique_ptr<Fixture> edited = Build<Backend>("process = (+ : *(0.8)) ~ _;");
     const Migration m = Migrate(live->Plan, *live->Dsp, live->At, edited->Plan, *edited->Dsp, edited->At);
     CHECK(m.Shaped > 0);
     CHECK(m.Exact == 0);
@@ -145,42 +143,37 @@ TEST_CASE("a gain edit inside a feedback network does not cost the tail") {
     edited->Run(1, 0.0, tail);
     CHECK(tail[0] == doctest::Approx(level * 0.8));
 
-    const std::unique_ptr<Fixture> cold = Build("process = (+ : *(0.8)) ~ _;");
+    const std::unique_ptr<Fixture> cold = Build<Backend>("process = (+ : *(0.8)) ~ _;");
     std::vector<double> silence;
     cold->Run(1, 0.0, silence);
     CHECK(silence[0] == 0.0);
 }
 
-TEST_CASE("a widget's state is not this pass's to carry") {
-    // Use the edited initial value when no persistent control value exists.
-    const std::unique_ptr<Fixture> live = Build(
-        "gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
-        "process = _ * gain;\n"
-    );
+TEST_CASE_TEMPLATE("reload uses the new control defaults", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    const std::unique_ptr<Fixture> live = Build<Backend>("gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
+                                                         "process = _ * gain;\n");
     const std::vector<uint32_t> sliders = live->Dsp->ControlsOfKind(UiKind::HSlider);
     REQUIRE(sliders.size() == 1);
     live->Dsp->SetControl(sliders[0], 0.75);
 
-    const std::unique_ptr<Fixture> edited = Build(
-        "gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
-        "process = _ * gain * 2.0;\n"
-    );
+    const std::unique_ptr<Fixture> edited = Build<Backend>("gain = hslider(\"gain\", 0.1, 0, 1, 0.01);\n"
+                                                           "process = _ * gain * 2.0;\n");
     Migrate(live->Plan, *live->Dsp, live->At, edited->Plan, *edited->Dsp, edited->At);
     const std::vector<uint32_t> after = edited->Dsp->ControlsOfKind(UiKind::HSlider);
     REQUIRE(after.size() == 1);
     CHECK(edited->Dsp->Control(after[0]) == doctest::Approx(0.1));
 }
 
-TEST_CASE("a lengthened delay keeps the history it had") {
-    const std::unique_ptr<Fixture> live = Build("process = _ @ 8;");
+TEST_CASE_TEMPLATE("a lengthened delay keeps the history it had", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    const std::unique_ptr<Fixture> live = Build<Backend>("process = _ @ 8;");
     std::vector<double> warm;
     live->Run(4, 1.0, warm);
 
-    const std::unique_ptr<Fixture> longer = Build("process = _ @ 8;");
+    const std::unique_ptr<Fixture> longer = Build<Backend>("process = _ @ 8;");
     const Migration same = Migrate(live->Plan, *live->Dsp, live->At, longer->Plan, *longer->Dsp, longer->At);
     CHECK(same.Resized == 0);
 
-    const std::unique_ptr<Fixture> grown = Build("process = _ @ 64;");
+    const std::unique_ptr<Fixture> grown = Build<Backend>("process = _ @ 64;");
     const Migration m = Migrate(live->Plan, *live->Dsp, live->At, grown->Plan, *grown->Dsp, grown->At);
     CHECK(m.Exact > 0);
     CHECK(m.Resized == 1);

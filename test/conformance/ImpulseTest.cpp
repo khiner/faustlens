@@ -1,8 +1,10 @@
 #include "conformance/Sweep.h"
 #include "property/Corpus.h"
-#include "runtime/Interp.h"
+#include "runtime/Executors.h"
+
 #include "signal/Plan.h"
 #include "signal/Ui.h"
+#include <bit>
 
 #include "doctest.h"
 
@@ -47,10 +49,10 @@ struct HarnessSound : SoundfileReader {
     }
 };
 
-// Round-trip printed samples before comparison.
 bool Print(double v, double &out) {
     if (std::isnan(v) || std::isinf(v)) return false;
     char buf[32];
+    // Match the reference harness's sample formatting.
     std::snprintf(buf, sizeof buf, "%8.6f", std::fabs(v) < 1e-06 ? 0.0 : v);
     out = std::strtod(buf, nullptr);
     return true;
@@ -63,8 +65,7 @@ struct Response {
     bool Aborted = false;
 };
 
-// Split compute calls at the reference harness's randomized midpoint.
-void RunSection(Interp &dsp, std::span<const uint32_t> buttons, bool split, Response &r) {
+void RunSection(Instance &dsp, std::span<const uint32_t> buttons, bool split, Response &r, bool raw = false) {
     const int32_t nin = dsp.Inputs(), nout = dsp.Outputs();
     std::vector<std::vector<double>> in(std::max(nin, 1), std::vector<double>(Block, 0.0));
     std::vector<std::vector<double>> out(std::max(nout, 1), std::vector<double>(Block, 0.0));
@@ -85,6 +86,7 @@ void RunSection(Interp &dsp, std::span<const uint32_t> buttons, bool split, Resp
             dsp.Compute(n, in_at.data(), out_at.data());
         };
         if (split) {
+            // Use half-block splits to check independence from the reference harness's randomized positions.
             compute(0, frames / 2);
             compute(frames / 2, frames - frames / 2);
         } else {
@@ -93,8 +95,8 @@ void RunSection(Interp &dsp, std::span<const uint32_t> buttons, bool split, Resp
 
         for (int32_t i = 0; i < frames; ++i) {
             for (int32_t c = 0; c < nout; ++c) {
-                double v;
-                if (!Print(out[c][i], v)) {
+                double v = out[c][i];
+                if (!raw && !Print(v, v)) {
                     r.Aborted = true;
                     return;
                 }
@@ -195,7 +197,6 @@ Verdict Measure(const fs::path &path) {
     r.Outputs = plan.Outputs;
     const std::vector<uint32_t> buttons = dsp.ControlsOfKind(UiKind::Button);
     RunSection(dsp, buttons, false, r);
-    // Initialize a fresh DSP for each reference section.
     if (!r.Aborted) {
         Interp again(plan, ui);
         again.LoadSoundfiles(&sound);
@@ -267,3 +268,43 @@ TEST_CASE("impulse responses: the interpreter against the reference's `.ir`") {
 
     CHECK(matched == 94);
 }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+TEST_CASE("native corpus responses and final state match the interpreter at full precision") {
+    const auto same = [](double a, double b) { return (std::isnan(a) && std::isnan(b)) || std::bit_cast<uint64_t>(a) == std::bit_cast<uint64_t>(b); };
+    const auto paths = DspPaths();
+    REQUIRE(paths.size() == 94);
+    for (const auto &path : paths) {
+        INFO(path.string());
+        const Program program(path);
+        REQUIRE(program.Ok);
+        const auto plan = program.Lower();
+        REQUIRE(plan);
+        const auto ui = program.Ui("native");
+        auto interp = MakeExecutor<Interp>(*plan, ui), native = MakeExecutor<Native>(*plan, ui);
+        HarnessSound sound;
+        interp->LoadSoundfiles(&sound);
+        native->LoadSoundfiles(&sound);
+        for (bool split : {false, true}) {
+            INFO(split);
+            interp->Init(44100);
+            native->Init(44100);
+            Response a, b;
+            RunSection(*interp, interp->ControlsOfKind(UiKind::Button), split, a, true);
+            RunSection(*native, native->ControlsOfKind(UiKind::Button), split, b, true);
+            REQUIRE(a.Rows.size() == b.Rows.size());
+            for (size_t k = 0; k < a.Rows.size(); ++k) {
+                INFO(k, a.Rows[k], b.Rows[k]);
+                REQUIRE(same(a.Rows[k], b.Rows[k]));
+            }
+            for (size_t f = 0; f < plan->Fields.size(); ++f)
+                for (uint32_t k = 0; k < plan->Fields[f].Extent; ++k) {
+                    INFO(f, k);
+                    const size_t at = interp->FieldAt[f] + k;
+                    if (plan->Fields[f].Nature == Nature::Int) REQUIRE(interp->State[at].I == native->State[at].I);
+                    else REQUIRE(same(interp->State[at].D, native->State[at].D));
+                }
+        }
+    }
+}
+#endif

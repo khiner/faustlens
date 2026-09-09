@@ -83,8 +83,14 @@ target_link_libraries(faustlens_runtime PUBLIC faustlens_signal)
 add_library(faustlens_compiler INTERFACE)
 target_link_libraries(faustlens_compiler INTERFACE faustlens_signal)
 
+add_library(faustlens_native runtime/Native.cpp runtime/Executable.cpp)
+target_link_libraries(faustlens_native PUBLIC faustlens_runtime)
+
 add_library(faustlens_interp EXCLUDE_FROM_ALL runtime/Interp.cpp)
 target_link_libraries(faustlens_interp PUBLIC faustlens_runtime)
+
+add_library(faustlens_backends EXCLUDE_FROM_ALL runtime/Backend.cpp)
+target_link_libraries(faustlens_backends PUBLIC faustlens_native faustlens_interp)
 
 add_library(faustlens_migrate EXCLUDE_FROM_ALL runtime/Migrate.cpp)
 target_link_libraries(faustlens_migrate PUBLIC faustlens_runtime)
@@ -99,10 +105,11 @@ target_link_libraries(faustlens_lens PUBLIC faustlens_eval)
 
 add_library(faustlens INTERFACE)
 target_link_libraries(faustlens INTERFACE
-    faustlens_compiler faustlens_interp faustlens_migrate faustlens_lens)
+    faustlens_compiler faustlens_backends faustlens_migrate faustlens_lens)
 
 # Preserve the numerical contract in host-compiled DSP operations.
 target_compile_options(faustlens_eval PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_signal PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_runtime PRIVATE -ffp-contract=off -fno-fast-math)
+target_compile_options(faustlens_native PRIVATE -ffp-contract=off -fno-fast-math)
 target_compile_options(faustlens_interp PRIVATE -ffp-contract=off -fno-fast-math)
