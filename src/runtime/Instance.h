@@ -60,8 +60,7 @@ public:
     int32_t Outputs() const { return Plan.Outputs; }
 
 protected:
-    // Execute with preallocated storage in increasing sample order.
-    virtual void Execute(Band, int32_t frames, const double *const *in, double *const *out) = 0;
+    virtual void Execute(bool initialize, int32_t frames, const double *const *in, double *const *out) = 0;
 };
 
 } // namespace faustlens

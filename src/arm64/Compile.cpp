@@ -44,14 +44,14 @@ struct Emit {
     struct Allocation {
         uint32_t Begin = UINT32_MAX, End = 0, Physical = 0;
         Nature Type = Nature::Real;
-        bool Written = false;
+        bool Written = false, Load = true;
     };
     struct CachedField {
         uint32_t Field, Index;
     };
     std::vector<Allocation> Alloc;
     std::vector<CachedField> Cached;
-    uint32_t Pc = 0;
+    uint32_t Pc = 0, ControlEnd = 0;
     std::vector<uint32_t> CallMask;
     std::vector<Reg> CallValues;
     Reg CallInput = NoReg, CallOutput = NoReg;
@@ -170,10 +170,14 @@ struct Emit {
             std::vector<Reg> LiveIn;
         };
         std::vector<LifetimeLoop> counters;
+        uint32_t guards = 0;
         for (uint32_t pc = 0; pc < code.size(); ++pc) {
             const Instr &i = code[pc];
             const auto touch = [&](Reg r, bool write) {
                 auto &a = Alloc[r];
+                if (a.Begin == UINT32_MAX && write && band == faustlens::Band::Sample && pc < ControlEnd && !guards && counters.empty() &&
+                    Op(i.Op) != Op::LoopBegin)
+                    a.Load = false;
                 if (!write)
                     for (auto &loop : counters)
                         if (a.Begin < loop.Begin) loop.LiveIn.push_back(r);
@@ -183,6 +187,8 @@ struct Emit {
             };
             for (Reg r : ReadArgs(i)) touch(r, false);
             if (i.Dst != NoReg) touch(i.Dst, true);
+            if (Op(i.Op) == Op::GuardBegin) ++guards;
+            if (Op(i.Op) == Op::GuardEnd) --guards;
             if (Op(i.Op) == Op::LoopBegin) counters.push_back({i.Dst, pc, {}});
             if (Op(i.Op) == Op::LoopEnd) {
                 if (counters.empty()) throw std::runtime_error("unmatched native loop end");
@@ -406,7 +412,7 @@ struct Emit {
         std::vector<Transfer> result;
         const auto append = [&](Reg r, uint32_t base, uint32_t bytes) {
             const auto &a = Alloc[r];
-            if (a.Physical && (!store || a.Written)) result.push_back({base, bytes, a.Physical, a.Type == Nature::Int});
+            if (a.Physical && (store ? a.Written : a.Load)) result.push_back({base, bytes, a.Physical, a.Type == Nature::Int});
         };
         for (uint32_t slot = 0; slot < Layout.Registers.Persistent.size(); ++slot) append(Layout.Registers.Persistent[slot], Context[0], slot * 8);
         for (uint32_t k = 0; k < Cached.size(); ++k) {
@@ -575,7 +581,7 @@ struct Emit {
         }
     }
 
-    std::vector<std::optional<Instr>> Steady(std::span<const Instr> code) {
+    std::vector<std::optional<Instr>> Steady(std::span<const Instr> code, uint32_t begin) {
         std::map<std::pair<uint32_t, uint32_t>, std::optional<int32_t>> fields;
         std::vector<bool> dynamic(Plan.Fields.size());
         for (const Instr &i : code) {
@@ -657,7 +663,7 @@ struct Emit {
                 const auto &dst = Alloc[i.Dst];
                 if (producer.Dst == source && uses[source] == 1 && Layout.Registers.Slot[source] == NoReg && dst.Physical &&
                     Layout.Registers.Types[source] == i.Nature && std::ranges::none_of(Alloc, [&](const Allocation &a) {
-                        return a.Type == dst.Type && a.Physical == dst.Physical && a.Begin <= previous && a.End >= previous;
+                        return a.Type == dst.Type && a.Physical == dst.Physical && a.Begin <= begin + previous && a.End >= begin + previous;
                     })) {
                     producer.Dst = i.Dst;
                     result[pc].reset();
@@ -669,7 +675,7 @@ struct Emit {
         return result;
     }
 
-    void Coalesce(std::span<const std::optional<Instr>> code, bool initial = false) {
+    void Coalesce(std::span<const std::optional<Instr>> code, bool initial = false, uint32_t begin = 0) {
         struct Store {
             Reg Source = NoReg;
             uint32_t Pc = 0, Count = 0;
@@ -693,7 +699,7 @@ struct Emit {
                 if (!code[pc]) continue;
                 const Instr &i = *code[pc];
                 if (Op(i.Op) != Op::LoadField || i.Imm != Cached[k].Field || Index(i) != Cached[k].Index || pc >= stores[k].Pc) continue;
-                if (pc >= write || (Alloc[i.Dst].Physical == Alloc[Plan.Regs + k].Physical && Alloc[i.Dst].End > write)) return false;
+                if (pc >= write || (Alloc[i.Dst].Physical == Alloc[Plan.Regs + k].Physical && Alloc[i.Dst].End > begin + write)) return false;
             }
             return true;
         };
@@ -719,7 +725,7 @@ struct Emit {
             if (!eligible(k)) continue;
             const Reg source = stores[k].Source;
             const uint32_t pc = definitions[source];
-            if (pc == UINT32_MAX || Alloc[source].Begin != pc || Layout.Registers.Slot[source] != NoReg || Op(code[pc]->Op) != Op::BinOp) continue;
+            if (pc == UINT32_MAX || Alloc[source].Begin != begin + pc || Layout.Registers.Slot[source] != NoReg || Op(code[pc]->Op) != Op::BinOp) continue;
             const auto &target = Alloc[Plan.Regs + k];
             bool safe = true;
             for (size_t j = 0; j < Cached.size(); ++j)
@@ -818,6 +824,10 @@ struct Emit {
                 for (Reg r : ReadArgs(i)) used[r] = true;
         for (auto &code : Prepared)
             std::erase_if(code, [&](const Instr &i) { return (Op(i.Op) == Op::ConstInt || Op(i.Op) == Op::ConstReal) && !used[i.Dst]; });
+        const auto &control = Prepared[size_t(faustlens::Band::Control)];
+        ControlEnd = uint32_t(control.size());
+        auto &sample = Prepared[size_t(faustlens::Band::Sample)];
+        sample.insert(sample.begin(), control.begin(), control.end());
     }
 
     void Word(uint32_t word) { Words.push_back(word); }
@@ -1451,7 +1461,7 @@ struct Emit {
         Back(0x5400000b, tail); // b.lt
         Target(done, Words.size());
     }
-    void RunLoop(std::span<const Instr> code, faustlens::Band band, bool unroll = false) {
+    void RunLoop(std::span<const Instr> code, faustlens::Band band, uint32_t begin, bool unroll = false) {
         if (code.empty()) return;
         Advancing = Connected && code.size() > 6 && std::ranges::none_of(code, [&](const Instr &i) {
                         const Op op = Op(i.Op);
@@ -1464,7 +1474,7 @@ struct Emit {
             while (Words.size() % 4) Word(0xd503201f); // nop
         const size_t loop = Words.size();
         std::vector<size_t> guards;
-        Pc = 0;
+        Pc = begin;
         for (const Instr &i : code) {
             CallInput = CallValues[Pc];
             CallOutput = CallValues[Pc + 1];
@@ -1476,15 +1486,15 @@ struct Emit {
         const size_t end = Words.size(), relocations = Relocations.size();
         bool peeled = false;
         if (band == faustlens::Band::Sample && end - loop <= LoopWords) {
-            if (const auto steady = Steady(code); !steady.empty()) {
+            if (const auto steady = Steady(code, begin); !steady.empty()) {
                 const auto original = Alloc;
                 // Cached registers are live across the block, so the original call-save masks cover reassigned values.
-                Coalesce(steady);
+                Coalesce(steady, false, begin);
                 const size_t done = Branch(Advance() ^ 1u, true); // b.eq or b.ge
                 if (Connected)
                     while (Words.size() % 4) Word(0xd503201f); // nop
                 const size_t body = Words.size();
-                Pc = 0;
+                Pc = begin;
                 for (const auto &i : steady) {
                     if (i) Instruction(*i, guards);
                     ++Pc;
@@ -1503,13 +1513,15 @@ struct Emit {
         Advancing = false;
     }
     [[gnu::always_inline]] size_t Band(faustlens::Band band) {
-        const auto &code = Prepared[size_t(band)];
+        const auto &instructions = Prepared[size_t(band)];
+        const uint32_t begin = band == faustlens::Band::Sample ? ControlEnd : 0;
+        const auto code = std::span(instructions).subspan(begin);
         const size_t entry = Words.size();
-        if (code.empty()) {
+        if (instructions.empty()) {
             Word(0xd65f03c0); // ret
             return entry;
         }
-        Allocate(code, band);
+        Allocate(instructions, band);
         if (UsedContext & (1u << 6)) Word(0xaa0503e6); // mov x6, x5
         if (UsedContext & (1u << 7)) Mem(0xf9400000, 7, 5, 16);
         if (StackBytes) Word(0xd10003ff | StackBytes << 10);
@@ -1527,17 +1539,28 @@ struct Emit {
         }
         for (const auto &base : Bases) FieldAddress(base.Field, base.Physical);
         for (const auto &target : MathTargets) Address(Binding::Math, target.Index, target.Physical);
+        std::vector<size_t> guards;
+        for (Pc = 0; Pc < begin; ++Pc) {
+            CallInput = CallValues[Pc];
+            CallOutput = CallValues[Pc + 1];
+            Instruction(instructions[Pc], guards);
+        }
+        CallInput = CallOutput = NoReg;
+        if (!guards.empty()) throw std::runtime_error("unmatched native control guard begin");
+        Pool(true); // Resolve control literals before emitting alternative sample loops.
         std::optional<size_t> empty;
         if (band == faustlens::Band::Sample && !code.empty()) empty = Branch(0x34000000 | Context[4], true);
         const bool candidate = band == faustlens::Band::Sample && !Channels.empty() && code.size() <= LoopWords &&
             std::ranges::all_of(code,
                                 [&](const Instr &i) { return (Op(i.Op) != Op::Input && Op(i.Op) != Op::Output) || ChannelReg(Op(i.Op) == Op::Output, i.Imm); });
+        const auto emptyStores = empty && begin ? Transfers(true) : std::vector<Transfer>{};
         const auto original = candidate ? Alloc : std::vector<Allocation>{};
+        std::optional<std::pair<std::vector<Transfer>, size_t>> connectedBoundary;
         std::optional<size_t> generalExit, connectedExit;
         const size_t dispatch = Words.size();
         if (candidate) Word(0x14000000);
         const size_t general = Words.size();
-        RunLoop(code, band);
+        RunLoop(code, band, begin);
         const auto generalStores = Transfers(true);
         if (candidate) {
             Words[dispatch] = 0xd503201f; // nop
@@ -1549,11 +1572,11 @@ struct Emit {
                 Alloc = original;
                 Connected = true;
                 const size_t connected = Words.size();
-                RunLoop(code, band, true);
+                RunLoop(code, band, begin, true);
                 if (Words.size() - checks > LoopWords) {
                     Rewind(connected, relocations);
                     Alloc = original;
-                    RunLoop(code, band);
+                    RunLoop(code, band, begin);
                 }
                 Connected = false;
                 if (Words.size() - checks <= LoopWords) {
@@ -1562,6 +1585,7 @@ struct Emit {
                     generalExit = done;
                     const auto connectedStores = Transfers(true);
                     if (connectedStores != generalStores) {
+                        connectedBoundary.emplace(connectedStores, Words.size());
                         Boundary(true, connectedStores);
                         connectedExit = Branch(0x14000000);
                     }
@@ -1574,7 +1598,17 @@ struct Emit {
         if (generalExit) Target(*generalExit, generalBoundary);
         Boundary(true, generalStores);
         if (connectedExit) Target(*connectedExit, Words.size());
-        if (empty) Target(*empty, Words.size());
+        if (empty) {
+            if (!begin) Target(*empty, Words.size());
+            else if (emptyStores == generalStores) Target(*empty, generalBoundary);
+            else if (connectedBoundary && emptyStores == connectedBoundary->first) Target(*empty, connectedBoundary->second);
+            else {
+                const size_t done = Branch(0x14000000);
+                Target(*empty, Words.size());
+                Boundary(true, emptyStores);
+                Target(done, Words.size());
+            }
+        }
         CalleeRegisters(false);
         if (StackBytes) Word(0x910003ff | StackBytes << 10);
         Word(0xd65f03c0); // ret
@@ -1589,7 +1623,7 @@ std::expected<std::shared_ptr<const Program>, std::string> Program::Compile(faus
     try {
         auto program = std::shared_ptr<Program>(new Program(std::move(p), std::move(ui)));
         Emit emit{*program};
-        for (size_t b = 0; b < program->Entries.size(); ++b) program->Entries[b] = uint32_t(emit.Band(Band(b)));
+        program->Entries = {uint32_t(emit.Band(Band::Init)), uint32_t(emit.Band(Band::Sample))};
         program->Words = std::move(emit.Words);
         program->Relocations = std::move(emit.Relocations);
         return program;

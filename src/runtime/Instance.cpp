@@ -54,7 +54,7 @@ void Instance::Constants(double rate) {
             else State[FieldAt[f] + k].D = w[k];
         }
     }
-    Execute(Band::Init, 1, nullptr, nullptr);
+    Execute(true, 1, nullptr, nullptr);
 }
 
 void Instance::ResetControls() {
@@ -112,8 +112,7 @@ std::vector<uint32_t> Instance::ControlsOfKind(UiKind k) const {
 
 void Instance::Compute(int32_t n, const double *const *in, double *const *out) {
     Frames = std::max(n, 0);
-    Execute(Band::Control, 1, in, out);
-    Execute(Band::Sample, Frames, in, out);
+    Execute(false, Frames, in, out);
 }
 
 } // namespace faustlens

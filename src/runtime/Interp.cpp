@@ -82,9 +82,11 @@ void Interp::Prepare(Code &c, std::span<const Instr> src) {
     }
 }
 
-void Interp::Execute(faustlens::Band band, int32_t frames, const double *const *in, double *const *out) {
+void Interp::Execute(bool initialize, int32_t frames, const double *const *in, double *const *out) {
     for (size_t k = 0; k < Values.size(); ++k) Regs[Registers.Persistent[k]] = Values[k];
-    for (int32_t f = 0; f < frames; ++f) Run(Band(band), in, out, f);
+    if (!initialize) Run(Band(faustlens::Band::Control), in, out, 0);
+    const auto &code = Band(initialize ? faustlens::Band::Init : faustlens::Band::Sample);
+    for (int32_t f = 0; f < frames; ++f) Run(code, in, out, f);
     for (size_t k = 0; k < Values.size(); ++k) Values[k] = Regs[Registers.Persistent[k]];
 }
 

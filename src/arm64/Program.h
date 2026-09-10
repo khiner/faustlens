@@ -17,13 +17,12 @@ struct Relocation {
     }
 };
 
-// Compile and save independently of DSP instances, host bindings, and executable memory.
 struct Program {
     faustlens::Plan Plan;
     UiNode Ui;
     InstanceLayout Layout;
     std::vector<uint32_t> Words;
-    std::array<uint32_t, 3> Entries;
+    std::array<uint32_t, 2> Entries; // Initialization and block processing.
     std::vector<Relocation> Relocations;
 
     static std::expected<std::shared_ptr<const Program>, std::string> Compile(faustlens::Plan, UiNode);

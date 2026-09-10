@@ -20,7 +20,7 @@ private:
     std::shared_ptr<const arm64::Program> Program_;
     const Registry &Registry_;
     std::unique_ptr<Executable> Executable_;
-    std::array<Entry, 3> Entries;
+    std::array<Entry, 2> Entries;
 
     NativeCode(std::shared_ptr<const arm64::Program> p, const Registry &r, std::unique_ptr<Executable> e)
         : Program_(std::move(p)), Registry_(r), Executable_(std::move(e)) {}
@@ -38,7 +38,7 @@ private:
     explicit Native(std::shared_ptr<const NativeCode>);
     std::vector<Scalar> Scratch;
     std::shared_ptr<const NativeCode> Code;
-    void Execute(Band, int32_t, const double *const *, double *const *) override;
+    void Execute(bool initialize, int32_t, const double *const *, double *const *) override;
 };
 
 } // namespace faustlens

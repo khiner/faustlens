@@ -24,9 +24,9 @@ void entry(Scalar *values, Scalar *state,
 ```
 
 Parameters supply the sample rate, actual block length, temporary storage, and instance pointer.
-Initialization and control entries receive `frames = 1`.
-Control entries execute even for an empty block.
-The sample entry receives the block length.
+The initialization entry receives `frames = 1`.
+The block entry receives the block length and executes controls once before processing samples.
+Controls execute even for an empty block.
 Null input arrays or channels produce silence.
 Null output arrays or channels discard output.
 Channel pointers must remain stable during a call, with sample buffers separate from instance state.

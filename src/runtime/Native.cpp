@@ -116,7 +116,7 @@ std::expected<std::unique_ptr<Native>, std::string> Native::Compile(const faustl
     });
 }
 
-void Native::Execute(Band band, int32_t frames, const double *const *in, double *const *out) {
+void Native::Execute(bool initialize, int32_t frames, const double *const *in, double *const *out) {
     struct Parameters {
         double SampleRate;
         int32_t Frames;
@@ -125,7 +125,7 @@ void Native::Execute(Band band, int32_t frames, const double *const *in, double 
     };
     static_assert(offsetof(Parameters, Frames) == 8 && offsetof(Parameters, Scratch) == 16 && offsetof(Parameters, Owner) == 24);
     const Parameters parameters{SampleRate, Frames, Scratch.data(), this};
-    Code->Entries[size_t(band)](Values.data(), State.data(), in, out, frames, &parameters);
+    Code->Entries[initialize ? 0 : 1](Values.data(), State.data(), in, out, frames, &parameters);
 }
 
 } // namespace faustlens

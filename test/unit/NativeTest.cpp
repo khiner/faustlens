@@ -183,6 +183,105 @@ TEST_CASE_TEMPLATE("executors sample foreign variables once per block and report
 }
 
 #if defined(__APPLE__) && defined(__aarch64__)
+TEST_CASE("native blocks retain control results across empty blocks and sample calls") {
+    for (const char *source :
+         {"process(x)=sin(hslider(\"gain\",0.5,0,1,0.01))*x;", "process(x)=par(i,40,sin(hslider(\"gain\",0.5,0,1,0.01)+float(i))*sin(x)+x');",
+          "process(x)=select2(1',x,x+sin(hslider(\"gain\",0.5,0,1,0.01)));"}) {
+        Fixture f(source);
+        for (bool samples : {false, true}) {
+            auto plan = f.Plan;
+            if (!samples) plan.Band(Band::Sample).clear();
+            auto a = MakeExecutor<Interp>(plan, f.Ui), b = MakeExecutor<Native>(plan, f.Ui);
+            a->Init(48000);
+            b->Init(48000);
+            for (int frames : {-3, 0, 1, 3, 0, 17}) {
+                INFO(std::string_view(source), " samples=", samples, " frames=", frames);
+                const auto gain = a->ControlsOfKind(UiKind::HSlider)[0];
+                a->SetControl(gain, 0.25 + double(frames & 1) * 0.5);
+                b->SetControl(gain, a->Control(gain));
+                std::array<double, 17> input;
+                input.fill(-0.125);
+                const double *in[] = {input.data()};
+                std::vector<std::array<double, 17>> ao(a->Outputs()), bo(a->Outputs());
+                std::vector<double *> ap, bp;
+                for (size_t k = 0; k < ao.size(); ++k) {
+                    ao[k].fill(-7);
+                    bo[k] = ao[k];
+                    ap.push_back(ao[k].data());
+                    bp.push_back(bo[k].data());
+                }
+                a->Compute(frames, in, ap.data());
+                b->Compute(frames, in, bp.data());
+                CHECK(ao == bo);
+                for (const Instr &i : plan.Band(Band::Control))
+                    if (i.Dst != NoReg && a->Registers.Slot[i.Dst] != NoReg) {
+                        const uint32_t slot = a->Registers.Slot[i.Dst];
+                        CHECK(Same(a->Values[slot].D, b->Values[slot].D));
+                    }
+                for (size_t k = 0; k < a->State.size(); ++k) CHECK(Same(a->State[k].D, b->State[k].D));
+            }
+        }
+    }
+}
+
+TEST_CASE("native blocks preserve prior control values through guards and empty loops") {
+    enum { Unconditional, Guarded, Looped, ReadBeforeWrite };
+    for (Nature type : {Nature::Int, Nature::Real})
+        for (int mode : {Unconditional, Guarded, Looped, ReadBeforeWrite})
+            for (uint32_t bound : {0u, 2u}) {
+                INFO(int(type), mode, bound);
+                Plan plan;
+                plan.Regs = 4;
+                plan.Inputs = 1;
+                plan.Outputs = 3;
+                plan.Operands = {0, 1, 2, 3};
+                plan.Fields.resize(3);
+                plan.Fields[0].Nature = Nature::Int;
+                plan.Fields[0].Kind = plan.Fields[1].Kind = FieldKind::Widget;
+                plan.Fields[1].Nature = plan.Fields[2].Nature = type;
+                const uint64_t initial = type == Nature::Int ? 7 : std::bit_cast<uint64_t>(7.0);
+                plan.Band(Band::Init) = {
+                    {uint8_t(type == Nature::Int ? Op::ConstInt : Op::ConstReal), 0, type, 0, uint32_t(initial), uint32_t(initial >> 32)},
+                    {uint8_t(Op::ConstInt), 0, Nature::Int, 2, 9}
+                };
+                auto &control = plan.Band(Band::Control);
+                control.push_back({uint8_t(Op::LoadField), 0, Nature::Int, 1, 0});
+                if (mode == Guarded) control.push_back({uint8_t(Op::GuardBegin), 0, Nature::Int, NoReg, 0, 0, 1, 1});
+                if (mode == Looped) control.push_back({uint8_t(Op::LoopBegin), 0, Nature::Int, 2, bound});
+                if (mode == ReadBeforeWrite) control.push_back({uint8_t(Op::StoreField), 0, type, NoReg, 2, 0, 0, 1});
+                control.push_back({uint8_t(Op::LoadField), 0, type, 0, 1});
+                if (mode == Guarded) control.push_back({uint8_t(Op::GuardEnd), 0, Nature::Int, NoReg});
+                if (mode == Looped) control.push_back({uint8_t(Op::LoopEnd), 0, Nature::Int, NoReg});
+                plan.Band(Band::Sample) = {
+                    {uint8_t(Op::Input), 0, Nature::Real, 3, 0},
+                    {uint8_t(Op::Output), 0, Nature::Real, NoReg, 0, 0, 0, 1},
+                    {uint8_t(Op::Output), 0, Nature::Real, NoReg, 1, 0, 2, 1},
+                    {uint8_t(Op::Output), 0, Nature::Real, NoReg, 2, 0, 3, 1}
+                };
+                auto a = MakeExecutor<Interp>(plan, {}), b = MakeExecutor<Native>(plan, {});
+                a->Init(48000);
+                b->Init(48000);
+                double input[] = {1, 2, 3, 4, 5, 6, 7};
+                const double *in[] = {input};
+                double ao[3][7]{}, bo[3][7]{};
+                double *ap[] = {ao[0], ao[1], ao[2]}, *bp[] = {bo[0], bo[1], bo[2]};
+                for (bool connected : {true, false})
+                    for (int gate : {0, 1, 0})
+                        for (int frames : {0, 1, 7, 0}) {
+                            a->State[0].I = gate;
+                            if (type == Nature::Int) a->State[1].I += 3;
+                            else a->State[1].D += 0.25;
+                            b->State = a->State;
+                            a->Compute(frames, connected ? in : nullptr, ap);
+                            b->Compute(frames, connected ? in : nullptr, bp);
+                            for (int c = 0; c < 3; ++c)
+                                for (int k = 0; k < frames; ++k) CHECK(Same(ao[c][k], bo[c][k]));
+                            for (size_t k = 0; k < a->Values.size(); ++k) CHECK(Same(a->Values[k].D, b->Values[k].D));
+                            CHECK(Same(a->State[2].D, b->State[2].D));
+                        }
+            }
+}
+
 TEST_CASE("native calls preserve live values across caller-saved register clobbers") {
     constexpr Reg count = 40;
     Plan plan;
