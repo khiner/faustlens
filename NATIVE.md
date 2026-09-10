@@ -2,12 +2,11 @@
 
 On Apple Silicon, the macOS editor compiles Plan instructions to ARM64 machine code.
 Other platforms execute Plan instructions through the interpreter.
-Compilation produces an immutable `arm64::Program` containing code, entry offsets, symbolic relocations, Plan data, UI descriptors, and instance layout.
-It allocates no DSP state or executable memory.
-`NativeCode::Publish` resolves math, soundfile, and foreign bindings for the current process.
+Compilation produces an immutable `arm64::Program` containing machine code, relocations, Plan data, UI descriptors, and instance layout.
+`NativeCode::Publish` allocates executable memory and resolves math, soundfile, and foreign bindings for the current process.
 `Native::Create` allocates independent state and controls while sharing published code and immutable layout.
 
-`Program::Encode` writes the little-endian, versioned FaustLens `.f64` artifact format.
+`Program::Encode` writes the little-endian FaustLens `.f64` artifact format.
 `Program::Decode` loads it without recompilation or access to the original source.
 Artifacts are executable inputs and require the same trust as native libraries.
 The format is specific to the FaustLens runtime ABI and is not a system-linker object file.
@@ -19,7 +18,7 @@ Both executors share the [instance lifecycle and DSP state transfer](ARCHITECTUR
 Native entries use the host C ABI:
 
 ```cpp
-void band(Scalar *values, Scalar *state,
+void entry(Scalar *values, Scalar *state,
           const double *const *inputs, double *const *outputs, int32_t frames,
           const Parameters *parameters);
 ```
@@ -41,13 +40,16 @@ Real arithmetic and state use binary64.
 Integer arithmetic uses signed 32-bit values with wrapping add, subtract, and multiply.
 Float-to-int conversion truncates, saturates outside the integer range, and maps NaN to zero.
 Integer shift counts use their low five bits.
-Exceptional integer division and remainder use ARM64 results.
+Field accesses clamp unsigned indices to the last slot and treat a zero extent as one slot.
+Division by zero produces zero, and remainder by zero preserves the dividend.
+Dividing `INT32_MIN` by -1 produces `INT32_MIN` with zero remainder.
 Arithmetic dependencies, table read/write dependencies, guards, and delay timing are preserved.
 Floating-point reassociation and implicit FMA contraction are disabled.
 
 Execution preserves the calling thread's rounding and denormal settings.
 Arithmetic tests cover all four rounding modes with gradual underflow and denormal flushing.
-The 94-program corpus round-trips artifacts and compares full-precision output and final state with the interpreter, including split blocks and reinitialization.
+The 94-program corpus round-trips artifacts and compares full-precision output and final state with the interpreter.
+It covers split blocks and reinitialization.
 Finite bits, signed zero, and infinity signs must match.
 NaN payloads are unspecified.
 Shared tests cover semantic rules, controls, lifecycle, state transfer, and typed foreign calls.
@@ -79,7 +81,8 @@ python3 benchmark/check.py build/backend-current.json
 Scalar and vector C++ references use the pinned Faust and library revisions, binary64, `-O3`, and disabled fast math and FMA contraction.
 The vector reference uses 32-sample vectors.
 Each program/backend/block combination runs in a fresh process at 48 kHz.
-Nine warmed render batches contain at least 65,536 frames each.
+Rendering uses a 100 ms warm-up and nine batches of at least 65,536 frames each.
+The benchmark thread uses user-initiated QoS on macOS.
 Compilation uses eleven samples and edit latency uses nine, with nearest-rank percentiles.
 These samples measure throughput and edit latency, with audio-device latency excluded.
 Unrounded comparison runs for at least one second and changes gain during the trace.
@@ -106,12 +109,4 @@ Stripped executables measure the interpreter alone and with native code generati
 | Paced edit-to-output p95 | At most 10 ms plus one block period plus 1 ms scheduling allowance |
 | DSP throughput | Per case, at most the greater of 1.5 times the faster reference block time or that reference time plus 0.25 microseconds |
 
-## Recorded validation
-
-[benchmark/artifact.json](benchmark/artifact.json) records 96 isolated runs with separate emission, publication, and instantiation measurements.
-All 24 DSP cases, six compilation cases, and footprint, memory, and edit-latency budgets passed on an Apple M5 Max.
-Earlier reports remain in [benchmark/native.json](benchmark/native.json) and [benchmark/baseline.json](benchmark/baseline.json).
-
-Release validation passed 306 unit/property/conformance cases, parser acceptance, widget interaction, and artifact compilation and execution in separate processes.
-ASan/UBSan validation passed the full headless suite.
-Hardened signature checks passed for the native editor, tests, and benchmarks.
+The optional [Faust LLVM JIT comparison](benchmark/README.md) measures source compilation, cached factories, instance creation, startup, and execution.

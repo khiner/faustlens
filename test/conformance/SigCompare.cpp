@@ -62,7 +62,6 @@ struct Comparer {
     }
 
     std::string Why;
-    SigId At = NoSig;
 
     bool Equal(SigId a, const SigTerm &b) {
         const SigTerm &t = Resolve(b);
@@ -90,7 +89,6 @@ struct Comparer {
 
     bool No(SigId a, const SigTerm &b, std::string_view what) {
         if (Why.empty()) {
-            At = a;
             const std::string mine = a == NoSig ? "?" : OpName(S, a);
             std::string theirs;
             switch (b.Kind) {
@@ -213,12 +211,11 @@ std::string PrintSig(const Signals &s, SigId id, int max_depth) {
     return out + ")";
 }
 
-std::expected<void, std::string> SigIsomorphic(const Signals &s, std::span<const SigId> ours, const SigFile &theirs, SigId *diverged) {
+std::expected<void, std::string> SigIsomorphic(const Signals &s, std::span<const SigId> ours, const SigFile &theirs) {
     if (ours.size() != theirs.Outputs.Args.size()) return std::unexpected(std::format("{} outputs against {}", ours.size(), theirs.Outputs.Args.size()));
     Comparer c(s, theirs);
     for (size_t i = 0; i < ours.size(); ++i) {
         if (c.Equal(ours[i], theirs.Outputs.Args[i])) continue;
-        if (diverged) *diverged = c.At;
         return std::unexpected(std::format("output {}: {}", i, c.Why));
     }
     return {};

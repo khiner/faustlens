@@ -47,27 +47,14 @@ TEST_CASE("accept/reject parity with tree-sitter-faust") {
     TSParser *parser = ts_parser_new();
     ts_parser_set_language(parser, tree_sitter_faust());
 
-    int agree = 0;
-    std::vector<std::string> we_accept_they_reject, they_accept_we_reject;
-    for (const CorpusFile &f : WholeCorpus()) {
+    for (const CorpusFile &file : WholeCorpus()) {
+        INFO(file.Relative);
         Terms terms;
-        const bool ours = Parse(terms, f.Text).Diags.empty();
-        const bool theirs = RunTreeSitter(parser, f.Text).Accepted;
-        if (ours == theirs) {
-            ++agree;
-        } else if (ours) {
-            we_accept_they_reject.push_back(f.Relative);
-        } else {
-            they_accept_we_reject.push_back(f.Relative);
-        }
+        const bool ours = Parse(terms, file.Text).Diags.empty();
+        const bool theirs = RunTreeSitter(parser, file.Text).Accepted;
+        CHECK(ours == theirs);
     }
     ts_parser_delete(parser);
-
-    for (const std::string &s : we_accept_they_reject) MESSAGE("we accept, ts rejects: ", s);
-    for (const std::string &s : they_accept_we_reject) MESSAGE("ts accepts, we reject: ", s);
-    MESSAGE("agreement on ", agree, " files");
-    CHECK(we_accept_they_reject.empty());
-    CHECK(they_accept_we_reject.empty());
 }
 
 TEST_CASE("leaf token boundaries agree with tree-sitter-faust") {
@@ -75,14 +62,12 @@ TEST_CASE("leaf token boundaries agree with tree-sitter-faust") {
     TSParser *parser = ts_parser_new();
     ts_parser_set_language(parser, tree_sitter_faust());
 
-    size_t files = 0, leaves = 0;
     std::vector<std::string> failures;
     for (const CorpusFile &f : WholeCorpus()) {
         Terms terms;
         if (!Parse(terms, f.Text).Diags.empty()) continue;
         const TsParse ts = RunTreeSitter(parser, f.Text);
         if (!ts.Accepted) continue;
-        ++files;
 
         std::vector<std::pair<uint32_t, uint32_t>> ours;
         for (const Token &t : Lex(f.Text).Tokens)
@@ -95,7 +80,6 @@ TEST_CASE("leaf token boundaries agree with tree-sitter-faust") {
             // Unmatched tree-sitter leaves are comments represented as lexer trivia.
             if (end <= ours[i].first) continue;
             const bool nested = (begin >= ours[i].first && end <= ours[i].second) || (begin <= ours[i].first && end >= ours[i].second);
-            ++leaves;
             if (!nested) {
                 failures.push_back(std::format("{}: ts leaf [{},{}) straddles our [{},{})", f.Relative, begin, end, ours[i].first, ours[i].second));
                 break;
@@ -105,6 +89,5 @@ TEST_CASE("leaf token boundaries agree with tree-sitter-faust") {
     ts_parser_delete(parser);
 
     for (const std::string &s : failures) MESSAGE(s);
-    MESSAGE("leaf boundaries over ", leaves, " leaves in ", files, " files");
     CHECK(failures.empty());
 }

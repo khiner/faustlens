@@ -107,82 +107,27 @@ std::expected<std::vector<std::string>, std::string> FlattenTheirs(const FirFile
     return std::unexpected("no `User Interface` section");
 }
 
-std::string FirstDifference(std::span<const std::string> ours, std::span<const std::string> theirs) {
-    for (size_t i = 0; i < std::max(ours.size(), theirs.size()); ++i) {
-        const std::string a = i < ours.size() ? ours[i] : "<end>";
-        const std::string b = i < theirs.size() ? theirs[i] : "<end>";
-        if (a != b) return "ours `" + a + "`, theirs `" + b + "`";
-    }
-    return "";
-}
-
 } // namespace
 
-TEST_CASE("UI completeness: the extracted tree matches the `.fir` User Interface section") {
-    int agreed = 0, differed = 0, widgets = 0;
-    Census census;
-
-    ForEachDump<FirFile>(".fir", ParseFir, census, differed, [&](const std::string &name, const FirFile &fir, Program &prog) {
-        const auto theirs = FlattenTheirs(fir);
-        if (!theirs) {
-            ++differed;
-            census.Add(theirs.error());
-            return;
-        }
-        widgets += int(prog.Prop.Ui.size());
-
-        // Compare widgets remaining after simplification.
+TEST_CASE("UI trees match the reference corpus") {
+    ForEachDump<FirFile>(".fir", ParseFir, [](const FirFile &reference, Program &program) {
+        const auto theirs = FlattenTheirs(reference);
+        REQUIRE_MESSAGE(theirs, (theirs ? "" : theirs.error()));
         std::vector<std::string> ours;
-        FlattenOurs(prog.Ui(RootLabel(prog.Session.Metadata)), ours);
-
-        const std::string diff = FirstDifference(ours, *theirs);
-        if (diff.empty()) {
-            ++agreed;
-            return;
-        }
-        ++differed;
-        const size_t sp = diff.find(' ');
-        const size_t sp2 = diff.find("`, theirs `");
-        const std::string key = diff.substr(0, sp2 == std::string::npos ? sp : sp2);
-        census.Add(key.substr(0, key.find(' ', 6)), name + " -- " + diff);
+        FlattenOurs(program.Ui(RootLabel(program.Session.Metadata)), ours);
+        CHECK(ours == *theirs);
     });
-
-    MESSAGE("UI tree: ", agreed, " of 94 agree, ", differed, " differ; ", widgets, " widgets propagated");
-    census.Report();
-
-    CHECK(agreed + differed == 94);
-    // Use declared names for roots, counters for unnamed bargraphs, and 0x00 for other unnamed nodes.
-    CHECK(agreed == 94);
 }
 
-TEST_CASE("a label path names exactly one control") {
-    int programs = 0, warned = 0;
-    std::vector<std::string> errors;
-    std::map<std::string, int> warnings;
-
-    for (const fs::path &p : DspPaths()) {
-        const std::string name = p.stem().string();
-        Program const prog(p);
-        if (!prog.Ok) continue;
-        ++programs;
-
-        bool any = false;
-        for (const Diagnostic &d : CheckPaths(prog.Ui(RootLabel(prog.Session.Metadata)))) {
-            if (d.Severity == Severity::Error) errors.push_back(name + ": " + d.Payload);
-            else {
-                ++warnings[name];
-                any = true;
-            }
-        }
-        warned += any;
+TEST_CASE("control paths are unique across the reference corpus") {
+    const auto paths = DspPaths();
+    REQUIRE(paths.size() == 94);
+    for (const auto &path : paths) {
+        INFO(path.string());
+        const Program program(path);
+        REQUIRE(program.Ok);
+        for (const auto &diagnostic : CheckPaths(program.Ui(RootLabel(program.Session.Metadata)))) FAIL_CHECK(diagnostic.Payload);
     }
-
-    MESSAGE("checked ", programs, " programs: ", errors.size(), " with a duplicate control path, ", warned, " with a repeated bargraph path");
-    for (const std::string &e : errors) MESSAGE("  ", e);
-    CHECK(errors.empty());
-
-    // Exercise unnamed bargraphs beyond corpus coverage.
-    CHECK(warnings.empty());
 }
 
 TEST_CASE("the three duplicate-path rules, stated apart") {

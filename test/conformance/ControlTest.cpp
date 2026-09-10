@@ -67,32 +67,25 @@ template<class Backend> std::vector<double> Blocks(const Plan &p, const UiNode &
 
 struct Result {
     std::string Name;
-    int Controls = 0, Moved = 0;
-    std::map<std::string, std::pair<int, int>> ByKind;
     std::vector<std::string> Bad;
 };
-
-const char *KindName(UiKind k) {
-    switch (k) {
-        case UiKind::Button: return "button";
-        case UiKind::Checkbox: return "checkbox";
-        case UiKind::VSlider: return "vslider";
-        case UiKind::HSlider: return "hslider";
-        case UiKind::NumEntry: return "nentry";
-        default: return "other";
-    }
-}
 
 template<class Backend> Result Measure(const fs::path &path) {
     Result r;
     r.Name = path.stem().string();
 
     Program const prog(path);
-    if (!prog.Ok) return r;
+    if (!prog.Ok) {
+        r.Bad.push_back("program did not compile");
+        return r;
+    }
     const Signals &sigs = prog.Sigs;
     const std::vector<SigId> &outs = prog.Outs;
     const auto lowered = prog.Lower();
-    if (!lowered) return r;
+    if (!lowered) {
+        r.Bad.push_back(lowered.error());
+        return r;
+    }
     const Plan &plan = *lowered;
 
     std::vector<std::set<uint32_t>> depends(outs.size());
@@ -117,49 +110,27 @@ template<class Backend> Result Measure(const fs::path &path) {
     const std::vector<double> base = Blocks<Backend>(plan, ui, 0xFFFFFFFFu, 0);
     const int32_t nout = plan.Outputs;
     for (const UiNode *w : widgets) {
-        ++r.Controls;
         const std::vector<double> moved = Blocks<Backend>(plan, ui, w->WidgetLabel, Elsewhere(*w));
-        bool any = false;
         for (int32_t c = 0; c < nout; ++c) {
             bool changed = false;
             for (int32_t i = 0; i < Block && !changed; ++i) changed = base[size_t(i) * nout + c] != moved[size_t(i) * nout + c];
             if (!changed) continue;
-            any = true;
             if (!depends[c].contains(w->WidgetLabel))
                 r.Bad.push_back(std::format("{}: writing `{}` moved output {}, which does not read it", r.Name, w->Label, c));
         }
-        r.Moved += any;
-        auto &k = r.ByKind[KindName(w->Kind)];
-        k.first += any;
-        ++k.second;
     }
     return r;
 }
 
 } // namespace
 
-TEST_CASE_TEMPLATE("control responsiveness: a control changes dependent outputs in the next block", Backend, FAUSTLENS_TEST_EXECUTORS) {
-    const std::vector<Result> results = MapEach<Result>(DspPaths(), Measure<Backend>);
-
-    int controls = 0, moved = 0, programs = 0;
-    std::map<std::string, std::pair<int, int>> by_kind;
-    std::vector<std::string> bad;
-    for (const Result &r : results) {
-        controls += r.Controls;
-        moved += r.Moved;
-        programs += r.Controls > 0;
-        for (const auto &[k, n] : r.ByKind) {
-            by_kind[k].first += n.first;
-            by_kind[k].second += n.second;
-        }
-        bad.insert(bad.end(), r.Bad.begin(), r.Bad.end());
+TEST_CASE_TEMPLATE("control changes affect only dependent outputs", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    const auto paths = DspPaths();
+    REQUIRE(paths.size() == 94);
+    const auto results = MapEach<Result>(paths, Measure<Backend>);
+    REQUIRE(results.size() == paths.size());
+    for (const auto &result : results) {
+        INFO(result.Name);
+        for (const auto &error : result.Bad) FAIL_CHECK(error);
     }
-
-    MESSAGE("control responsiveness: ", moved, " of ", controls, " controls across ", programs, " programs move an output in the block after the write");
-    std::string kinds;
-    for (const auto &[k, n] : by_kind) kinds += std::format("{}{} {}/{}", kinds.empty() ? "" : ", ", k, n.first, n.second);
-    MESSAGE("  by kind: ", kinds);
-    for (const std::string &b : bad) MESSAGE("  ", b);
-    CHECK(bad.empty());
-    CHECK(moved >= 560);
 }

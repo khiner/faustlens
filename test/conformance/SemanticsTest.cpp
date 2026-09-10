@@ -108,8 +108,7 @@ template<class Backend> std::string Run(const Probe &p, std::vector<std::vector<
 
 } // namespace
 
-TEST_CASE_TEMPLATE("pinned semantics, each probed against the rule rather than against the oracle", Backend, FAUSTLENS_TEST_EXECUTORS) {
-    int ok = 0;
+TEST_CASE_TEMPLATE("executors satisfy Faust semantic rules", Backend, FAUSTLENS_TEST_EXECUTORS) {
     for (const Probe &p : Probes()) {
         INFO(p.Clause);
         std::vector<std::vector<double>> got;
@@ -118,7 +117,6 @@ TEST_CASE_TEMPLATE("pinned semantics, each probed against the rule rather than a
             const bool rejected = why.find(p.Reject) != std::string::npos;
             if (!rejected) MESSAGE("  ", why.empty() ? std::string("compiled") : why);
             CHECK(rejected);
-            ok += rejected;
             continue;
         }
         if (!why.empty()) {
@@ -134,7 +132,5 @@ TEST_CASE_TEMPLATE("pinned semantics, each probed against the rule rather than a
                     matched = false;
                 }
         CHECK(matched);
-        ok += matched;
     }
-    MESSAGE("semantic probes: ", ok, " of ", Probes().size(), " meet the rule they pin");
 }

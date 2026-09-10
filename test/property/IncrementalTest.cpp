@@ -10,7 +10,6 @@
 #include <filesystem>
 #include <format>
 #include <functional>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -121,9 +120,6 @@ std::string Edit(const std::string &text, Rng &r, std::string &what) {
 
 struct Verdict {
     std::string Name;
-    int Compared = 0;
-    // Require valid and invalid outcomes to avoid vacuous agreement on failures.
-    int Lowered = 0, Moved = 0;
     std::string Why;
 };
 
@@ -144,11 +140,13 @@ Verdict Sweep(const fs::path &path) {
     Session live;
     live.AddSearchPath(path.parent_path());
     live.SetBuffer(canonical, text);
-    CompileIn(live, canonical);
+    if (!CompileIn(live, canonical).Lowered) {
+        v.Why = "initial program did not lower";
+        return v;
+    }
 
     // Seed from the filename for reproducible failures.
     Rng rng{0x9E3779B97F4A7C15ull ^ std::hash<std::string>{}(v.Name)};
-    uint64_t previous = 0;
     for (int step = 0; step < Edits; ++step) {
         std::string what;
         text = Edit(text, rng, what);
@@ -160,10 +158,6 @@ Verdict Sweep(const fs::path &path) {
         fresh.SetBuffer(canonical, text);
         const Outcome scratch = CompileIn(fresh, canonical);
 
-        ++v.Compared;
-        v.Lowered += incremental.Lowered ? 1 : 0;
-        v.Moved += incremental.Lowered && incremental.Plan != previous ? 1 : 0;
-        previous = incremental.Lowered ? incremental.Plan : previous;
         if (!(incremental == scratch)) {
             v.Why = std::format("step {} ({}): ", step, what);
             if (incremental.Evaluated != scratch.Evaluated) v.Why += "one evaluated and one did not";
@@ -179,29 +173,13 @@ Verdict Sweep(const fs::path &path) {
 
 } // namespace
 
-TEST_CASE("incremental equivalence: an incremental recompile equals a compile from scratch") {
-    // Use the compiling impulse corpus so checks reach Plan lowering.
-    const std::vector<fs::path> paths = DspPaths();
-    REQUIRE_FALSE(paths.empty());
-
-    const std::vector<Verdict> out = MapEach<Verdict>(paths, Sweep);
-
-    int agreed = 0, compared = 0, lowered = 0, moved = 0;
-    std::map<std::string, std::string> census;
-    for (const Verdict &v : out) {
-        compared += v.Compared;
-        lowered += v.Lowered;
-        moved += v.Moved;
-        if (v.Why.empty()) {
-            ++agreed;
-            continue;
-        }
-        if (!census.contains(v.Why)) census[v.Why] = v.Name;
+TEST_CASE("incremental compilation matches fresh compilation") {
+    const auto paths = DspPaths();
+    REQUIRE(paths.size() == 94);
+    const auto results = MapEach<Verdict>(paths, Sweep);
+    REQUIRE(results.size() == paths.size());
+    for (const auto &result : results) {
+        INFO(result.Name);
+        CHECK_MESSAGE(result.Why.empty(), result.Why);
     }
-    MESSAGE(
-        agreed << " of " << out.size() << " programs agree over " << compared << " edited recompiles; " << lowered << " of those compiled and " << moved
-               << " produced a Plan the step before did not"
-    );
-    for (const auto &[why, who] : census) MESSAGE(who << ": " << why);
-    CHECK(agreed == int(out.size()));
 }

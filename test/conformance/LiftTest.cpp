@@ -9,7 +9,6 @@
 
 #include <filesystem>
 #include <format>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -34,47 +33,24 @@ TEST_CASE("lifting requires every symbolic slot to have a visible binder") {
 
 TEST_CASE("the Box-to-Term lift: print it, read it back, and it is the same circuit") {
     namespace fs = std::filesystem;
-    size_t lifted = 0, declined = 0, round_tripped = 0;
-    std::vector<std::string> failures;
-    std::map<std::string, size_t> declines;
-
-    for (const fs::path &p : DspPaths()) {
-        Session s;
-        s.AddSearchPath(p.parent_path());
-        const std::string path = fs::weakly_canonical(p).string();
-        const BoxId box = s.Process(path);
-        if (s.Boxes.IsError(box)) continue;
-
-        const Lifted out = Lift(s.Terms, s.Boxes, box);
-        if (!out) {
-            ++declined;
-            declines[std::format("{}: {}", BoxKindName(s.Boxes.KindOf(out.At)), out.Declined)] += 1;
-            continue;
-        }
-        ++lifted;
-
-        const std::string text = "process = " + PrintTerm(s.Terms, out.Term) + ";\n";
-        const std::string echo = "/lift_test.dsp";
-        s.SetBuffer(echo, text);
-        const BoxId again = s.Process(echo);
-        if (s.Boxes.IsError(again)) {
-            failures.push_back(p.filename().string() + ": the lifted text does not compile");
-            continue;
-        }
-        // Compare isomorphism across fresh slot and side-table ids.
-        const BoxSide side{s.Boxes, s.Terms};
-        if (const auto same = Isomorphic(side, box, side, again); !same) {
-            failures.push_back(p.filename().string() + ": " + same.error() + "\n  " + text.substr(0, 300));
-            continue;
-        }
-        ++round_tripped;
+    const auto paths = DspPaths();
+    REQUIRE(paths.size() == 94);
+    for (const auto &path : paths) {
+        INFO(path.string());
+        Session session;
+        session.AddSearchPath(path.parent_path());
+        const auto box = session.Process(fs::weakly_canonical(path).string());
+        REQUIRE_FALSE(session.Boxes.IsError(box));
+        const auto lifted = Lift(session.Terms, session.Boxes, box);
+        REQUIRE_MESSAGE(lifted, lifted.Declined);
+        const auto text = "process = " + PrintTerm(session.Terms, lifted.Term) + ";\n";
+        session.SetBuffer("/lift_test.dsp", text);
+        const auto again = session.Process("/lift_test.dsp");
+        REQUIRE_FALSE(session.Boxes.IsError(again));
+        const BoxSide side{session.Boxes, session.Terms};
+        const auto same = Isomorphic(side, box, side, again);
+        CHECK_MESSAGE(same, (same ? "" : same.error()));
     }
-
-    for (const std::string &f : failures) MESSAGE(f);
-    for (const auto &[why, n] : declines) MESSAGE("declined, ", n, ": ", why);
-    MESSAGE("lifted ", lifted, " of ", lifted + declined, ", ", round_tripped, " back to the same box");
-    CHECK(failures.empty());
-    CHECK(lifted == round_tripped);
 }
 
 TEST_CASE("the lift takes the desugared spelling everywhere") {

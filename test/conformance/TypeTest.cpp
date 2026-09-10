@@ -6,12 +6,9 @@
 
 #include "doctest.h"
 
-#include <algorithm>
 #include <cmath>
 #include <filesystem>
-#include <format>
 #include <functional>
-#include <map>
 #include <set>
 #include <span>
 #include <sstream>
@@ -77,39 +74,31 @@ std::string Bound(double v) {
 
 std::string TripleOf(char nature, char variability, const Interval &i) { return std::string{nature, variability} + " " + Bound(i.Lo) + "," + Bound(i.Hi); }
 
-std::map<std::string, int> TheirTriples(const TypeFile &f) {
-    std::map<std::string, int> out;
+std::set<std::string> TheirTriples(const TypeFile &f) {
+    std::set<std::string> out;
     for (const TypeEntry &t : f.Types)
         Walk(t, [&](const TypeEntry &e) {
             if (e.Shape == TypeEntry::Shape::Tuplet) return;
-            ++out[std::string{e.Nature, e.Variability} + " " + Bound(e.Lo) + "," + Bound(e.Hi)];
+            out.insert(std::string{e.Nature, e.Variability} + " " + Bound(e.Lo) + "," + Bound(e.Hi));
         });
     return out;
 }
 
-std::map<std::string, int> OurTriples(const Signals &s, std::span<const SigId> roots) {
+std::set<std::string> OurTriples(const Signals &s, std::span<const SigId> roots) {
     const std::vector<Nature> nat = InferNatures(s);
     const std::vector<Variability> var = InferVariability(s);
     const std::vector<Interval> iv = InferIntervals(s);
-    std::map<std::string, int> out;
-    WalkOurs(s, roots, [&](SigId id) { ++out[TripleOf(NatureChar(nat[id]), VariabilityChar(var[id]), iv[id])]; });
+    std::set<std::string> out;
+    WalkOurs(s, roots, [&](SigId id) { out.insert(TripleOf(NatureChar(nat[id]), VariabilityChar(var[id]), iv[id])); });
     return out;
-}
-
-std::string Show(const std::set<std::string> &s) {
-    const std::string out = Join(s);
-    return out.empty() ? "-" : out;
 }
 
 } // namespace
 
 TEST_CASE("the `.type` reader is total over the reference corpus") {
     int files = 0;
-    size_t entries = 0;
     std::vector<std::string> failures;
     std::set<std::string> codes;
-    std::set<std::string> projected;
-    std::map<std::string, size_t> shapes;
 
     for (const fs::path &p : PathsIn(OracleDir(), ".type")) {
         const auto f = ParseType(ReadText(p));
@@ -118,125 +107,31 @@ TEST_CASE("the `.type` reader is total over the reference corpus") {
             continue;
         }
         ++files;
-        entries += f->Types.size();
         for (const TypeEntry &t : f->Types) {
-            projected.insert(TypeKey(t));
-            switch (t.Shape) {
-                case TypeEntry::Shape::Simple: ++shapes["simple"]; break;
-                case TypeEntry::Shape::Tuplet: ++shapes["tuplet"]; break;
-                case TypeEntry::Shape::Table: ++shapes["table"]; break;
-            }
             Walk(t, [&](const TypeEntry &n) { codes.insert(n.Code); });
         }
     }
 
     for (const std::string &f : failures) MESSAGE(f);
-    MESSAGE("`.type` read over ", files, " files, ", entries, " entries, ", projected.size(), " distinct under the projection");
-    for (const auto &[shape, n] : shapes) MESSAGE("  ", shape, ": ", n);
-    MESSAGE("  headers: ", Join(codes));
-
     CHECK(failures.empty());
     CHECK(files == 94);
 
     // Interpret two-letter headers as tuplets and ? as an undetermined dimension.
     const std::set<std::string> known = {
-        "BE",    "SE",
-        "SI",
-        "NBEV?", "NBEVN", "NBIVN", "NKCVN", "NKIV?", "NKIVN",
-        "NSCS?",
-        "NSCSN", "NSCVN", "NSES?", "NSESN", "NSEV?", "NSEVN",
-        "NSIS?",
-        "NSISN", "RBCVN", "RBESN", "RBEV?", "RBEVN", "RKCVN",
-        "RKIV?",
-        "RKIVN", "RSCSN", "RSCVN", "RSES?", "RSESN", "RSEV?",
-        "RSEVN",
-        "RSIS?", "RSISN", "RSIVN",
+        "BE",    "SE",    "SI",    "NBEV?", "NBEVN", "NBIVN", "NKCVN", "NKIV?", "NKIVN", "NSCS?", "NSCSN", "NSCVN", "NSES?", "NSESN", "NSEV?", "NSEVN", "NSIS?",
+        "NSISN", "RBCVN", "RBESN", "RBEV?", "RBEVN", "RKCVN", "RKIV?", "RKIVN", "RSCSN", "RSCVN", "RSES?", "RSESN", "RSEV?", "RSEVN", "RSIS?", "RSISN", "RSIVN",
     };
-    PinVocabulary("header", codes, known);
+    CheckVocabulary("header", codes, known);
 }
 
-// Compare distinct nature/variability pairs, excluding tuplet wrappers.
-TEST_CASE("`(nature, variability)` pairs agree per program") {
-    int agreed = 0, differed = 0;
-    std::set<std::string> ours_all, theirs_all;
-    Census census;
-
-    ForEachDump<TypeFile>(".type", ParseType, census, differed, [&](const std::string &name, const TypeFile &theirs, Program &prog) {
-        const std::set<std::string> mine = OurPairs(prog.Sigs, prog.Outs);
-        const std::set<std::string> yours = TheirPairs(theirs);
-        ours_all.insert(mine.begin(), mine.end());
-        theirs_all.insert(yours.begin(), yours.end());
-
-        if (mine == yours) {
-            ++agreed;
-            return;
-        }
-        ++differed;
-        std::string reason;
-        for (const std::string &q : mine)
-            if (!yours.contains(q)) reason += (reason.empty() ? "ours only: " : ", ") + q;
-        std::string missing;
-        for (const std::string &q : yours)
-            if (!mine.contains(q)) missing += (missing.empty() ? "theirs only: " : ", ") + q;
-        if (!missing.empty()) reason += (reason.empty() ? "" : "; ") + missing;
-        census.Add(reason, name + " -- ours " + Show(mine) + ", theirs " + Show(yours));
+TEST_CASE("nature and variability match the reference corpus") {
+    ForEachDump<TypeFile>(".type", ParseType, [](const TypeFile &reference, Program &program) {
+        CHECK(OurPairs(program.Sigs, program.Outs) == TheirPairs(reference));
     });
-
-    MESSAGE("`.type` pairs: ", agreed, " agree, ", differed, " differ");
-    MESSAGE("  ours: ", Show(ours_all));
-    MESSAGE("  theirs: ", Show(theirs_all));
-    census.Report();
-
-    CHECK(agreed + differed == 94);
-    CHECK(agreed == 94);
 }
 
-// Account for reference signal-list and output-wrapper entries.
-TEST_CASE("`.type` bounds agree per program") {
-    int agreed = 0, differed = 0, values = 0;
-    size_t theirs_total = 0, matched = 0;
-    Census census;
-
-    ForEachDump<TypeFile>(".type", ParseType, census, differed, [&](const std::string &name, const TypeFile &theirs, Program &prog) {
-        const std::map<std::string, int> mine = OurTriples(prog.Sigs, prog.Outs);
-        const std::map<std::string, int> yours = TheirTriples(theirs);
-        for (const auto &[q, n] : yours) {
-            theirs_total += n;
-            const auto it = mine.find(q);
-            matched += std::min(n, it == mine.end() ? 0 : it->second);
-        }
-
-        // Separate rule coverage from graph multiplicity.
-        bool same_values = mine.size() == yours.size();
-        for (const auto &[q, n] : mine)
-            if (!yours.contains(q)) same_values = false;
-        if (same_values) ++values;
-
-        if (mine == yours) {
-            ++agreed;
-            return;
-        }
-        ++differed;
-        // Report one program per distinct type difference.
-        std::string missing, extra;
-        for (const auto &[q, n] : yours) {
-            const auto it = mine.find(q);
-            if ((it == mine.end() ? 0 : it->second) < n && missing.empty()) missing = q;
-        }
-        for (const auto &[q, n] : mine) {
-            const auto it = yours.find(q);
-            if ((it == yours.end() ? 0 : it->second) < n && extra.empty()) extra = q;
-        }
-        census.Add(std::format("short of `{}`, over on `{}`", missing.empty() ? "-" : missing, extra.empty() ? "-" : extra), name);
+TEST_CASE("type bounds match the reference corpus") {
+    ForEachDump<TypeFile>(".type", ParseType, [](const TypeFile &reference, Program &program) {
+        CHECK(OurTriples(program.Sigs, program.Outs) == TheirTriples(reference));
     });
-
-    MESSAGE(
-        "`.type` bounds: ", values, " of 94 programs agree on which triples occur, ", agreed, " on how many of each; ", matched, " of ", theirs_total,
-        " reference entries matched"
-    );
-    census.Report();
-
-    CHECK(agreed + differed == 94);
-    CHECK(values == 94);
-    // Report unmatched node counts without asserting equality across different graph structures.
 }

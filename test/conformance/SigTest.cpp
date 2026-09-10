@@ -31,19 +31,19 @@ const std::set<std::string> &KnownOps() {
 
 bool IsProj(const std::string &s) { return s.starts_with("proj") && s.size() > 4 && s.find_first_not_of("0123456789", 4) == std::string::npos; }
 
-void Walk(const SigTerm &t, size_t defs, std::set<std::string> &ops, std::set<std::string> &names, std::string &bad) {
+void Walk(const SigTerm &t, size_t defs, std::set<std::string> &ops, std::string &bad) {
     switch (t.Kind) {
         case SigTerm::Kind::Id:
             if (!bad.empty()) return;
             if (t.I < 0 || size_t(t.I) >= defs) bad = std::format("ID_{} is out of range", t.I);
             return;
-        case SigTerm::Kind::Name: names.insert(t.Text); return;
+        case SigTerm::Kind::Name: return;
         case SigTerm::Kind::Op:
             if (!IsProj(t.Text)) ops.insert(t.Text);
             break;
         default: break;
     }
-    for (const SigTerm &a : t.Args) Walk(a, defs, ops, names, bad);
+    for (const SigTerm &a : t.Args) Walk(a, defs, ops, bad);
 }
 
 } // namespace
@@ -52,8 +52,8 @@ TEST_CASE("the `.sig` reader is total over the reference corpus") {
     REQUIRE_MESSAGE(fs::is_directory(OracleDir()), "run test/conformance/regenerate_oracle.sh first");
 
     std::vector<std::string> failures;
-    std::set<std::string> ops, names;
-    int files = 0, nodes = 0;
+    std::set<std::string> ops;
+    int files = 0;
 
     for (const fs::path &p : PathsIn(OracleDir(), ".sig")) {
         const std::string name = p.filename().string();
@@ -68,11 +68,10 @@ TEST_CASE("the `.sig` reader is total over the reference corpus") {
         if (f->Outputs.Args.empty()) failures.push_back(name + ": no outputs");
 
         std::string bad;
-        for (const SigTerm &d : f->Defs) Walk(d, f->Defs.size(), ops, names, bad);
-        Walk(f->Outputs, f->Defs.size(), ops, names, bad);
+        for (const SigTerm &d : f->Defs) Walk(d, f->Defs.size(), ops, bad);
+        Walk(f->Outputs, f->Defs.size(), ops, bad);
         if (!bad.empty()) failures.push_back(name + ": " + bad);
 
-        nodes += int(f->Defs.size());
         ++files;
     }
 
@@ -83,9 +82,6 @@ TEST_CASE("the `.sig` reader is total over the reference corpus") {
     std::vector<std::string> unknown;
     for (const std::string &o : ops)
         if (!KnownOps().contains(o)) unknown.push_back(o);
-    for (const std::string &u : unknown) MESSAGE("unpinned operation: ", u);
+    for (const std::string &u : unknown) MESSAGE("unrecognized operation: ", u);
     CHECK(unknown.empty());
-
-    MESSAGE("`.sig` read over ", files, " files, ", nodes, " nodes, ", ops.size(), " distinct operations");
-    for (const std::string &n : names) MESSAGE("foreign name: ", n);
 }

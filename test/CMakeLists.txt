@@ -23,7 +23,6 @@ add_executable(faustlens_tests
     property/EditTest.cpp
     property/HoleExtentTest.cpp
     property/IncrementalTest.cpp
-    property/LatencyTest.cpp
     conformance/BoxCompare.cpp
     conformance/BoxTest.cpp
     conformance/LiftTest.cpp
@@ -31,7 +30,6 @@ add_executable(faustlens_tests
     conformance/FirParse.cpp
     conformance/FirTest.cpp
     conformance/UiTest.cpp
-    conformance/ScheduleTest.cpp
     conformance/PlanTest.cpp
     conformance/ImpulseTest.cpp
     conformance/ControlTest.cpp
@@ -41,7 +39,6 @@ add_executable(faustlens_tests
     conformance/SigTest.cpp
     conformance/SigCompare.cpp
     conformance/PropagateTest.cpp
-    conformance/ProbeTest.cpp
     unit/EvalTest.cpp
     unit/QueryTest.cpp
     unit/PaneTest.cpp

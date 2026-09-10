@@ -29,9 +29,4 @@ struct TypeFile {
 // Return the offending line and reason on failure.
 std::expected<TypeFile, std::string> ParseType(std::string_view text);
 
-// Return a comparison key for nature, variability, bounds, and structure.
-std::string TypeKey(const TypeEntry &);
-
-std::string PrintTypeEntry(const TypeEntry &);
-
 } // namespace faustlens::test

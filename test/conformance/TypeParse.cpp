@@ -3,7 +3,6 @@
 #include "property/Corpus.h"
 
 #include <cctype>
-#include <cstdio>
 #include <cstdlib>
 #include <format>
 
@@ -93,13 +92,6 @@ bool Entry(Cursor &c, TypeEntry &t, bool nested) {
     return true;
 }
 
-std::string Num(double v) {
-    if (v == 0) return "0"; // normalize signed zero
-    char buf[40];
-    std::snprintf(buf, sizeof buf, "%.17g", v);
-    return buf;
-}
-
 } // namespace
 
 std::expected<TypeFile, std::string> ParseType(std::string_view text) {
@@ -139,39 +131,6 @@ std::expected<TypeFile, std::string> ParseType(std::string_view text) {
     });
     if (!lines_ok) return std::unexpected(std::move(why));
     if (out.Size >= 0 && size_t(out.Size) != out.Types.size()) return std::unexpected(std::format("Size says {} but read {}", out.Size, out.Types.size()));
-    return out;
-}
-
-std::string TypeKey(const TypeEntry &t) {
-    // Compare nature, variability, and bounds only.
-    std::string out;
-    out += t.Nature ? t.Nature : '_';
-    out += t.Variability ? t.Variability : '_';
-    out += "[" + Num(t.Lo) + "," + Num(t.Hi) + "]";
-    switch (t.Shape) {
-        case TypeEntry::Shape::Tuplet: out += "{"; break;
-        case TypeEntry::Shape::Table: out += "T("; break;
-        case TypeEntry::Shape::Simple: return out;
-    }
-    for (size_t i = 0; i < t.Members.size(); ++i) {
-        if (i) out += ",";
-        out += TypeKey(t.Members[i]);
-    }
-    out += t.Shape == TypeEntry::Shape::Tuplet ? "}" : ")";
-    return out;
-}
-
-std::string PrintTypeEntry(const TypeEntry &t) {
-    std::string out = std::format("{} interval({},{},{})", t.Code, Num(t.Lo), Num(t.Hi), t.Lsb);
-    if (t.Shape == TypeEntry::Shape::Table) return std::format("{}:Table({})", out, PrintTypeEntry(t.Members[0]));
-    if (t.Shape == TypeEntry::Shape::Tuplet) {
-        out += " : {";
-        for (size_t i = 0; i < t.Members.size(); ++i) {
-            if (i) out += ", ";
-            out += PrintTypeEntry(t.Members[i]);
-        }
-        out += "}";
-    }
     return out;
 }
 

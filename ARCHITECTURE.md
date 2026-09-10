@@ -270,14 +270,14 @@ The oracle covers 94 programs at five levels:
 
 | Output | Comparison |
 |---|---|
-| .box | Evaluated diagram isomorphism |
-| .sig | Signal graph structure and literals |
+| .box | Declared metadata, channel counts, and numerical behavior |
+| .nonorm.sig | Unnormalized signal graph structure and literals |
 | .type | Supported nature, variability, and interval projections |
-| .fir | Instructions, execution bands, state layout, and UI |
+| .fir | Reference parser and UI structure |
 | .ir | Reference impulse protocol and numerical tolerance |
 
 Regeneration uses the pinned reference compiler, explicit corpus search paths, and double precision.
-Tests retain recorded structural differences and check numerical results independently.
+Tests require every corpus program to compile and compare numerical results independently.
 Focused probes cover conversion, remainder, shifts, composition, routing, and index clamping.
 
 Editor properties check token coverage, print/parse consistency, identity splices, retained correspondence, and bounded full-program reparsing.

@@ -11,8 +11,8 @@
 
 namespace faustlens::test {
 
-// Return the first mismatched path and set diverged to its graph node.
-std::expected<void, std::string> SigIsomorphic(const Signals &, std::span<const SigId> ours, const SigFile &theirs, SigId *diverged = nullptr);
+// Return the first mismatched path.
+std::expected<void, std::string> SigIsomorphic(const Signals &, std::span<const SigId> ours, const SigFile &theirs);
 
 std::string PrintSig(const Signals &, SigId, int max_depth = 3);
 

@@ -34,9 +34,6 @@ constexpr double Tolerance = 2e-06;
 // Skip randomized-block comparison for bs because it depends on the reference rand sequence.
 bool ReadsBlockSize(const std::string &name) { return name == "bs"; }
 
-// The regenerated table.ir requires wrapping signed arithmetic in its fill loop.
-bool PinnedToShipped(const std::string &name) { return name == "table"; }
-
 struct HarnessSound : SoundfileReader {
     bool Read(const std::string &, uint32_t part, std::vector<std::vector<double>> &ch, int32_t &rate) override {
         ch.assign(2, std::vector<double>(4096));
@@ -144,29 +141,8 @@ Reference ReadReference(const fs::path &p, int32_t want_rows) {
 struct Verdict {
     std::string Name;
     std::string Why;
-    std::string Note;
     std::string Example;
-    bool Compared = false;
 };
-
-void WriteIr(const fs::path &dir, const std::string &name, const Response &r) {
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    std::ofstream out(dir / (name + ".ir"));
-    out << "number_of_inputs  : " << std::setw(3) << r.Inputs << "\n"
-        << "number_of_outputs : " << std::setw(3) << r.Outputs << "\n"
-        << "number_of_frames  : " << std::setw(6) << r.Frames << "\n";
-    char buf[32];
-    for (int32_t f = 0; f < r.Frames; ++f) {
-        std::snprintf(buf, sizeof buf, "%6d : ", f);
-        out << buf;
-        for (int32_t c = 0; c < r.Outputs; ++c) {
-            std::snprintf(buf, sizeof buf, " %8.6f", r.Rows[size_t(f) * r.Outputs + c]);
-            out << buf;
-        }
-        out << "\n";
-    }
-}
 
 Verdict Measure(const fs::path &path) {
     Verdict v;
@@ -204,16 +180,14 @@ Verdict Measure(const fs::path &path) {
         RunSection(again, again.ControlsOfKind(UiKind::Button), true, r);
     }
 
-    if (const char *dir = std::getenv("FAUSTLENS_IR_OUT")) WriteIr(dir, v.Name, r);
-
     const int32_t want = ReadsBlockSize(v.Name) ? Section : 2 * Section;
-    const fs::path from = PinnedToShipped(v.Name) ? ImpulseDir() / "reference" / (v.Name + ".ir") : OracleDir() / "ir" / (v.Name + ".ir");
+    // The generated table fill requires wrapping signed arithmetic; use the shipped reference trace.
+    const fs::path from = v.Name == "table" ? ImpulseDir() / "reference" / (v.Name + ".ir") : OracleDir() / "ir" / (v.Name + ".ir");
     const Reference ref = ReadReference(from, want);
     if (!ref.Ok) {
         v.Why = "no reference `.ir`";
         return v;
     }
-    v.Compared = true;
     if (ref.Inputs != r.Inputs || ref.Outputs != r.Outputs) {
         v.Why = "channel counts differ from the reference's";
         v.Example = std::format("{}: {}/{} against {}/{}", v.Name, r.Inputs, r.Outputs, ref.Inputs, ref.Outputs);
@@ -239,34 +213,25 @@ Verdict Measure(const fs::path &path) {
     }
 
     v.Why = differs;
-    if (v.Why.empty() && PinnedToShipped(v.Name)) v.Note = "matched against the shipped `.ir`: the regenerated one is miscompiled";
     return v;
 }
 
 } // namespace
 
-TEST_CASE("impulse responses: the interpreter against the reference's `.ir`") {
-    const std::vector<fs::path> paths = DspPaths();
-    const std::vector<Verdict> verdicts = MapEach<Verdict>(paths, Measure);
-
-    int matched = 0, compared = 0;
-    Census census;
-    std::vector<std::string> notes;
-    for (const Verdict &v : verdicts) {
-        compared += v.Compared;
-        if (!v.Note.empty()) notes.push_back(v.Name + ": " + v.Note);
-        if (v.Why.empty()) {
-            ++matched;
-            continue;
+TEST_CASE("source programs and reference diagrams match the reference impulse responses") {
+    for (bool diagrams : {false, true}) {
+        INFO(diagrams);
+        auto paths = DspPaths();
+        REQUIRE(paths.size() == 94);
+        if (diagrams)
+            for (auto &path : paths) path = OracleDir() / (path.stem().string() + ".box");
+        const auto verdicts = MapEach<Verdict>(paths, Measure);
+        REQUIRE(verdicts.size() == paths.size());
+        for (const Verdict &v : verdicts) {
+            INFO(v.Name, v.Example);
+            CHECK_MESSAGE(v.Why.empty(), v.Why);
         }
-        census.Add(v.Why, v.Example.empty() ? v.Name : v.Example);
     }
-
-    MESSAGE(".ir impulse parity: ", matched, " of ", paths.size(), " match the reference within 2e-06, over ", compared, " compared");
-    census.Report();
-    for (const std::string &n : notes) MESSAGE("  ", n);
-
-    CHECK(matched == 94);
 }
 
 #if defined(__APPLE__) && defined(__aarch64__)

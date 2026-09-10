@@ -9,11 +9,9 @@
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
-#include <format>
-#include <map>
-#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -44,103 +42,25 @@ struct Program : ProgramState, Graph {
     }
 };
 
-struct Census {
-    std::map<std::string, int> Counts;
-    std::map<std::string, std::string> Examples;
-
-    void Add(const std::string &reason, std::string witness = {}) {
-        ++Counts[reason];
-        if (!witness.empty() && !Examples.contains(reason)) Examples[reason] = std::move(witness);
-    }
-    void Report() const {
-        for (const auto &[reason, n] : Counts) MESSAGE("  ", n, "x ", reason);
-        for (const auto &[reason, e] : Examples) MESSAGE("  e.g. ", e);
-    }
-};
-
-// Return empty for missing or invalid dumps, counting parse failures as divergences.
-template<class File> using Parse = std::expected<File, std::string> (*)(std::string_view);
-
-template<class File> std::optional<File> ReadDump(const std::filesystem::path &dump, Parse<File> parse, Census &census, int &differed) {
-    if (!std::filesystem::is_regular_file(dump)) return std::nullopt;
-    auto out = parse(ReadText(dump));
-    if (out) return *std::move(out);
-    ++differed;
-    census.Add("the dump did not parse", std::move(out).error());
-    return std::nullopt;
-}
-
 template<class File, class Body>
-void ForEachDump(const char *suffix, Parse<File> parse, Census &census, int &differed, Body body, bool add_normal_form = true) {
-    for (const std::filesystem::path &p : DspPaths()) {
-        const std::string name = p.stem().string();
-        const std::optional<File> theirs = ReadDump<File>(OracleDir() / (name + suffix), parse, census, differed);
-        if (!theirs) continue;
-        Program prog(p, {}, add_normal_form);
-        if (!prog.Ok) {
-            ++differed;
-            census.Add("did not evaluate");
-            continue;
-        }
-        body(name, *theirs, prog);
+void ForEachDump(const char *suffix, std::expected<File, std::string> (*parse)(std::string_view), Body body, bool normalized = true) {
+    const auto paths = DspPaths();
+    REQUIRE(paths.size() == 94);
+    for (const auto &path : paths) {
+        const auto dump = OracleDir() / (path.stem().string() + suffix);
+        INFO(dump.string());
+        REQUIRE(std::filesystem::is_regular_file(dump));
+        const auto reference = parse(ReadText(dump));
+        REQUIRE_MESSAGE(reference, (reference ? "" : reference.error()));
+        Program program(path, {}, normalized);
+        REQUIRE(program.Ok);
+        body(*reference, program);
     }
 }
 
-template<class C> std::string Join(const C &items, const char *sep = " ") {
-    std::string out;
-    for (const auto &item : items) out += std::format("{}{}", out.empty() ? "" : sep, item);
-    return out;
-}
-
-inline std::string JoinCounts(const std::map<std::string, int> &counts, const char *sep = " ") {
-    std::string out;
-    for (const auto &[k, n] : counts) out += std::format("{}{}×{}", out.empty() ? "" : sep, k, n);
-    return out;
-}
-
-// Require both expected and observed names to match.
-inline void PinVocabulary(const char *what, const std::set<std::string> &seen, const std::set<std::string> &known) {
-    INFO(what);
-    std::vector<std::string> unknown;
-    for (const std::string &s : seen)
-        if (!known.contains(s)) unknown.push_back(s);
-    for (const std::string &s : unknown) MESSAGE("unpinned ", what, ": ", s);
-    CHECK(unknown.empty());
-    CHECK(seen.size() == known.size());
-}
-
-// Record association-order differences and whether they occur within feedback.
-struct Deferred {
-    const char *Name;
-    bool Feedback;
-};
-inline constexpr Deferred AssociationOrder[] = {
-    {"bells", false},
-    {"carre_volterra", true},
-    {"cubic_distortion", true},
-    {"freeverb", true},
-    {"gate_compressor", true},
-    {"grain3", false},
-    {"mixer", true},
-    {"modulations", false},
-    {"osc", false},
-    {"osci", false},
-    {"parametric_eq", true},
-    {"phaser_flanger", true},
-    {"smoothdelay", true},
-    {"spectral_tilt", true},
-    {"tester", false},
-    {"tester2", false},
-    {"thru_zero_flanger", false},
-    {"vcf_wah_pedals", true},
-    {"virtual_analog_oscillators", true},
-    {"zita_rev1", false},
-};
-
-inline const Deferred *Pinned(const std::string &name) {
-    for (const Deferred &d : AssociationOrder)
-        if (name == d.Name) return &d;
-    return nullptr;
+inline void CheckVocabulary(const char *label, const std::set<std::string> &seen, const std::set<std::string> &expected) {
+    INFO(label);
+    CHECK(seen == expected);
 }
 
 } // namespace faustlens::test
