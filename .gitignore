@@ -2,4 +2,5 @@ build/
 build-san/
 compile_commands.json
 .cache/
+__pycache__/
 .DS_Store

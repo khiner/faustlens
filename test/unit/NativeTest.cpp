@@ -82,6 +82,30 @@ template<class Backend, class R, class... A> void Foreign(void *fn) {
 
 } // namespace
 
+TEST_CASE_TEMPLATE("table generators restart when constants are recomputed", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    Fixture f("process(x) = rdtable(4, +(1)~_, int(x)%4), rdtable(4, +(0.5)~_, int(x)%4), +(1)~_;");
+    auto dsp = MakeExecutor<Backend>(f.Plan, f.Ui);
+    double input[] = {0, 1, 2, 3}, integers[4], reals[4], counter[4];
+    const double *in[] = {input};
+    double *out[] = {integers, reals, counter};
+    for (int repeat = 0; repeat < 3; ++repeat) {
+        dsp->Init(48000);
+        dsp->Compute(4, in, out);
+        for (int i = 0; i < 4; ++i) {
+            CHECK(integers[i] == i + 1);
+            CHECK(reals[i] == (i + 1) * 0.5);
+            CHECK(counter[i] == i + 1);
+        }
+        dsp->Constants(96000);
+        dsp->Compute(4, in, out);
+        for (int i = 0; i < 4; ++i) {
+            CHECK(integers[i] == i + 1);
+            CHECK(reals[i] == (i + 1) * 0.5);
+            CHECK(counter[i] == i + 5);
+        }
+    }
+}
+
 TEST_CASE_TEMPLATE("executors share control and lifecycle behavior", Backend, FAUSTLENS_TEST_EXECUTORS) {
     Fixture f("process = _ * hslider(\"gain\",0.5,0,1,0.01) : mem;");
     auto dsp = MakeExecutor<Backend>(f.Plan, f.Ui);

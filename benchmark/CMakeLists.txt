@@ -73,14 +73,29 @@ if(FAUSTLENS_LLVM_LIBRARY)
             BENCH_LIBRARY_DIR="${FAUSTLENS_FAUSTLIBRARIES}")
     endforeach()
     faustlens_sign_jit(faustlens_jit_native)
-    set_property(TARGET faustlens_jit_llvm APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Llvm.entitlements")
-    add_custom_command(TARGET faustlens_jit_llvm POST_BUILD
-        COMMAND /usr/bin/codesign --force --sign "${FAUSTLENS_SIGN_IDENTITY}" --options runtime
-                --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/Llvm.entitlements" "$<TARGET_FILE:faustlens_jit_llvm>"
-        VERBATIM)
     target_link_libraries(faustlens_jit_native PRIVATE faustlens_native)
-    target_link_libraries(faustlens_jit_llvm PRIVATE "${FAUSTLENS_LLVM_LIBRARY}")
+endif()
+
+add_executable(faustlens_source_native Source.cpp)
+target_link_libraries(faustlens_source_native PRIVATE faustlens_native)
+faustlens_sign_jit(faustlens_source_native)
+add_executable(faustlens_memory_native Memory.cpp)
+target_link_libraries(faustlens_memory_native PRIVATE faustlens_native)
+faustlens_sign_jit(faustlens_memory_native)
+
+if(FAUSTLENS_LLVM_LIBRARY)
+    add_executable(faustlens_source_llvm Source.cpp)
+    add_executable(faustlens_memory_llvm Memory.cpp)
     get_filename_component(LLVM_LIBRARY_DIR "${FAUSTLENS_LLVM_LIBRARY}" DIRECTORY)
-    set_target_properties(faustlens_jit_llvm PROPERTIES BUILD_RPATH "${LLVM_LIBRARY_DIR}")
-    target_compile_definitions(faustlens_jit_llvm PRIVATE BENCH_LLVM=1)
+    foreach(target faustlens_jit_llvm faustlens_source_llvm faustlens_memory_llvm)
+        target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/lib/faust/architecture")
+        target_compile_definitions(${target} PRIVATE BENCH_LLVM=1 BENCH_LIBRARY_DIR="${FAUSTLENS_FAUSTLIBRARIES}")
+        target_link_libraries(${target} PRIVATE "${FAUSTLENS_LLVM_LIBRARY}")
+        set_target_properties(${target} PROPERTIES BUILD_RPATH "${LLVM_LIBRARY_DIR}")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Llvm.entitlements")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND /usr/bin/codesign --force --sign "${FAUSTLENS_SIGN_IDENTITY}" --options runtime
+                    --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/Llvm.entitlements" "$<TARGET_FILE:${target}>"
+            VERBATIM)
+    endforeach()
 endif()

@@ -47,6 +47,7 @@ void Instance::Constants(double rate) {
     SampleRate = rate;
     for (uint32_t f = 0; f < Plan.Fields.size(); ++f) {
         const Field &fd = Plan.Fields[f];
+        if ((fd.Kind == FieldKind::Delay || fd.Kind == FieldKind::Perm) && InitWritesField[f]) std::ranges::fill(FieldState(f), Scalar{});
         if (fd.Kind != FieldKind::Table || fd.Desc == NoDesc) continue;
         const std::vector<double> &w = Plan.Waves[fd.Desc];
         for (uint32_t k = 0; k < fd.Extent && k < w.size(); ++k) {

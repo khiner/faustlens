@@ -28,7 +28,7 @@ Evaluation desugars Term into Box, then propagation constructs Signal.
 Analysis and lowering produce a Plan shared by both execution paths.
 The native backend compiles Plan instructions to an immutable ARM64 artifact, and the interpreter executes Plan instructions directly.
 Both use the same instance state, lifecycle, controls, and DSP state transfer.
-[NATIVE.md](NATIVE.md) defines the native execution contract and acceptance budgets.
+[README.md](README.md#execution-and-ownership) defines native execution and acceptance budgets.
 
 Equivalent terms share an interned id across files, while each source occurrence has its own ref and byte spans.
 Reparsing rebuilds per-file refs and tokens covering every source byte, including whitespace and comments.

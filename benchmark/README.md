@@ -1,8 +1,8 @@
-# Faust LLVM JIT comparison
+# Compiler benchmarks
 
 The optional JIT benchmarks compare FaustLens with the pinned Faust LLVM backend on Apple Silicon.
 The editor, standalone compiler, and runtime retain their existing dependencies.
-The C++ reference benchmarks and acceptance budgets are documented in [NATIVE.md](../NATIVE.md#benchmarks-and-acceptance-budgets).
+The C++ reference benchmarks and acceptance budgets are documented in [README.md](../README.md#benchmarks-and-acceptance-budgets).
 
 ## Build and run
 
@@ -29,13 +29,67 @@ python3 benchmark/check.py build/jit-reference.json
 Use `--jit-baseline build/jit-reference.json --output build/jit-current.json` to measure native performance with saved LLVM results.
 The runner checks source, reference binary, library, and measurement settings and records the reused report's date and hash.
 
-`FAUSTLENS_LLVM_LIBRARY` enables two standalone benchmark executables.
-Only `faustlens_jit_llvm` links libfaust and LLVM.
-Its benchmark-specific entitlement permits loading the separately built libraries.
-Both executables use Hardened Runtime and permit JIT execution.
+`FAUSTLENS_LLVM_LIBRARY` enables the LLVM comparison executables.
+Only the `_llvm` executables link libfaust and LLVM.
+Their benchmark-specific entitlement permits loading the separately built libraries.
+The native and LLVM executables use Hardened Runtime and permit JIT execution.
 LLVM 21 builds the pinned source without patches.
 
-## Measurement boundaries
+## Impulse corpus comparison
+
+See the [measured results](RESULTS.md) for the complete comparison.
+
+`corpus.py` compares FaustLens with LLVM scalar across all 94 programs in the pinned [Faust impulse corpus](../lib/faust/tests/impulse-tests/dsp).
+After configuring the build above:
+
+```sh
+cmake --build build --target faustlens_source_native faustlens_source_llvm \
+    faustlens_memory_native faustlens_memory_llvm -j 2
+python3 benchmark/corpus.py --llvm --output build/impulse-benchmark.json
+python3 benchmark/corpus.py --check build/impulse-benchmark.json
+```
+
+The JSON report and Markdown tables cover compilation, initialization, DSP execution at 64/256 frames, generated code size, and memory.
+Each program/backend has one fresh-process timing run, with memory and allocation probes in separate processes.
+Compilation measures loaded source through executable publication.
+Instance creation and initialization are timed separately.
+DSP uses binary64 at 48 kHz with the rendering batches and floating-point settings described below.
+Aggregate DSP ratios are geometric means with equal weight per program.
+DSP p95 is the maximum of nine batch-average timings.
+
+Every program must compile and produce finite output matching LLVM scalar over one second at each block size.
+The tolerance is `abs(actual - reference) <= 1e-10 * max(1, abs(reference))`.
+Inputs are deterministic, sliders and checkboxes use defaults, buttons remain at one, and soundfiles use synthetic sine data.
+The impulse conformance tests separately validate upstream inputs and button transitions.
+
+| Size or memory metric | Scope |
+|---|---|
+| Generated code | Instructions and constants, excluding metadata, unwind data, and allocation padding |
+| Peak memory | Whole-process peak through compilation or rendering |
+| Factory heap | Retained compiler data, excluding executable mappings |
+| Instance heap | Initialized state, controls, and sound fixtures |
+| Runtime resident memory | Initialized process, including libraries and allocator caches |
+| DSP allocations | Heap allocation calls during the first block and next 32 blocks at each block size |
+| Compiler/runtime executable + required libraries | On-disk stripped benchmark executable and non-system shared libraries |
+
+LLVM shared static tables are reported separately.
+Native tables occupy instance storage.
+
+Reuse saved LLVM timings and traces for subsequent native runs, or add footprint measurements without repeating timings:
+
+```sh
+python3 benchmark/corpus.py --llvm-baseline build/impulse-benchmark.json \
+    --output build/impulse-current.json
+python3 benchmark/corpus.py --footprint build/impulse-benchmark.json --output build/impulse-comparison.json
+```
+
+Keep the JSON report and adjacent `.traces` directory together.
+Reuse requires matching sources, libraries, hardware, OS, LLVM binaries, and measurement settings.
+Omit `--llvm` for native-only measurements.
+`--llvm-vector` also tests vector compilation.
+The pinned Faust backend rejects `osc_enable`, which requires scalar mode.
+
+## Twelve-program JIT measurement boundaries
 
 Both compilers receive identical source strings with the root file already loaded.
 FaustLens creates a fresh Session, lowers the source, emits ARM64, and publishes executable code.
@@ -66,7 +120,7 @@ Compilation/render measurements use one fresh process per program/backend/block 
 Creation and initialization each use eleven samples, including the first instance.
 Percentiles use the nearest-rank convention.
 
-## Execution settings and validation
+## JIT execution settings and validation
 
 The LLVM variants use binary64, scalar or 32-sample vector Faust output, and the maximum LLVM optimization setting.
 The report records the loaded Faust/LLVM version, detected target, effective Faust options, and binary/library hashes and sizes.

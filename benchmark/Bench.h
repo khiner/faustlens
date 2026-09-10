@@ -39,9 +39,9 @@ struct ReferenceOwner {
 struct Buffers {
     std::vector<std::vector<double>> In, Out;
     std::vector<double *> Ip, Op;
-    Buffers(int inputs, int outputs, int frames) : In(inputs, std::vector<double>(frames)), Out(outputs, std::vector<double>(frames)) {
+    Buffers(int inputs, int outputs, int frames, double offset = 0) : In(inputs, std::vector<double>(frames)), Out(outputs, std::vector<double>(frames)) {
         for (int c = 0; c < inputs; ++c) {
-            for (int j = 0; j < frames; ++j) In[c][j] = 0.125 * std::sin(0.017 * j + 0.13 * c) + 0.125 * (double(j % 17) / 16 - 0.5);
+            for (int j = 0; j < frames; ++j) In[c][j] = offset + 0.125 * std::sin(0.017 * j + 0.13 * c) + 0.125 * (double(j % 17) / 16 - 0.5);
             Ip.push_back(In[c].data());
         }
         for (auto &channel : Out) Op.push_back(channel.data());
@@ -89,8 +89,8 @@ struct Rendering {
     double Checksum = 0;
 };
 
-inline Rendering Render(Reference dsp, int block) {
-    Buffers data(dsp.Inputs, dsp.Outputs, block);
+inline Rendering Render(Reference dsp, int block, double inputOffset = 0) {
+    Buffers data(dsp.Inputs, dsp.Outputs, block, inputOffset);
     Rendering result;
     const auto compute = [&] { dsp.Compute(dsp.Object, block, data.Ip.data(), data.Op.data()); };
     const int blocks = std::max(32, (65536 + block - 1) / block);
