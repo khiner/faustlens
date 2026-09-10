@@ -61,7 +61,6 @@ void Interp::Specialize() {
 }
 
 void Interp::Prepare(Code &c, std::span<const Instr> src) {
-    // Specialization modifies the copied instructions.
     c.In.assign(src.begin(), src.end());
     c.Jump.assign(src.size(), 0);
     std::vector<uint32_t> open;
@@ -122,30 +121,7 @@ void Interp::Run(const Code &c, const double *const *in, double *const *out, int
             case OpByte(Op::BinOp): {
                 const BinOpCode b = BinOpCode(i.Form);
                 if (Registers.Types[a[0]] == Nature::Int) {
-                    const int32_t x = R[a[0]].I, y = R[a[1]].I;
-                    int32_t v = 0;
-                    switch (b) {
-                        case BinOpCode::Add: v = Wrap(uint32_t(x) + uint32_t(y)); break;
-                        case BinOpCode::Sub: v = Wrap(uint32_t(x) - uint32_t(y)); break;
-                        case BinOpCode::Mul: v = Wrap(uint32_t(x) * uint32_t(y)); break;
-                        // Preserve AArch64 results for exceptional integer division and remainder.
-                        case BinOpCode::Div: v = y == 0 ? 0 : (y == -1 ? Wrap(-uint32_t(x)) : x / y); break;
-                        case BinOpCode::Rem: v = y == 0 ? x : (y == -1 ? 0 : x % y); break;
-                        case BinOpCode::LeftShift: v = Wrap(uint32_t(x) << (uint32_t(y) & 31)); break;
-                        case BinOpCode::RightShift: v = x >> (uint32_t(y) & 31); break;
-                        case BinOpCode::LRightShift: v = Wrap(uint32_t(x) >> (uint32_t(y) & 31)); break;
-                        case BinOpCode::GT: v = x > y; break;
-                        case BinOpCode::LT: v = x < y; break;
-                        case BinOpCode::GE: v = x >= y; break;
-                        case BinOpCode::LE: v = x <= y; break;
-                        case BinOpCode::EQ: v = x == y; break;
-                        case BinOpCode::NE: v = x != y; break;
-                        case BinOpCode::AND: v = x & y; break;
-                        case BinOpCode::OR: v = x | y; break;
-                        case BinOpCode::XOR: v = x ^ y; break;
-                        default: break;
-                    }
-                    Write(i, v);
+                    Write(i, IntegerBinary(b, R[a[0]].I, R[a[1]].I));
                 } else {
                     const double x = R[a[0]].D, y = D(a[1]);
                     switch (b) {

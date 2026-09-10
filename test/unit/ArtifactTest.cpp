@@ -34,14 +34,16 @@ TEST_CASE("ARM64 artifacts preserve metadata and reject damaged files") {
 
 TEST_CASE("ARM64 artifact relocation ranges are validated before publication") {
     const auto program = Compile("process = sin(_) + fvariable(float host, \"host.h\");");
-    REQUIRE(program->Relocations.size() == 2);
+    REQUIRE_FALSE(program->Relocations.empty());
+    for (size_t k = 0; k < program->Relocations.size(); ++k) {
+        auto broken = *program;
+        broken.Relocations[k].Word = UINT32_MAX;
+        CHECK_FALSE(arm64::Program::Decode(broken.Encode()));
+        broken = *program;
+        broken.Relocations[k].End = 0;
+        CHECK_FALSE(arm64::Program::Decode(broken.Encode()));
+    }
     auto broken = *program;
-    broken.Relocations[0].Word = UINT32_MAX;
-    CHECK_FALSE(arm64::Program::Decode(broken.Encode()));
-    broken = *program;
-    broken.Relocations[0].End = 0;
-    CHECK_FALSE(arm64::Program::Decode(broken.Encode()));
-    broken = *program;
     broken.Entries[0] = uint32_t(broken.Words.size());
     CHECK_FALSE(arm64::Program::Decode(broken.Encode()));
 }
