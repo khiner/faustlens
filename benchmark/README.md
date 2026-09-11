@@ -149,3 +149,33 @@ Each program exposes the `gain` slider used by the control and edit checks.
 `check.py` verifies complete coverage, numerical accuracy, timing boundaries, and the native acceptance budgets.
 JIT speed ratios are measurements rather than pass/fail thresholds.
 Keep generated reports in the build directory.
+
+## Forward differentiation
+
+Build and run the forward differentiation benchmark in Release mode:
+
+```sh
+cmake --build build --target faustlens_differentiate
+python3 benchmark/differentiate.py --output build/differentiation.json
+python3 benchmark/differentiate.py --corpus --output build/differentiation-corpus.json
+```
+
+Each measurement runs in a fresh process and records executable/source hashes, compiler, flags, hardware, library revision, and worktree status.
+The DSP fixtures compare plain compilation, all control columns, and one weighted direction.
+`ad/filterbank.dsp` also measures 0, 1, 4, and 16 columns on the same sixteen-pole filter bank.
+`ad/mutable_table.dsp` exercises tangent writes and delayed reads.
+Controls keep their source defaults.
+Deterministic corpus inputs use a 0.25 offset to keep the math fixture within its real-valued domains.
+
+The report times normalization from source, differentiation, lowering/emission/publication, instance creation, initialization, and rendering separately.
+Rendering uses `Bench.h`: binary64 at 48 kHz, 64/256-frame blocks, 100 ms warm-up, and nine batches of at least 65,536 frames.
+The default floating-point environment includes gradual underflow.
+Results include instruction counts, code/state/persistent/scratch sizes, and node/child vector capacities.
+Peak process RSS also includes interning maps, strings, other compiler allocations, and validation instances.
+Reachable tangent nodes include shared primal coefficients; allocated tangent nodes measure arena growth.
+
+Each successful measurement verifies bitwise primal equality against a plain program and finite primal/tangent samples over one second.
+`--corpus` runs every pinned impulse program with per-control activity and absent/barrier/unsupported diagnostics.
+Analytic and finite-difference derivative checks are in [DifferentiateTest.cpp](../test/unit/DifferentiateTest.cpp).
+Unsupported transformations are reported, and build/runtime/validation failures produce a nonzero exit status.
+Nonfinite tangents with finite, unchanged primals report `invalid_derivative`, as with the spatializer's default square-root singularities.

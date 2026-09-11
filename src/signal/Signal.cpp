@@ -174,7 +174,13 @@ struct Merkler {
         const SigKind k = SigKind(n.Kind);
         uint64_t h = Mix(MerkleSeed, n.Kind);
         h = Mix(h, n.Form);
-        if (k == SigKind::Waveform) {
+        size_t ref = Free;
+        if ((k == SigKind::Prefix || k == SigKind::WRTbl) && n.Aux == 1) {
+            // Hash state origin content so allocation order does not affect identity.
+            const Hashed origin = Of(n.Payload);
+            h = Mix(Mix(h, n.Aux), origin.H);
+            ref = origin.Ref;
+        } else if (k == SigKind::Waveform) {
             // Hash waveform samples from the side table.
             for (const double v : S.WaveformAt(n.Aux)) h = Mix(h, BitsOf(v));
         } else if (IsLabelled(k) || k == SigKind::FConst || k == SigKind::FVar || k == SigKind::FFun) {
@@ -186,7 +192,6 @@ struct Merkler {
             h = Mix(h, n.Payload);
             h = Mix(h, n.Aux);
         }
-        size_t ref = Free;
         for (const SigId c : S.Children(id)) {
             Hashed ch;
             if (!BackEdge(c, ch)) ch = Of(c);

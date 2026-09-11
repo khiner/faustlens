@@ -157,7 +157,7 @@ struct Promoter {
 
             case SigKind::Prefix:
                 if (NatOf(kids[0]) == NatOf(kids[1])) return S.Rebuild(id, p);
-                return S.Make(SigKind::Prefix, {ToFloat(kids[0], p[0]), ToFloat(kids[1], p[1])});
+                return S.Rebuild(id, {ToFloat(kids[0], p[0]), ToFloat(kids[1], p[1])});
 
             case SigKind::Select2: {
                 const SigId sel = ToInt(kids[0], p[0]);
@@ -175,7 +175,7 @@ struct Promoter {
                 const Nature tg = NatOf(kids[1]), tw = NatOf(kids[3]);
                 SigId ws = p[3];
                 if (tg != tw) ws = tg == Nature::Real ? SimpFloatCast(S, ws) : SimpIntCast(S, ws);
-                return S.Make(SigKind::WRTbl, {p[0], p[1], ToInt(kids[2], p[2]), ws});
+                return S.Rebuild(id, {p[0], p[1], ToInt(kids[2], p[2]), ws});
             }
 
             case SigKind::SoundfileLength:
@@ -236,7 +236,7 @@ std::vector<SigId> ClampTables(Signals &s, std::span<const SigId> roots) {
             }
             case SigKind::WRTbl:
                 if (k.size() != 4) break;
-                return s.Make(SigKind::WRTbl, {k[0], k[1], Clamp(s, k[2], k[0], iv[s.Child(id, 2)]), k[3]});
+                return s.Rebuild(id, {k[0], k[1], Clamp(s, k[2], k[0], iv[s.Child(id, 2)]), k[3]});
             default: break;
         }
         return s.Rebuild(id, k);

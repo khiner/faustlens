@@ -97,6 +97,34 @@ Null input arrays or channels produce silence, and null output arrays or channel
 Channel pointers must remain stable during a call, with sample buffers separate from instance state.
 Both executors share the [instance lifecycle and DSP state transfer](ARCHITECTURE.md#runtime-and-reload).
 
+### Forward control derivatives
+
+`signal/Differentiate.h` computes control derivatives of normalized signal outputs.
+Select continuous controls by full label path and append the tangent roots before lowering:
+
+```cpp
+DifferentiateRequest request;
+request.Controls = {"gain"};
+auto derivative = Differentiate(signals, graph.Outs, request, graph.Prop.Ui);
+if (!derivative.Ok()) throw std::runtime_error(derivative.Error);
+graph.Outs.insert(graph.Outs.end(), derivative.Tangents.begin(), derivative.Tangents.end());
+auto plan = graph.Lower();
+```
+
+For M original outputs and D directions, tangent channels use index `M + output*D + direction`.
+Selected mode computes one column per control.
+For weighted directions, set `ExplicitDirections`, `DirectionCount`, and the row-major control-by-direction matrix `Directions`.
+Direction coefficients are compiled constants.
+Allocate output pointers for every primal and tangent channel, including channels discarded with null pointers.
+
+Initialize each independent evaluation, then set controls and hold them constant through warm-up and rendering.
+Initial state must be independent of the selected controls.
+Integer indices, selectors, and clocks retain their primal behavior and report derivative barriers.
+Unsupported operations, including active foreign functions and control-dependent initialization, return errors.
+Reject nonfinite primal or tangent samples at singularities.
+Requests provide construction limits, and zero directions preserve the graph and Plan.
+See the [derivative tests](test/unit/DifferentiateTest.cpp) for analytic checks and piecewise conventions, and [benchmark instructions](benchmark/README.md#forward-differentiation) for measurements.
+
 macOS executables require Hardened Runtime and the `allow-jit` entitlement to publish code.
 The build signs the editor, native tests, and benchmarks with `FAUSTLENS_SIGN_IDENTITY`, which defaults to ad hoc.
 See [Apple's JIT requirements](https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon).

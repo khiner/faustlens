@@ -60,6 +60,10 @@ add_executable(faustlens_compile Compile.cpp)
 target_link_libraries(faustlens_compile PRIVATE faustlens_native faustlens_interp)
 faustlens_sign_jit(faustlens_compile)
 
+add_executable(faustlens_differentiate Differentiate.cpp)
+target_link_libraries(faustlens_differentiate PRIVATE faustlens_native)
+faustlens_sign_jit(faustlens_differentiate)
+
 set(FAUSTLENS_LLVM_LIBRARY "" CACHE FILEPATH "Pinned libfaust with LLVM for JIT benchmarks")
 if(FAUSTLENS_LLVM_LIBRARY)
     if(NOT APPLE OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")

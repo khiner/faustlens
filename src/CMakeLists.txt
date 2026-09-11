@@ -60,6 +60,7 @@ target_link_libraries(faustlens_eval PUBLIC faustlens_syntax faustlens_files)
 
 add_library(faustlens_signal
     signal/Signal.cpp
+    signal/Differentiate.cpp
     signal/Simplify.cpp
     signal/Promote.cpp
     signal/Interval.cpp

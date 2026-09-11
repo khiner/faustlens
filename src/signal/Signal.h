@@ -25,7 +25,7 @@ enum class SigKind : uint8_t {
 
     Delay1,
     Delay, // x, n
-    Prefix,
+    Prefix, // Optional state tag: aux=1, payload=original state SigId.
 
     IntCast,
     FloatCast,
@@ -33,7 +33,7 @@ enum class SigKind : uint8_t {
     Select2, // selector, then the two branches
     Select3,
 
-    WRTbl, // size, generator [, write index, write signal]
+    WRTbl, // size, generator [, write index, write signal]; optional state tag as for Prefix
     RDTbl, // table, index
     Gen,
 
@@ -115,6 +115,9 @@ enum class Ext : uint8_t {
 
 std::string_view ExtName(Ext);
 
+// Prefix/WRTbl state tags keep histories distinct when transformed values coincide.
+// They affect interning and content/shape hashes without adding runtime dependencies.
+// Origin nodes must remain in the same arena; hashes follow their content.
 using SigNode = ArenaNode;
 
 struct Signals : Arena<Signals, SigKind, SigId> {
