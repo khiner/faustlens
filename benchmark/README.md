@@ -1,7 +1,7 @@
 # Compiler benchmarks
 
 The optional JIT benchmarks compare FaustLens with the pinned Faust LLVM backend on Apple Silicon.
-The editor, standalone compiler, and runtime retain their existing dependencies.
+Live-reload measurements are maintained in [FaustEditor](../../FaustEditor/README.md#validation).
 The C++ reference benchmarks and acceptance budgets are documented in [README.md](../README.md#benchmarks-and-acceptance-budgets).
 
 ## Build and run
@@ -11,7 +11,8 @@ Build the pinned Faust library with LLVM 21:
 
 ```sh
 brew install llvm@21
-cmake -S lib/faust/build -B build/faust-llvm -G Ninja \
+cmake -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ -S lib/faust/build -B build/faust-llvm -G Ninja \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_CONFIG="$(brew --prefix llvm@21)/bin/llvm-config" \
     -DINCLUDE_LLVM=ON -DLLVM_BACKEND=DYNAMIC -DLINK_LLVM_STATIC=OFF \
@@ -19,7 +20,8 @@ cmake -S lib/faust/build -B build/faust-llvm -G Ninja \
     -DINCLUDE_OSC=OFF -DINCLUDE_HTTP=OFF \
     -DINCLUDE_EMCC=OFF -DINCLUDE_WASM_GLUE=OFF
 cmake --build build/faust-llvm --target dynamiclib
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFAUSTLENS_BENCHMARKS=ON \
+cmake -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ -S . -B build -DCMAKE_BUILD_TYPE=Release -DFAUSTLENS_BENCHMARKS=ON \
     -DFAUSTLENS_LLVM_LIBRARY="$PWD/lib/faust/build/lib/libfaust.dylib"
 cmake --build build
 python3 benchmark/run.py --jit --output build/jit-reference.json
@@ -36,8 +38,6 @@ The native and LLVM executables use Hardened Runtime and permit JIT execution.
 LLVM 21 builds the pinned source without patches.
 
 ## Impulse corpus comparison
-
-See the [measured results](RESULTS.md) for the complete comparison.
 
 `corpus.py` compares FaustLens with LLVM scalar across all 94 programs in the pinned [Faust impulse corpus](../lib/faust/tests/impulse-tests/dsp).
 After configuring the build above:
@@ -137,7 +137,7 @@ The throughput measurements include the public runtime calls and common function
 
 The twelve programs cover gain, delay, table access, oscillation, filtering, feedback, arithmetic chains, reverb, and per-sample math calls.
 Programs in `dsp/` are included automatically.
-Each program exposes the `gain` slider used by the control and edit checks.
+Each program exposes the `gain` slider used by the control checks.
 
 | Math workload | Behavior | Calls per sample |
 |---|---|---:|

@@ -12,7 +12,7 @@ set(GENERATED "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${GENERATED}")
 add_executable(faustlens_benchmark Main.cpp)
 add_library(faustlens_references STATIC)
-target_link_libraries(faustlens_benchmark PRIVATE faustlens_app faustlens_references)
+target_link_libraries(faustlens_benchmark PRIVATE faustlens_native faustlens_interp faustlens_references)
 target_include_directories(faustlens_references PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}" "${GENERATED}" "${CMAKE_SOURCE_DIR}/lib/faust/architecture")
 target_compile_options(faustlens_references PUBLIC -O3 -ffp-contract=off -fno-fast-math)

@@ -16,7 +16,6 @@ option(FAUSTLENS_TESTS "Build the test binaries" ${PROJECT_IS_TOP_LEVEL})
 
 option(FAUSTLENS_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
-option(FAUSTLENS_GUI "Build the SDL3 + Dear ImGui front end" ${PROJECT_IS_TOP_LEVEL})
 option(FAUSTLENS_CLI "Build the standalone ARM64 compiler" ${PROJECT_IS_TOP_LEVEL})
 option(FAUSTLENS_BENCHMARKS "Build DSP benchmarks against the pinned Faust compiler" OFF)
 
@@ -35,35 +34,14 @@ if(NOT EXISTS "${FAUSTLENS_FAUSTLIBRARIES}/stdfaust.lib")
         "  git -C lib/faust submodule update --init libraries")
 endif()
 
-if(FAUSTLENS_GUI OR FAUSTLENS_TESTS OR FAUSTLENS_BENCHMARKS)
+if(FAUSTLENS_TESTS OR FAUSTLENS_BENCHMARKS)
     enable_language(C)
-endif()
-
-if(FAUSTLENS_GUI)
-    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-    set(SDL_STATIC ON CACHE BOOL "" FORCE)
-    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-    add_subdirectory(lib/sdl3 EXCLUDE_FROM_ALL)
-
-    add_library(imgui STATIC
-        lib/imgui/imgui.cpp
-        lib/imgui/imgui_draw.cpp
-        lib/imgui/imgui_tables.cpp
-        lib/imgui/imgui_widgets.cpp
-        lib/imgui/misc/cpp/imgui_stdlib.cpp
-        lib/imgui/backends/imgui_impl_sdl3.cpp
-        lib/imgui/backends/imgui_impl_sdlgpu3.cpp)
-    target_include_directories(imgui PUBLIC lib/imgui lib/imgui/backends)
-    target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 endif()
 
 include(cmake/Jit.cmake)
 
 add_subdirectory(src EXCLUDE_FROM_ALL)
 add_subdirectory(cli)
-if(FAUSTLENS_GUI OR FAUSTLENS_TESTS OR FAUSTLENS_BENCHMARKS)
-    add_subdirectory(app)
-endif()
 
 if(FAUSTLENS_TESTS)
     enable_testing()

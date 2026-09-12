@@ -1,4 +1,4 @@
-#include "Live.h"
+#include "runtime/Float.h"
 #include "conformance/Sweep.h"
 #include "runtime/Executors.h"
 
@@ -384,7 +384,7 @@ TEST_CASE("native arithmetic agrees at full precision under repeated blocks and 
     for (int rounding : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO})
         for (bool flush : {false, true}) {
             std::fesetenv(FE_DFL_ENV);
-            if (flush) audio::EnableFlushToZero();
+            if (flush) EnableFlushToZero();
             std::fesetround(rounding);
             INFO(rounding, flush);
             const char *sources[] = {
@@ -528,7 +528,7 @@ TEST_CASE("native constants preserve exact bits across immediate encodings and s
             for (bool flush : {false, true}) {
                 std::fesetenv(FE_DFL_ENV);
                 std::fesetround(rounding);
-                if (flush) audio::EnableFlushToZero();
+                if (flush) EnableFlushToZero();
                 native->Init(48000);
                 native->Compute(2, nullptr, pointers.data());
                 for (size_t r = 0; r < bits.size(); ++r)
@@ -649,7 +649,7 @@ TEST_CASE("native scaled integer conversions preserve boundaries and shared prod
             for (int rounding : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO})
                 for (bool flush : {false, true}) {
                     std::fesetenv(FE_DFL_ENV);
-                    if (flush) audio::EnableFlushToZero();
+                    if (flush) EnableFlushToZero();
                     std::fesetround(rounding);
                     INFO(scale, shared, rounding, flush);
                     a->Init(48000);
@@ -1170,45 +1170,6 @@ TEST_CASE("native loop allocation retains values defined before a loop") {
     native->Compute(3, nullptr, outB);
     for (int k = 0; k < 3; ++k) CHECK(Same(a[k], b[k]));
     for (size_t k = 0; k < interp->State.size(); ++k) CHECK(Same(interp->State[k].D, native->State[k].D));
-}
-
-TEST_CASE("native code survives callback publication and retires with its artifact") {
-    Session s;
-    app::Live live;
-    s.SetBuffer("/n.dsp", "process=(+ : *(0.9)) ~ _;");
-    REQUIRE(live.Reload(s, "/n.dsp").Compiled);
-    auto &host = live.Host;
-    host.Chunk = 16;
-    host.DeviceIn = host.DeviceOut = 1;
-    host.SampleRate = 1000;
-    host.Current = host.MakeVoice(*live.Current->Dsp).release();
-    host.Running = true;
-    float input[16] = {1}, out[16]{};
-    host.Process(input, out, 4);
-    std::weak_ptr<app::Artifact> old = live.Current;
-    for (int generation = 0; generation < 8; ++generation) {
-        s.SetBuffer("/n.dsp", std::format("process=(+ : *({})) ~ _;", 0.8 - 0.01 * generation));
-        const Backend backend = generation % 3 == 2 ? Backend::Interp : Backend::Native;
-        auto prepared = app::Live::Build(s, "/n.dsp", live.Current, {}, 1000, live.Sound, backend);
-        REQUIRE(prepared.Next);
-        CHECK(prepared.Next->Execution == backend);
-        host.Process(nullptr, out, 4);
-        const double before = out[3];
-        REQUIRE(live.Accept(prepared).Swapped);
-        CHECK_FALSE(old.expired());
-        std::thread callback([&] { host.Process(nullptr, out, 6); });
-        callback.join();
-        CHECK(out[5] == doctest::Approx(before * std::pow(0.8 - 0.01 * generation, 6)).epsilon(1e-6));
-        prepared.Base.reset();
-        auto garbage = live.Collect();
-        REQUIRE(garbage.size() == 1);
-        CHECK_FALSE(old.expired());
-        garbage.clear();
-        CHECK(old.expired());
-        old = live.Current;
-    }
-    host.Stop();
-    live.Collect();
 }
 
 TEST_CASE("native publication preserves code executing on another thread") {

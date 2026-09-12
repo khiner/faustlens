@@ -97,6 +97,26 @@ TEST_CASE("a failed resolution is retried when the file appears") {
     CHECK(found->Text == "x = 1;\n");
 }
 
+TEST_CASE("buffer-only imports preserve registered paths and exclude disk files") {
+    const TempDir dir{"faustlens_vfs_buffers"};
+    const auto disk{dir.Write("disk.lib", "x=1;")};
+    Vfs vfs;
+    vfs.AllowDiskReads = false;
+    vfs.AddSearchPath(dir.Path);
+    CHECK_FALSE(vfs.Resolve("disk.lib", ""));
+    CHECK_FALSE(vfs.Read(disk.string()));
+    vfs.SetBuffer((dir.Path / "buffer.lib").string(), "x=2;");
+    for (const auto &importer : {std::string{}, (dir.Path / "main.dsp").string()}) {
+        const auto resolved{vfs.Resolve("sub/../buffer.lib", importer)};
+        REQUIRE(resolved);
+        CHECK(resolved->Key == (dir.Path / "buffer.lib").string());
+        CHECK(resolved->Text == "x=2;");
+    }
+    vfs.SetBuffer("sub/../buffer.lib", "x=3;");
+    CHECK(vfs.Resolve("sub/../buffer.lib", "")->Key == "sub/../buffer.lib");
+    CHECK(vfs.Resolve("stdfaust.lib", "")->Origin == Origin::EmbeddedStdlib);
+}
+
 TEST_CASE("ejecting writes an embedded library into the workspace") {
     const TempDir workspace("faustlens_vfs_eject");
     Vfs vfs;

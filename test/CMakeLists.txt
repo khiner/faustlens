@@ -9,14 +9,12 @@ add_executable(faustlens_tests
     unit/ParserTest.cpp
     unit/PrinterTest.cpp
     unit/SpliceTest.cpp
+    unit/ExpandTest.cpp
+    unit/OriginsTest.cpp
     unit/CatalogueTest.cpp
     unit/VfsTest.cpp
     unit/MdocTest.cpp
     unit/ConstructsTest.cpp
-    unit/SelectTest.cpp
-    unit/EditsTest.cpp
-    unit/ExpandTest.cpp
-    unit/TraceTest.cpp
     property/Corpus.cpp
     property/Retentive.cpp
     property/CorpusTest.cpp
@@ -41,35 +39,18 @@ add_executable(faustlens_tests
     conformance/PropagateTest.cpp
     unit/EvalTest.cpp
     unit/QueryTest.cpp
-    unit/PaneTest.cpp
-    unit/LayoutTest.cpp
-    unit/AudioTest.cpp
-    unit/ControlsTest.cpp
-    unit/StoreTest.cpp
-    unit/WorkspaceTest.cpp
-    unit/CompilerTest.cpp
-    unit/TextTest.cpp
     unit/MigrateTest.cpp
-    unit/ReloadTest.cpp
     unit/NativeTest.cpp
     unit/DifferentiateTest.cpp
     unit/ArtifactTest.cpp)
-target_link_libraries(faustlens_tests PRIVATE faustlens faustlens_app doctest)
+target_link_libraries(faustlens_tests PRIVATE faustlens doctest)
 target_include_directories(faustlens_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(faustlens_tests PRIVATE
     FAUSTLENS_FAUST_DIR="${FAUST_DIR}"
-    FAUSTLENS_BUILD_DIR="${CMAKE_BINARY_DIR}"
-    # Use the miniaudio test asset for soundfile decoding checks.
-    FAUSTLENS_MINIAUDIO_DIR="${CMAKE_SOURCE_DIR}/lib/miniaudio")
+    FAUSTLENS_BUILD_DIR="${CMAKE_BINARY_DIR}")
 
 faustlens_sign_jit(faustlens_tests)
 add_test(NAME unit COMMAND faustlens_tests)
-
-if(FAUSTLENS_GUI)
-    add_executable(faustlens_widget_tests main.cpp unit/TextWidgetTest.cpp ../app/editor/Draw.cpp)
-    target_link_libraries(faustlens_widget_tests PRIVATE faustlens_app imgui doctest)
-    add_test(NAME widget COMMAND faustlens_widget_tests)
-endif()
 
 set(TS_DIR "${CMAKE_SOURCE_DIR}/lib/tree-sitter")
 set(TSF_DIR "${CMAKE_SOURCE_DIR}/lib/tree-sitter-faust")

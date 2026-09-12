@@ -34,17 +34,15 @@ constexpr double Tolerance = 2e-06;
 // Skip randomized-block comparison for bs because it depends on the reference rand sequence.
 bool ReadsBlockSize(const std::string &name) { return name == "bs"; }
 
-struct HarnessSound : SoundfileReader {
-    bool Read(const std::string &, uint32_t part, std::vector<std::vector<double>> &ch, int32_t &rate) override {
-        ch.assign(2, std::vector<double>(4096));
-        for (int32_t s = 0; s < 4096; ++s) {
-            const double v = std::sin(part + (2 * M_PI * double(s) / 4096.0));
-            ch[0][s] = ch[1][s] = v;
-        }
-        rate = 44100;
-        return true;
+bool ReadHarnessSound(void *, const std::string &, uint32_t part, std::vector<std::vector<double>> &ch, int32_t &rate) {
+    ch.assign(2, std::vector<double>(4096));
+    for (int32_t s = 0; s < 4096; ++s) {
+        const double v = std::sin(part + (2 * M_PI * double(s) / 4096.0));
+        ch[0][s] = ch[1][s] = v;
     }
-};
+    rate = 44100;
+    return true;
+}
 
 bool Print(double v, double &out) {
     if (std::isnan(v) || std::isinf(v)) return false;
@@ -163,7 +161,7 @@ Verdict Measure(const fs::path &path) {
 
     const UiNode ui = prog.Ui(v.Name);
 
-    HarnessSound sound;
+    SoundfileReader sound{nullptr, ReadHarnessSound};
     Interp dsp(plan, ui);
     dsp.LoadSoundfiles(&sound);
     dsp.Init(44100);
@@ -256,7 +254,7 @@ TEST_CASE("native corpus responses and final state match the interpreter at full
         REQUIRE(code);
         auto interp = MakeExecutor<Interp>(*plan, ui);
         auto native = Native::Create(*code);
-        HarnessSound sound;
+        SoundfileReader sound{nullptr, ReadHarnessSound};
         interp->LoadSoundfiles(&sound);
         native->LoadSoundfiles(&sound);
         for (bool split : {false, true}) {

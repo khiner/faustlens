@@ -10,13 +10,3 @@
 [submodule "lib/tree-sitter-faust"]
 	path = lib/tree-sitter-faust
 	url = https://github.com/khiner/tree-sitter-faust.git
-[submodule "lib/imgui"]
-	path = lib/imgui
-	url = https://github.com/ocornut/imgui.git
-	branch = docking
-[submodule "lib/sdl3"]
-	path = lib/sdl3
-	url = https://github.com/libsdl-org/SDL.git
-[submodule "lib/miniaudio"]
-	path = lib/miniaudio
-	url = https://github.com/mackron/miniaudio.git

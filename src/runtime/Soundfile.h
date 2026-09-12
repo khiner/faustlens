@@ -22,9 +22,9 @@ struct Soundfile {
 };
 
 struct SoundfileReader {
-    virtual ~SoundfileReader() = default;
-    // Return false to substitute silence for a part.
-    virtual bool Read(const std::string &url, uint32_t part, std::vector<std::vector<double>> &channels, int32_t &rate) = 0;
+    void *Context{nullptr};
+    // Return false to substitute silence for a part; the context remains caller-owned.
+    bool (*Read)(void *, const std::string &url, uint32_t part, std::vector<std::vector<double>> &channels, int32_t &rate){nullptr};
 };
 
 // Return a non-null soundfile, using silent defaults when decoding fails.

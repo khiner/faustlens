@@ -25,6 +25,7 @@ void Vfs::ClearBuffer(const std::string &path) { Buffers.erase(path); }
 void Vfs::AddSearchPath(std::filesystem::path p) { SearchPaths.push_back(std::move(p)); }
 
 std::optional<Resolved> Vfs::TryDisk(const std::filesystem::path &p) const {
+    if (!AllowDiskReads) return std::nullopt;
     std::error_code ec;
     if (!std::filesystem::is_regular_file(p, ec)) return std::nullopt;
     const std::string key = std::filesystem::weakly_canonical(p, ec).string();
@@ -37,10 +38,11 @@ std::optional<Resolved> Vfs::TryDisk(const std::filesystem::path &p) const {
 
 std::optional<Resolved> Vfs::Resolve(std::string_view spec, std::string_view importing_file) const {
     const std::string s(spec);
-    const auto buffered = [this](std::string key) -> std::optional<Resolved> {
-        const auto it = Buffers.find(key);
+    const auto buffered = [this](const std::string &key) -> std::optional<Resolved> {
+        auto it{Buffers.find(key)};
+        if (it == Buffers.end()) it = Buffers.find(std::filesystem::path(key).lexically_normal().string());
         if (it == Buffers.end()) return std::nullopt;
-        return Resolved{std::move(key), Origin::Buffer, it->second};
+        return Resolved{it->first, Origin::Buffer, it->second};
     };
 
     if (auto r = buffered(s)) return r;

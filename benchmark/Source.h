@@ -80,15 +80,13 @@ struct Dsp {
     }
 };
 #else
-struct Reader : faustlens::SoundfileReader {
-    bool Read(const std::string &, uint32_t part, std::vector<std::vector<double>> &channels, int32_t &rate) override {
-        channels.assign(2, std::vector<double>(SoundFrames));
-        rate = SampleRate;
-        for (auto &channel : channels)
-            for (int i = 0; i < SoundFrames; ++i) channel[i] = SoundSample(part, i);
-        return true;
-    }
-};
+inline bool ReadSound(void *, const std::string &, uint32_t part, std::vector<std::vector<double>> &channels, int32_t &rate) {
+    channels.assign(2, std::vector<double>(SoundFrames));
+    rate = SampleRate;
+    for (auto &channel : channels)
+        for (int i{0}; i < SoundFrames; ++i) channel[i] = SoundSample(part, i);
+    return true;
+}
 #endif
 
 struct Compilation {
@@ -103,55 +101,54 @@ struct Compilation {
 };
 
 inline Compilation Compile(const std::filesystem::path &path, const std::string &source, const std::string &backend) {
-    const std::string name = path.stem().string(), directory = path.parent_path().string();
+    const std::string directory{path.parent_path().string()};
     Compilation result;
-    {
 #ifdef BENCH_LLVM
-        if (backend != "llvm-scalar" && backend != "llvm-vector") throw std::runtime_error("expected LLVM backend");
-        if (setenv("FAUST_OPT", "FAUST_LLVM_NO_FM", 1)) throw std::runtime_error("cannot disable Faust LLVM fast math");
-        if (!getAllDSPFactories().empty()) throw std::runtime_error("expected an empty factory cache");
-        const char *args[] = {"-double", backend == "llvm-vector" ? "-vec" : "-scal", "-vs", "32", "-I", directory.c_str(), "-I", BENCH_LIBRARY_DIR};
-        std::string error;
-        const auto start = Clock::now();
-        std::unique_ptr<llvm_dsp_factory, decltype(&deleteDSPFactory)> factory(
-            createDSPFactoryFromString(name, source, 8, args, "", error, -1), deleteDSPFactory
-        );
-        result.Elapsed = Ms(start);
-        if (!factory) throw std::runtime_error(error.empty() ? "LLVM compilation failed" : error);
-        result.Code = std::move(factory);
+    const std::string name{path.stem().string()};
+    if (backend != "llvm-scalar" && backend != "llvm-vector") throw std::runtime_error("expected LLVM backend");
+    if (setenv("FAUST_OPT", "FAUST_LLVM_NO_FM", 1)) throw std::runtime_error("cannot disable Faust LLVM fast math");
+    if (!getAllDSPFactories().empty()) throw std::runtime_error("expected an empty factory cache");
+    const char *args[] = {"-double", backend == "llvm-vector" ? "-vec" : "-scal", "-vs", "32", "-I", directory.c_str(), "-I", BENCH_LIBRARY_DIR};
+    std::string error;
+    const auto start = Clock::now();
+    std::unique_ptr<llvm_dsp_factory, decltype(&deleteDSPFactory)> factory(
+        createDSPFactoryFromString(name, source, 8, args, "", error, -1), deleteDSPFactory
+    );
+    result.Elapsed = Ms(start);
+    if (!factory) throw std::runtime_error(error.empty() ? "LLVM compilation failed" : error);
+    result.Code = std::move(factory);
 #else
-        using namespace faustlens;
-        if (backend != "native") throw std::runtime_error("expected native backend");
-        const auto start = Clock::now();
-        Session session;
-        session.AddSearchPath(directory);
-        session.SetBuffer(path.string(), source);
-        Signals signals;
-        Graph graph(session, path.string(), signals);
-        if (!graph.Ok) {
-            for (const auto &d : session.Diagnostics()) std::cerr << d.Payload << '\n';
-            for (const auto &d : graph.Prop.Diags) std::cerr << d.Payload << '\n';
-            throw std::runtime_error("source compilation failed");
-        }
-        auto plan = graph.Lower();
-        if (!plan) throw std::runtime_error(plan.error());
-        auto ui = graph.Ui(RootLabel(session.Metadata));
-        result.Frontend = Ms(start);
-        const auto emitStart = Clock::now();
-        auto program = arm64::Program::Compile(std::move(*plan), std::move(ui));
-        result.Emission = Ms(emitStart);
-        if (!program) throw std::runtime_error(program.error());
-        const auto publishStart = Clock::now();
-        auto code = NativeCode::Publish(*program);
-        result.Publication = Ms(publishStart);
-        result.Elapsed = Ms(start);
-        if (!code) throw std::runtime_error(code.error());
-        result.Code = std::move(*code);
-#endif
-        rusage usage{};
-        getrusage(RUSAGE_SELF, &usage);
-        result.PeakRss = usage.ru_maxrss;
+    using namespace faustlens;
+    if (backend != "native") throw std::runtime_error("expected native backend");
+    const auto start = Clock::now();
+    Session session;
+    session.AddSearchPath(directory);
+    session.SetBuffer(path.string(), source);
+    Signals signals;
+    Graph graph(session, path.string(), signals);
+    if (!graph.Ok) {
+        for (const auto &d : session.Diagnostics()) std::cerr << d.Payload << '\n';
+        for (const auto &d : graph.Prop.Diags) std::cerr << d.Payload << '\n';
+        throw std::runtime_error("source compilation failed");
     }
+    auto plan = graph.Lower();
+    if (!plan) throw std::runtime_error(plan.error());
+    auto ui = graph.Ui(RootLabel(session.Metadata));
+    result.Frontend = Ms(start);
+    const auto emitStart = Clock::now();
+    auto program = arm64::Program::Compile(std::move(*plan), std::move(ui));
+    result.Emission = Ms(emitStart);
+    if (!program) throw std::runtime_error(program.error());
+    const auto publishStart = Clock::now();
+    auto code = NativeCode::Publish(*program);
+    result.Publication = Ms(publishStart);
+    result.Elapsed = Ms(start);
+    if (!code) throw std::runtime_error(code.error());
+    result.Code = std::move(*code);
+#endif
+    rusage usage{};
+    getrusage(RUSAGE_SELF, &usage);
+    result.PeakRss = usage.ru_maxrss;
     return result;
 }
 
@@ -163,7 +160,7 @@ inline Reference Create(const Compilation &compiled) {
     using namespace faustlens;
     auto dsp = Native::Create(compiled.Code);
     if (!dsp) throw std::runtime_error("native instance creation failed");
-    Reader reader;
+    faustlens::SoundfileReader reader{nullptr, ReadSound};
     dsp->LoadSoundfiles(&reader);
     Reference candidate = ReferenceOf(dsp.release());
     candidate.Control = [](void *p, double) {

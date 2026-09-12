@@ -107,7 +107,9 @@ add_library(faustlens_lens EXCLUDE_FROM_ALL
     syntax/Splice.cpp
     syntax/Edit.cpp
     eval/Lift.cpp
-    query/Snapshot.cpp)
+    eval/Expand.cpp
+    query/Snapshot.cpp
+    query/Origins.cpp)
 target_link_libraries(faustlens_lens PUBLIC faustlens_eval)
 
 add_library(faustlens INTERFACE)
@@ -115,9 +117,6 @@ target_link_libraries(faustlens INTERFACE
     faustlens_compiler faustlens_backends faustlens_migrate faustlens_lens)
 
 # Preserve the numerical contract in host-compiled DSP operations.
-target_compile_options(faustlens_eval PRIVATE -ffp-contract=off -fno-fast-math)
-target_compile_options(faustlens_signal PRIVATE -ffp-contract=off -fno-fast-math)
-target_compile_options(faustlens_runtime PRIVATE -ffp-contract=off -fno-fast-math)
-target_compile_options(faustlens_arm64 PRIVATE -ffp-contract=off -fno-fast-math)
-target_compile_options(faustlens_native PRIVATE -ffp-contract=off -fno-fast-math)
-target_compile_options(faustlens_interp PRIVATE -ffp-contract=off -fno-fast-math)
+foreach(target faustlens_eval faustlens_signal faustlens_runtime faustlens_arm64 faustlens_native faustlens_interp)
+    target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
+endforeach()

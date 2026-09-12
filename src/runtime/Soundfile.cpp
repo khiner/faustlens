@@ -18,7 +18,7 @@ std::unique_ptr<Soundfile> LoadSoundfile(const SoundfileDesc &d, SoundfileReader
         if (parts.size() >= Soundfile::Parts) break;
         Part p;
         const uint32_t part = uint32_t(parts.size());
-        if (reader && reader->Read(url, part, p.Channels, p.Rate) && !p.Channels.empty()) {
+        if (reader && reader->Read && reader->Read(reader->Context, url, part, p.Channels, p.Rate) && !p.Channels.empty()) {
             p.Length = int32_t(p.Channels[0].size());
             widest = std::max(widest, p.Channels.size());
         } else {

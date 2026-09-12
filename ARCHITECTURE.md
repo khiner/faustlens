@@ -1,27 +1,19 @@
 # Architecture
 
-FaustLens combines a Faust compiler, synchronized source and diagram editors, and live audio.
-Source bytes are authoritative for the authored program.
-Text edits and structural rewrites update those bytes through one Workspace history.
-The diagram derives from parsed source occurrences, while audio uses the latest successfully compiled program.
-
+FaustLens provides Faust compilation, DSP execution, and source-preserving transformations.
+Source bytes are authoritative; consumers own documents, editing history, and device orchestration.
 Pinned `lib/faust` supplies standard-library data and the test oracle's reference compiler.
-
-## Major implementation objective
-
-Build a compact backend that generates competitive general DSP code extremely quickly.
-Native compilation must be self-contained in the editor, with a small footprint and no major compiler dependencies.
 
 ## Representations
 
 | Representation | Contents | Ownership |
 |---|---|---|
-| Text | Source bytes, including comments, formatting, and incomplete input | Workspace buffers |
-| Term | Interned surface-syntax values and per-file occurrence refs | Worker Session and independent publications |
-| Box | Evaluated, arity-checked diagrams | Worker Session |
+| Text | Source bytes, including comments, formatting, and incomplete input | Consumer buffers |
+| Term | Interned surface-syntax values and per-file occurrence refs | Session or consumer-owned syntax pools |
+| Box | Evaluated, arity-checked diagrams | Session |
 | Signal | Hash-consed signal nodes and analysis data | Compiled artifact |
 | Plan | Instructions, state layout, UI, soundfiles, and foreign-symbol descriptors | Compiled artifact |
-| Instance | Registers, state fields, controls, and execution lifecycle | Compiled artifact retained through audio use |
+| Instance | Registers, state fields, controls, and execution lifecycle | Caller-owned instance |
 
 Term preserves source forms such as `a+b`, `(a,b) : +`, numeric lexemes, and operator spellings.
 Evaluation desugars Term into Box, then propagation constructs Signal.
@@ -42,7 +34,6 @@ Diagnostics and state-field origins recover source ranges through side tables an
 
 The editable diagram renders Term before evaluation.
 For example, `par(i, 10, osc(i))` remains one structural stage while its evaluated Box contains unrolled circuits.
-Preserving surface forms avoids reconstructing syntax after desugaring [R1, R2].
 
 Expansion evaluates the selected source occurrence in its lexical scope and displays a read-only projection.
 Enclosing function parameters become symbolic bindings, and selected calls use their own arguments.
@@ -54,13 +45,10 @@ Ambient slots require visible source binder names, and symbolic abstractions rec
 Errors, environments, and free slots without visible binders are declined.
 Both expansion preview and materialization use the same rewrite result.
 
-Evaluated-view updates require a chosen update policy [R3].
-FaustLens uses explicit materialization before structural editing.
-
 ### Retentive lens contracts
 
 `get` parses text into Term and an occurrence-specific ref tree.
-Structural edits attach links from replacement-term paths to the old source refs whose bytes they retain [R4].
+Structural edits attach links from replacement-term paths to the old source refs whose bytes they retain.
 `put` applies the resulting splice to the original source.
 These links distinguish retained, relocated, and copied occurrences even when their values are equal.
 
@@ -75,16 +63,12 @@ Swapping equal-valued occurrences can change correspondence and source bytes.
 Materialization has an additional semantic contract: lift, splice, parse, and evaluation preserve the circuit.
 These contracts are checked by properties and regressions within the tested domains.
 
-Quotient lenses define laws modulo chosen equivalences [R5].
-Retention additionally specifies preservation of concrete source information.
-Standalone parse/print consistency establishes a narrower contract than source-preserving updates [R9, R10].
-
 ### Splicing
 
 An edit contains a target ref, replacement term, and source links.
 Composition, deletion, retext, and rewiring preserve links while constructing replacements.
 New stages have no source link even when their values equal existing stages.
-The lower-level value-rewrite API supports heuristic alignment for callers without explicit correspondence [R6, R11].
+The lower-level value-rewrite API supports heuristic alignment for callers without explicit correspondence.
 
 Rendering emits retained source fragments and newly printed text.
 A monotonic source cursor produces disjoint replacements in source order.
@@ -108,10 +92,9 @@ Grouping parentheses remain in ref spans, and the printer derives required group
 Recovery frames preserve enclosing synchronization tokens and match stop tokens at their entry bracket depth.
 A failed frame emits a diagnostic and a Hole containing its source bytes and completed children.
 Holes print verbatim and evaluate to Error.
-This recovery policy keeps incomplete source editable [R12].
+This recovery policy keeps incomplete source editable.
 
-Tree-sitter provides an independent acceptance and token-boundary oracle, with recovery-control discussions in [R7, R8].
-Derived parser/printer systems [R9, R10] address consistency, while this editor also requires recovery, source refs, and retained fragments.
+Tree-sitter provides an independent acceptance and token-boundary oracle.
 
 Each edited file is reparsed in full.
 The printer emits single-line expressions and line-separated statements, preserving existing formatting through retained spans.
@@ -140,32 +123,20 @@ Imported definitions merge into file environments; component and library targets
 Import cycles remain uncached because their results depend on query entry order.
 Evaluation cycles are detected independently by in-flight memo keys and a depth bound.
 
-### Worker publication and lifetimes
+### Snapshots and lifetimes
 
-One worker owns the single-threaded Session and query engine.
-Requests contain immutable buffer copies and coalesce before compilation.
-Superseded results are discarded at worker publication checks.
-
+A Session and its query engine require external synchronization.
 Session pools and evaluation memos remain append-only for its lifetime.
-Each publication owns copied syntax pools, file text, refs, tokens, diagnostics, and lifted expansions.
-The UI interns replacement terms in its publication's syntax pools.
-
+Published snapshots own file text, refs, tokens, and diagnostics independently of subsequent queries.
+Consumers retain syntax pools for terms referenced by their snapshots.
 Structural edits require buffer bytes matching the snapshot.
-Materialization also requires the selection's document revision, including dependency changes.
-The UI verifies publication tickets before adoption and audio submission.
-Stale source highlights are hidden, and document edits clear expansion refs.
-
-Compiled artifacts retain Signal storage, Plan, UI data, and the DSP together.
-Requests retain the artifact used to prepare state matching.
-The UI rejects preparation against a replaced base.
-Retired artifacts and obsolete publications return to the worker for destruction after audio use ends.
-Shutdown stops callbacks before destroying artifacts.
+Consumers must reject stale source or dependency revisions before applying materialization.
 
 ## Compilation
 
 Evaluation performs desugaring, application, pattern matching, lexical scoping, iteration, label substitution, and metadata collection.
 Box construction validates known arities and propagates errors without duplicate enclosing diagnostics.
-Partially applied cases retain per-rule environments and match one argument at a time [R14].
+Partially applied cases retain per-rule environments and match one argument at a time.
 
 Propagation connects Box inputs through the composition operators to construct Signal.
 Recursive groups reserve an id before constructing branches and intern the completed group afterward.
@@ -202,36 +173,28 @@ Unresolved symbols produce diagnostics and zero-valued reads.
 | Compute(frames, in, out) | Run the control band once and the sample band per frame |
 
 Compilation, allocation, and destruction occur outside the audio callback.
-The host converts device samples at the boundary.
-The audio thread enables denormal flushing, while the reference-comparison harness preserves the oracle's floating-point mode.
+Execution preserves the calling thread's rounding and denormal settings.
 UI controls and bargraphs use aligned, relaxed atomic 64-bit accesses between threads.
 
 The UI descriptor preserves group paths, widget bounds, and metadata.
 Labels support group prefixes, parent paths, and evaluated iteration substitutions.
 
-The host resolves soundfile URLs and caches both successful and failed decodes across recompiles.
+The host supplies a decoding callback for soundfile URLs.
 Missing audio uses the reference silent defaults and reports diagnostics.
 
 ### DSP state transfer
 
 State fields match first by content hash and then by shape hash with numeric literals normalized away.
-Shape matches use greedy source-offset proximity with lower-offset tie breaking [R11].
+Shape matches use greedy source-offset proximity with lower-offset tie breaking.
 Unmatched fields use initialized state.
 Matched delay buffers copy their common history relative to the write head and zero additional slots.
 
-Workspace retains control values by label path even when the control is absent.
-Restoration requires compatible control classes and applies current bounds.
 Tables, waveforms, soundfile pointers, and controls are excluded from delay-state matching.
 
-The worker compiles, initializes, decodes soundfiles, and prepares field matches using immutable Plan data and source offsets.
-The UI submits a prepared voice through an atomic pointer.
-At the next callback boundary, the audio thread copies matched state from the current instance before executing the replacement.
+Prepare field matches from immutable Plans and source offsets before publication.
+Apply the transfer while both instances are idle, or at a callback boundary before executing the replacement.
 Copying allocates nothing and scales with the transferred history size.
-A pending transfer must complete before another is accepted.
-
-The host runs old and new instances during a linear crossfade with weights summing to one.
-Equal Plan hashes skip replacement when the backend is unchanged.
-Failed compilation preserves the last good audio while the editors continue displaying incomplete source.
+The consumer owns publication, crossfading, and instance retirement.
 
 ## Library boundaries
 
@@ -241,24 +204,18 @@ Failed compilation preserves the last good audio while the editors continue disp
 `faustlens_native` binds and publishes ARM64 artifacts and creates instances sharing executable code.
 `faustlens_interp` executes Plan instructions directly.
 `faustlens_migrate` provides optional DSP state transfer.
-`faustlens_lens` contains printing, source splicing, structural edits, evaluation lifting, and source snapshots.
+`faustlens_lens` provides source snapshots, origin queries, printing, splicing, structural edits, and scope-aware materialization.
 Standalone native builds include the compiler and shared runtime and require only the embedded Faust libraries as third-party source data.
 
-## Application
+## Consumers
 
-SDL3 and SDL_GPU provide platform and rendering support, Dear ImGui provides widgets, and miniaudio provides audio I/O and decoding.
+[FaustEditor](../FaustEditor/README.md) owns documents, history, diagram geometry, selection, widgets, compilation scheduling, and audio-device lifecycle.
+It translates user commands into FaustLens edits and applies their source replacements through its history.
+[AudioGraphEstimation](../AudioGraphEstimation/README.md) owns objectives, fitting, prediction assessment, and topology search policy.
+Both consumers use the same pinned compiler and runtime.
 
-Workspace history records all open buffers, selections, and control values.
-Immutable text storage shares unchanged files across history entries.
-The multiline widget commits one byte-range replacement per changed frame and uses Workspace undo and redo.
-Save writes the active buffer, placing edited embedded-library files beside the root program.
-
-Diagram geometry is derived from node kind and children.
-Expansion layout is keyed by source occurrence, and selection tracks a ref chain with a byte anchor for reparsing.
-Structural edits use the same rewrite and Workspace splice path.
-
-Source comments and formatting are information retained outside the diagram view [R13].
-Persistent diagram coordinates would require additional document state and synchronization rules.
+`FindControlOrigins` returns candidate declarations across parsed files and identifies ambiguous matches from equal interned terms.
+The consumer chooses which matching file to display.
 
 ## Scope and validation
 
@@ -280,8 +237,9 @@ Regeneration uses the pinned reference compiler, explicit corpus search paths, a
 Tests require every corpus program to compile and compare numerical results independently.
 Focused probes cover conversion, remainder, shifts, composition, routing, and index clamping.
 
-Editor properties check token coverage, print/parse consistency, identity splices, retained correspondence, and bounded full-program reparsing.
-Additional tests compare incremental and fresh compilation, audio continuity, control responsiveness, publication lifetimes, and widget history.
+Source-editing properties check token coverage, print/parse consistency, identity splices, retained correspondence, and bounded full-program reparsing.
+Additional tests compare incremental and fresh compilation, DSP state transfer, and native publication lifetimes.
+FaustEditor tests audio continuity, widget history, and application publication.
 ASan and UBSan builds exercise the same suites with memory and undefined-behavior checks.
 Build and oracle commands are in [README.md](README.md).
 
@@ -293,57 +251,10 @@ Build and oracle commands are in [README.md](README.md).
 | src/files | Overlay VFS and embedded libraries |
 | src/eval, src/box | Evaluation, lexical environments, and Box graphs |
 | src/signal | Signal graphs, analysis, normalization, Plan, and UI descriptors |
-| src/runtime | Native code generation, interpreter, shared state, DSP state transfer, foreign symbols, and soundfiles |
-| src/query | Revisions, dependencies, and source snapshots |
-| app | Compiler worker, Workspace, diagram, controls, and audio host |
+| src/arm64 | Native code generation and artifact serialization |
+| src/runtime | Native publication, interpreter, shared state, DSP state transfer, foreign symbols, and soundfiles |
+| src/query | Revisions, dependencies, source snapshots, and candidate control origins |
 | test | Unit, property, and reference-conformance checks |
 | lib | Pinned dependency submodules |
 
 Embedded standard-library data preserves upstream bytes and records its revision with third-party notices.
-
-## References
-
-- **[R1]** Justin Pombrio, Shriram Krishnamurthi.
-  *Resugaring: Lifting Evaluation Sequences through Syntactic Sugar.*
-  PLDI 2014.
-- **[R2]** Zhichao Guan, Yiyuan Cao, Tailai Yu, Ziheng Wang, Di Wang, Zhenjiang Hu.
-  *Semantics Lifting for Syntactic Sugar.*
-  OOPSLA 2024.
-- **[R3]** Mikaël Mayer, Viktor Kunčak, Ravi Chugh.
-  *Bidirectional Evaluation with Direct Manipulation.*
-  OOPSLA 2018, arXiv:1809.04209.
-  [Paper](https://arxiv.org/html/1809.04209v1).
-- **[R4]** Zirun Zhu, Zhixuan Yang, Hsiang-Shang Ko, Zhenjiang Hu.
-  *Retentive Lenses.*
-  2020, arXiv:2001.02031.
-  [Paper](https://arxiv.org/pdf/2001.02031).
-- **[R5]** J. Nathan Foster, Alexandre Pilkiewicz, Benjamin C. Pierce.
-  *Quotient Lenses.*
-  ICFP 2008.
-  [Paper](https://www.cis.upenn.edu/~bcpierce/papers/quotient-lenses.pdf).
-- **[R6]** Sebastian Erdweg, Tamás Szabó, André Pacak.
-  *Concise, Type-Safe, and Efficient Structural Diffing* (truediff).
-  PLDI 2021.
-- **[R7]** tree-sitter issue #1870, *How does one improve the error recovery of a grammar?*
-- **[R8]** tree-sitter discussion #1205, *Is there any way to give hints to the error recovery process?*
-- **[R9]** Tillmann Rendel, Klaus Ostermann.
-  *Invertible Syntax Descriptions: Unifying Parsing and Pretty Printing.*
-  Haskell Symposium 2010.
-- **[R10]** Kazutaka Matsuda, Meng Wang.
-  *FliPpr: A Prettier Invertible Printing System.*
-  ESOP 2013; *A System for Deriving Parsers from Pretty-Printers*, New Generation Computing 2018.
-  [Paper](https://research-information.bris.ac.uk/ws/files/160992789/Meng_Wang_FliPpr_A_System_for_Deriving_Parsers_from_Pretty_Printers.pdf).
-- **[R11]** Davi M. J. Barbosa, Julien Cretin, Nate Foster, Michael Greenberg, Benjamin C. Pierce.
-  *Matching Lenses: Alignment and View Update.*
-  ICFP 2010.
-  [Paper](https://www.cis.upenn.edu/~bcpierce/papers/alignment.pdf).
-- **[R12]** Cyrus Omar et al.
-  *Total Type Error Localization and Recovery with Holes*, POPL 2024.
-  *Live Functional Programming with Typed Holes*, POPL 2019.
-- **[R13]** Martin Hofmann, Benjamin C. Pierce, Daniel Wagner.
-  *Symmetric Lenses.*
-  POPL 2011.
-  [Paper](https://www.cis.upenn.edu/~bcpierce/papers/symmetric.pdf).
-- **[R14]** Albert Gräf.
-  *Left-to-Right Tree Pattern Matching.*
-  RTA 1991, LNCS 488.

@@ -37,8 +37,6 @@ def main():
         reference = min(rows[backend]["render_p50_ns_per_frame"] for backend in ("scalar", "vector"))
         budget = max(1.5 * reference, reference + 250 / block)
         check(native["render_p50_ns_per_frame"] <= budget, f"{label}: throughput exceeds {budget:.3f} ns/frame")
-        check(native["edit_prepare_p95_ms"] <= 10, f"{label}: edit preparation exceeds 10 ms")
-        check(native["edit_to_output_p95_ms"] <= 11 + block / 48, f"{label}: edit-to-output exceeds budget")
         check(native["prepare_peak_rss_bytes"] - rows["interp"]["prepare_peak_rss_bytes"] <= 32 * 1024**2,
               f"{label}: preparation memory exceeds budget")
         for backend, row in rows.items():
@@ -78,7 +76,7 @@ def main():
         print(f"JIT coverage: {len(rows)} compilation/render cases and {len(cold)} cold processes")
     for message in failures:
         print(message)
-    print(f"{'FAIL' if failures else 'PASS'}: {len(groups)} DSP cases, {len(scaling)} compilation cases, footprint, memory, and edit latency")
+    print(f"{'FAIL' if failures else 'PASS'}: {len(groups)} DSP cases, {len(scaling)} compilation cases, footprint, and memory")
     return bool(failures)
 
 

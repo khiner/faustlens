@@ -149,7 +149,6 @@ def main():
         "render_warmup_ms": 100,
         "thread_qos": "user-initiated" if platform.system() == "Darwin" else "default",
         "native_compilations": 11,
-        "edits": 9,
         "source_sha256": {name: hashlib.sha256((ROOT / "benchmark/dsp" / (name + ".dsp")).read_bytes()).hexdigest() for name in args.cases},
         "measurements": [],
         "compilation_scaling": [],

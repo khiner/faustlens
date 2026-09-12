@@ -23,6 +23,7 @@ struct Resolved {
 
 // Resolve through buffers, importer directory, disk search paths, then embedded libraries.
 struct Vfs {
+    bool AllowDiskReads{true};
     std::vector<std::filesystem::path> SearchPaths;
     std::map<std::string, std::string> Buffers;
     mutable std::map<std::string, std::string> Disk;

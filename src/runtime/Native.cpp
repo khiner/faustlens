@@ -116,7 +116,8 @@ std::expected<std::unique_ptr<Native>, std::string> Native::Compile(const faustl
     });
 }
 
-void Native::Execute(bool initialize, int32_t frames, const double *const *in, double *const *out) {
+// JIT entry points have no compiler-generated UBSan function-type metadata.
+[[clang::no_sanitize("function")]] void Native::Execute(bool initialize, int32_t frames, const double *const *in, double *const *out) {
     struct Parameters {
         double SampleRate;
         int32_t Frames;
