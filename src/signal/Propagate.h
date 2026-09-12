@@ -29,13 +29,15 @@ struct Propagator {
     const Terms &Terms;
     Signals &Sigs;
     std::vector<Diagnostic> Diags;
+    MathBindings Math{MathBindings::LateBound};
+    uint64_t RequiredMath{0};
 
     // Scope each symbolic slot binding to its body.
     std::vector<std::pair<BoxId, SigId>> Slots;
     std::vector<PathSeg> Groups;
     std::vector<UiItem> Ui;
 
-    Propagator(const faustlens::Boxes &b, const faustlens::Terms &t, Signals &s) : Boxes(b), Terms(t), Sigs(s) {}
+    Propagator(const faustlens::Boxes &b, const faustlens::Terms &t, Signals &s, MathBindings math = MathBindings::LateBound) : Boxes(b), Terms(t), Sigs(s), Math(math) {}
 
     std::vector<SigId> Run(BoxId box, int32_t inputs);
 

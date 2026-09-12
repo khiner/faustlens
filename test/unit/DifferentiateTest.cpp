@@ -22,7 +22,7 @@ struct DerivativeFixture {
     std::vector<SigId> Roots;
     DifferentiateResult Derivative;
 
-    explicit DerivativeFixture(std::string source) : Source("/differentiate.dsp", std::move(source)) {
+    explicit DerivativeFixture(std::string source, MathBindings math = MathBindings::LateBound) : Source("/differentiate.dsp", std::move(source), true, math) {
         REQUIRE(Source.Ok);
         SetRoots(Source.Outs);
         Ui = Source.Ui("differentiate");
@@ -321,6 +321,86 @@ TEST_CASE("differentiate active foreign calls report unsupported derivatives") {
     CHECK_FALSE(result.Diagnostics.empty());
     CHECK(f.Source.Outs == f.Roots);
     CHECK(f.Source.Lower().has_value());
+}
+
+TEST_CASE_TEMPLATE("builtin foreign math reuses intrinsic derivatives", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    for (const Ext op : BuiltinMath) {
+        const std::string name{ExtName(op)};
+        DerivativeFixture f(std::string(SingleControl) + "import(\"stdfaust.lib\"); process=ma." + name + "(a);", MathBindings::Builtin);
+        f.Transform();
+        CHECK(f.Primal.RequiredMath == (uint64_t{1} << uint8_t(op)));
+        CHECK(f.Augmented.RequiredMath == f.Primal.RequiredMath);
+        CHECK(f.Primal.Foreign.empty());
+        FiniteDifferences<Backend>(f, {op == Ext::Acosh ? 2.0 : 0.4});
+        if (op == Ext::Tanh) {
+            const auto y{Sample<Backend>(f, {20})};
+            CHECK(y[1][0] / 1.6993417021166355e-17 == doctest::Approx(1));
+        }
+    }
+}
+
+TEST_CASE_TEMPLATE("builtin math differentiates nonlinear feedback across reset and blocks", Backend, FAUSTLENS_TEST_EXECUTORS) {
+    DerivativeFixture f(
+        "import(\"stdfaust.lib\"); drive=hslider(\"drive\",1.2,.7,2.5,.001); feedback=hslider(\"feedback\",.4,.1,.8,.001);"
+        "gain=hslider(\"gain\",.6,.2,1.4,.001); mix=hslider(\"mix\",.5,.15,.85,.001);"
+        "wet=*(drive):(+~(ma.tanh:*(feedback))):ma.tanh; process(x)=gain*((1-mix)*x+mix*(x:wet));", MathBindings::Builtin);
+    f.Transform();
+    FiniteDifferences<Backend>(f, {1.8, .6, .9, .7});
+    const auto input{Excitation(1025)};
+    const std::vector<double> controls{1.8, .6, .9, .7};
+    auto dsp{MakeExecutor<Backend>(f.Augmented, f.Ui)};
+    const auto expected{Render(*dsp, f, controls, input)};
+    for (size_t block : {size_t{7}, size_t{127}}) CHECK(Render(*dsp, f, controls, input, block) == expected);
+}
+
+TEST_CASE("builtin math preserves binding requirements through folding and artifacts") {
+    const std::string call{"ffunction(float tanh(float),\"math.h\",\"\")(0.4)"};
+    Program late_bound("/late-bound.dsp", "process=" + call + ";");
+    Program builtin("/builtin.dsp", "process=0*" + call + ";", true, MathBindings::Builtin);
+    const auto original{late_bound.Lower()}, lowered{builtin.Lower()};
+    REQUIRE(original);
+    REQUIRE(lowered);
+    CHECK(original->RequiredMath == 0);
+    CHECK(lowered->Foreign.empty());
+    CHECK(builtin.Sigs.KindOf(builtin.Outs[0]) == SigKind::Real);
+    auto unbound{*lowered};
+    unbound.RequiredMath = 0;
+    CHECK(Hash(unbound) != Hash(*lowered));
+    const auto program{arm64::Program::Compile(*lowered, builtin.Ui("math"))};
+    REQUIRE(program);
+    const auto decoded{arm64::Program::Decode((*program)->Encode())};
+    REQUIRE(decoded);
+    CHECK((*decoded)->Plan.RequiredMath == lowered->RequiredMath);
+    Registry custom{Registry::Builtin()};
+    custom.AddFunction("tanh", Nature::Real, {Nature::Real}, reinterpret_cast<void *>(+[](double x) { return 2 * x; }));
+    Interp plain(*original, late_bound.Ui("math"), custom);
+    plain.Init(48000);
+    double value{0};
+    double *output[]{&value};
+    plain.Compute(1, nullptr, output);
+    CHECK(value == .8);
+    for (const Registry *registry : {static_cast<const Registry *>(&custom), &Registry::Builtin()}) {
+        const bool valid{registry == &Registry::Builtin()};
+#if defined(__APPLE__) && defined(__aarch64__)
+        CHECK(bool(NativeCode::Publish(*decoded, *registry)) == valid);
+#endif
+        if (valid) CHECK_NOTHROW(Interp((*decoded)->Plan, builtin.Ui("math"), *registry));
+        else CHECK_THROWS_AS(Interp((*decoded)->Plan, builtin.Ui("math"), *registry), std::invalid_argument);
+    }
+    CHECK_FALSE(NativeCode::Publish(*decoded, Registry{}));
+    unbound.RequiredMath = uint64_t{1} << 63;
+    CHECK_THROWS_AS(Interp(unbound, builtin.Ui("math")), std::invalid_argument);
+}
+
+TEST_CASE("builtin math requires the declared standard signature") {
+    for (const char *signature : {"float tanh(int)", "int tanh(float)", "float tanh(any)", "float tanh(float,float)", "float custom(float)"}) {
+        const bool binary{std::string_view(signature).find(',') != std::string_view::npos};
+        DerivativeFixture f(std::string(SingleControl) + "process=ffunction(" + signature + ",\"math.h\",\"\")(a" + (binary ? ",a" : "") + ");", MathBindings::Builtin);
+        CHECK(f.Primal.RequiredMath == 0);
+        CHECK_FALSE(f.Primal.Foreign.empty());
+    }
+    DerivativeFixture f(std::string(SingleControl) + "import(\"stdfaust.lib\"); process=ma.tanh(a);");
+    CHECK_FALSE(Differentiate(f.Source.Sigs, f.Roots, DifferentiateRequest{.Controls = f.Labels}).Ok());
 }
 
 TEST_CASE_TEMPLATE("differentiate mutable table data has independent tangent storage", Backend, FAUSTLENS_TEST_EXECUTORS) {

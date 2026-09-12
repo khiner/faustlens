@@ -15,7 +15,7 @@ template<class Archive, class T> void Record(Archive &a, T &v) {
     else if constexpr (std::is_same_v<V, Instr>) a(v.Op, v.Form, v.Nature, v.Dst, v.Imm, v.Aux, v.Args, v.ArgCount);
     else if constexpr (std::is_same_v<V, SoundfileDesc>) a(v.Label, v.Channels, v.Urls);
     else if constexpr (std::is_same_v<V, ForeignDesc>) a(v.Kind, v.Name, v.Result, v.Args);
-    else if constexpr (std::is_same_v<V, Plan>) a(v.Fields, v.Bands, v.Operands, v.Waves, v.Soundfiles, v.Foreign, v.Labels, v.Regs, v.Inputs, v.Outputs);
+    else if constexpr (std::is_same_v<V, Plan>) a(v.Fields, v.Bands, v.Operands, v.Waves, v.Soundfiles, v.Foreign, v.RequiredMath, v.Labels, v.Regs, v.Inputs, v.Outputs);
     else if constexpr (std::is_same_v<V, UiNode>)
         a(v.IsGroup, v.Orient, v.Kind, v.Label, v.Raw, v.Meta, v.Init, v.Min, v.Max, v.Step, v.WidgetLabel, v.Children);
     else if constexpr (std::is_same_v<V, Relocation>) a(v.Kind, v.Index, v.Word, v.Begin, v.End);
@@ -79,7 +79,7 @@ template<bool Reading> struct Archive {
 };
 
 constexpr std::array<uint8_t, 8> Magic{'F', 'A', 'U', 'S', 'T', 'A', '6', '4'};
-constexpr uint32_t Version = 1;
+constexpr uint32_t Version = 2;
 
 } // namespace
 

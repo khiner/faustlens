@@ -29,8 +29,8 @@ struct ProgramState {
 };
 struct Program : ProgramState, Graph {
     // Load the corpus file when source is empty; otherwise compile source under path.
-    explicit Program(const std::filesystem::path &path, std::string source = {}, bool add_normal_form = true)
-        : Graph(Session, Prepare(Session, path, std::move(source)), Sigs, add_normal_form) {}
+    explicit Program(const std::filesystem::path &path, std::string source = {}, bool add_normal_form = true, MathBindings math = MathBindings::LateBound)
+        : Graph(Session, Prepare(Session, path, std::move(source)), Sigs, add_normal_form, math) {}
 
     static std::string Prepare(faustlens::Session &s, const std::filesystem::path &path, std::string source) {
         if (source.empty()) {

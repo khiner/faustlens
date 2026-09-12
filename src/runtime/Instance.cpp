@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <format>
+#include <stdexcept>
 
 namespace faustlens {
 namespace {
@@ -15,6 +16,7 @@ std::atomic_ref<double> UiAt(Scalar &s) { return std::atomic_ref<double>(s.D); }
 Instance::Instance(const faustlens::Plan &p, const UiNode &ui, const faustlens::Registry &reg, const InstanceLayout *layout)
     : OwnedLayout(layout ? nullptr : std::make_unique<InstanceLayout>(p)), Layout(layout ? *layout : *OwnedLayout), Plan(p), Registry(reg),
       Values(Registers.Persistent.size()), State(Layout.StateSize) {
+    if (auto error{reg.CheckMath(p.RequiredMath)}; !error.empty()) throw std::invalid_argument(error);
     Symbol.assign(p.Foreign.size(), nullptr);
     for (size_t i = 0; i < p.Foreign.size(); ++i) {
         const ForeignDesc &d = p.Foreign[i];

@@ -214,7 +214,17 @@ std::vector<SigId> Propagator::Real(BoxId box, std::vector<SigId> &in) {
             return Fail(box, "no signal for this primitive");
         }
 
-        case BoxKind::FFun: return one(Sigs.Make(SigKind::FFun, uint8_t(Boxes.SignatureAt(n.Aux).Result), Sigs.InternStr(Terms.Str(n.Payload)), n.Aux, in));
+        case BoxKind::FFun: {
+            const auto &signature{Boxes.SignatureAt(n.Aux)};
+            const auto name{Terms.Str(n.Payload)};
+            if (Math == MathBindings::Builtin && signature.Result == FType::Float && signature.Args.size() == 1 && signature.Args[0] == uint8_t(FType::Float))
+                for (const Ext op : BuiltinMath)
+                    if (name == ExtName(op)) {
+                        RequiredMath |= uint64_t{1} << uint8_t(op);
+                        return one(SimpExtended(Sigs, op, in));
+                    }
+            return one(Sigs.Make(SigKind::FFun, uint8_t(signature.Result), Sigs.InternStr(name), n.Aux, in));
+        }
 
         case BoxKind::Button:
         case BoxKind::Checkbox: {

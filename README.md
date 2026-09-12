@@ -89,6 +89,11 @@ graph.Outs.insert(graph.Outs.end(), derivative.Tangents.begin(), derivative.Tang
 auto plan = graph.Lower();
 ```
 
+For standard hyperbolic functions such as `ma.tanh`, construct `Graph(session, path, signals, true, MathBindings::Builtin)` before differentiation.
+This resolves `acosh`, `asinh`, `atanh`, `cosh`, `sinh`, and `tanh` with real unary signatures to existing math intrinsics.
+Compiled plans retain the required bindings, and both executors reject missing or replaced implementations.
+The default `MathBindings::LateBound` preserves registry-supplied implementations; other foreign functions remain late-bound in either mode.
+
 For M original outputs and D directions, tangent channels use index `M + output*D + direction`.
 Selected mode computes one column per control.
 For weighted directions, set `ExplicitDirections`, `DirectionCount`, and the row-major control-by-direction matrix `Directions`.

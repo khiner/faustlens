@@ -115,6 +115,11 @@ enum class Ext : uint8_t {
 
 std::string_view ExtName(Ext);
 
+// Builtin foreign math bindings use real unary signatures and the corresponding intrinsic semantics.
+inline constexpr Ext BuiltinMath[]{Ext::Acosh, Ext::Asinh, Ext::Atanh, Ext::Cosh, Ext::Sinh, Ext::Tanh};
+enum class MathBindings { LateBound, Builtin };
+static_assert(uint8_t(Ext::Count_) <= 64);
+
 // Prefix/WRTbl state tags keep histories distinct when transformed values coincide.
 // They affect interning and content/shape hashes without adding runtime dependencies.
 // Origin nodes must remain in the same arena; hashes follow their content.

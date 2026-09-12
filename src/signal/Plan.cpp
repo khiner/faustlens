@@ -849,14 +849,15 @@ std::expected<void, std::string> Lowering::Run() {
 
 } // namespace
 
-Graph::Graph(Session &s, const std::string &path, Signals &sigs, bool add_normal_form)
-    : Prop(s.Boxes, s.Terms, sigs), Box(s.Process(path)), Arity(s.Boxes.ArityOf(Box)), Ok(!s.Boxes.IsError(Box) && Arity.Known) {
+Graph::Graph(Session &s, const std::string &path, Signals &sigs, bool add_normal_form, MathBindings math)
+    : Prop(s.Boxes, s.Terms, sigs, math), Box(s.Process(path)), Arity(s.Boxes.ArityOf(Box)), Ok(!s.Boxes.IsError(Box) && Arity.Known) {
     if (Ok) Outs = Normalize(sigs, Prop.Run(Box, Arity.Ins), add_normal_form);
 }
 
 std::expected<Plan, std::string> Graph::Lower() const {
     const Signals &s = Prop.Sigs;
     Plan out;
+    out.RequiredMath = Prop.RequiredMath;
     out.Inputs = Arity.Ins;
     if (auto lowered = Lowering{s, Prop.Boxes, Outs, out}.Run(); !lowered) return std::unexpected(std::move(lowered).error());
     for (const Field &f : out.Fields) {
@@ -909,7 +910,7 @@ uint64_t Hash(const Plan &p) {
         for (const char c : d.Name) h = Mix(h, uint8_t(c));
         for (const Nature n : d.Args) h = Mix(h, uint64_t(n));
     }
-    return h;
+    return p.RequiredMath ? Mix(h, p.RequiredMath) : h;
 }
 
 } // namespace faustlens

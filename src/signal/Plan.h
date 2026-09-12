@@ -122,6 +122,8 @@ struct Plan {
     std::vector<std::vector<double>> Waves;
     std::vector<SoundfileDesc> Soundfiles;
     std::vector<ForeignDesc> Foreign;
+    // Ext bits require the builtin binding even when simplification removes the original call.
+    uint64_t RequiredMath{0};
     std::vector<std::string> Labels;
     uint32_t Regs = 0;
     // Inputs includes unused declared channels.
@@ -135,7 +137,7 @@ struct Plan {
 
 // Signals must outlive Graph.
 struct Graph {
-    Graph(Session &, const std::string &path, Signals &, bool add_normal_form = true);
+    Graph(Session &, const std::string &path, Signals &, bool add_normal_form = true, MathBindings = MathBindings::LateBound);
 
     Propagator Prop;
     BoxId Box = NoBox;

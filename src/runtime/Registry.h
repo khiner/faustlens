@@ -40,7 +40,11 @@ struct Registry {
 
     // Return null for an unresolved symbol.
     const Symbol *Find(const ForeignDesc &) const;
+    // Return an error when a compiled intrinsic's required binding is missing or replaced.
+    std::string CheckMath(uint64_t required) const;
 };
+
+uintptr_t MathAddress(Ext);
 
 // Check CanCall before invoking a scalar thunk of up to two arguments.
 // Resolve Runtime symbols through the instance.

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <bit>
-#include <cmath>
 #include <stdexcept>
 
 namespace faustlens {
@@ -16,31 +15,6 @@ double SoundRead(const Instance *dsp, uint32_t field, uint32_t channel, uint32_t
     const Soundfile &sf = *dsp->Sound[field];
     const uint32_t at = uint32_t(sf.Offset[std::min(part, Soundfile::Parts - 1)]) + frame;
     return sf.Channel[std::min(channel, uint32_t(sf.Channel.size()) - 1)][std::min<size_t>(at, sf.Owned[0].size() - 1)];
-}
-
-uintptr_t MathAddress(Ext form) {
-    switch (form) {
-        case Ext::Acos: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::acos));
-        case Ext::Acosh: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::acosh));
-        case Ext::Asin: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::asin));
-        case Ext::Asinh: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::asinh));
-        case Ext::Atan: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::atan));
-        case Ext::Atan2: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double, double)>(std::atan2));
-        case Ext::Atanh: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::atanh));
-        case Ext::Cos: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::cos));
-        case Ext::Cosh: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::cosh));
-        case Ext::Exp: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::exp));
-        case Ext::Fmod: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double, double)>(std::fmod));
-        case Ext::Log: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::log));
-        case Ext::Log10: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::log10));
-        case Ext::Pow: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double, double)>(std::pow));
-        case Ext::Remainder: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double, double)>(std::remainder));
-        case Ext::Sin: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::sin));
-        case Ext::Sinh: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::sinh));
-        case Ext::Tan: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::tan));
-        case Ext::Tanh: return reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(std::tanh));
-        default: throw std::runtime_error("invalid native math operation");
-    }
 }
 
 void Bind(std::vector<uint32_t> &words, const arm64::Relocation &r, uintptr_t address) {
@@ -68,6 +42,7 @@ void ReadRuntime(std::vector<uint32_t> &words, const arm64::Relocation &r, const
 std::expected<std::shared_ptr<const NativeCode>, std::string>
 NativeCode::Publish(std::shared_ptr<const arm64::Program> program, const faustlens::Registry &registry) {
     if (!program) return std::unexpected("missing ARM64 program");
+    if (auto error{registry.CheckMath(program->Plan.RequiredMath)}; !error.empty()) return std::unexpected(std::move(error));
     try {
         auto words = program->Words;
         for (const auto &r : program->Relocations) {
